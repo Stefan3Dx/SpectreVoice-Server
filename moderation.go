@@ -173,7 +173,7 @@ func (b *bus) moderate(sp *busSpace, c *busClient, t string, m map[string]any) b
 			answer(true, "")
 		}
 	case "reports", "report-done":
-		if !c.admin {
+		if !c.staff {
 			c.refuse(m, t, "admin", "only the admin")
 			return true
 		}
@@ -189,7 +189,7 @@ func (b *bus) moderate(sp *busSpace, c *busClient, t string, m map[string]any) b
 				return true
 			}
 			uid = c.uid
-		} else if !c.admin {
+		} else if !c.staff {
 			c.refuse(m, t, "admin", "only the admin")
 			return true
 		}
@@ -204,6 +204,9 @@ func (b *bus) moderate(sp *busSpace, c *busClient, t string, m map[string]any) b
 			} else {
 				log.Printf("moderation: chat of %s not wiped: %v", uid, err)
 			}
+		}
+		if cf := b.chfiles; cf != nil {
+			n += cf.dropBy(uid)
 		}
 		log.Printf("moderation: %s wiped (%d records, asked by %s)", uid, n, c.uid)
 		c.send(map[string]any{"t": "wiped", "uid": uid, "n": n})

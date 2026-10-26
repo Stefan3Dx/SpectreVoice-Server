@@ -88,17 +88,21 @@ func (s *server) watchdog(listen string) {
 	url := "http://" + net.JoinHostPort(host, port) + "/healthz"
 	client := &http.Client{Timeout: 5 * time.Second}
 	ready := false
+	var pending chan struct{} // a probe still running (stuck): don't start another one
 	for {
 		ok := false
 		if res, err := client.Get(url); err == nil {
 			ok = res.StatusCode == 200
 			res.Body.Close()
 		}
-		// The state lock too: a stuck lock means a stuck server
-		done := make(chan struct{})
-		go func() { s.health(); close(done) }()
+		// The state locks and the database too: a stuck lock means a stuck server
+		if pending == nil {
+			pending = make(chan struct{})
+			go func(done chan struct{}) { s.probeLocks(); close(done) }(pending)
+		}
 		select {
-		case <-done:
+		case <-pending:
+			pending = nil
 		case <-time.After(5 * time.Second):
 			ok = false
 			log.Printf("watchdog: the server's locks are stuck")
@@ -111,5 +115,22 @@ func (s *server) watchdog(listen string) {
 			notify("WATCHDOG=1")
 		}
 		time.Sleep(every)
+	}
+}
+
+// probeLocks takes every big lock once (hub, voice, the database's only connection), as the server's work does.
+func (s *server) probeLocks() {
+	s.health()
+	if s.hub != nil {
+		s.hub.mu.Lock()
+		s.hub.mu.Unlock() //nolint:staticcheck // only checks the lock can be taken
+	}
+	if s.voice != nil {
+		s.voice.mu.Lock()
+		s.voice.mu.Unlock() //nolint:staticcheck
+	}
+	if s.store != nil {
+		var one int
+		_ = s.store.db.QueryRow(`SELECT 1`).Scan(&one)
 	}
 }

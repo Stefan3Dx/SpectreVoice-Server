@@ -44,7 +44,7 @@ type channel struct {
 	// An emoji before the name, a picture (https URL) for its page
 	Icon string `json:"icon,omitempty"`
 	Pic  string `json:"pic,omitempty"`
-	// "spacer": a line between channels, nobody joins; "": a voice channel
+	// "": a voice channel (with its own chat); "text": a chat channel, nobody joins; "spacer": a line between channels
 	Kind string `json:"kind,omitempty"`
 	// Moderated: only those allowed (mute_voice) and those they let talk are heard
 	Moderated bool   `json:"moderated,omitempty"`
@@ -232,7 +232,13 @@ func (st *store) deleteChannel(id int64) error {
 	if _, err := st.db.Exec(`DELETE FROM channels WHERE id=?`, id); err != nil {
 		return err
 	}
-	_, err := st.db.Exec(`DELETE FROM messages WHERE conv=?`, chanConv(id))
+	if _, err := st.db.Exec(`DELETE FROM messages WHERE conv=?`, chanConv(id)); err != nil {
+		return err
+	}
+	_, err := st.db.Exec(`DELETE FROM mods WHERE kind='ch-ban' AND ch=?`, id)
+	if err != nil && strings.Contains(err.Error(), "no such table") {
+		err = nil
+	}
 	return err
 }
 
@@ -363,8 +369,18 @@ func (st *store) wipeUser(uid string) (int, error) {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	if _, err := st.db.Exec(`DELETE FROM users WHERE uid=? AND role=''`, uid); err != nil {
-		return int(n), err
+	// What else the server keeps about them: devices for push, where they're a member (not what they own),
+	// their roles there, where they were last. Bans stay (they're the community's, not the person's).
+	for _, q := range []string{
+		`DELETE FROM push_tokens WHERE uid=?`,
+		`DELETE FROM member_roles WHERE uid=?`,
+		`DELETE FROM memberships WHERE uid=? AND comm NOT IN (SELECT id FROM communities WHERE owner=?1)`,
+		`DELETE FROM user_state WHERE uid=?`,
+		`DELETE FROM users WHERE uid=? AND role=''`,
+	} {
+		if _, err := st.db.Exec(q, uid); err != nil && !strings.Contains(err.Error(), "no such table") {
+			return int(n), err
+		}
 	}
 	return int(n), nil
 }
@@ -395,4 +411,11 @@ func (st *store) namesIn(comm int64) (map[string][]string, error) {
 		}
 	}
 	return out, rows.Err()
+}
+
+// hasColumnValue: some row of table has col = v.
+func (st *store) hasColumnValue(table, col, v string) bool {
+	var n int
+	_ = st.db.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE `+col+` = ?`, v).Scan(&n)
+	return n > 0
 }

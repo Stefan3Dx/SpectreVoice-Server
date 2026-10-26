@@ -288,7 +288,7 @@ func (st *store) createCommunity(name, owner string, open bool) (*community, err
 	if err := st.defaultRoles(id); err != nil {
 		return nil, err
 	}
-	if _, err := st.db.Exec(`INSERT INTO channels(parent,name,pos,is_default,comm) VALUES(0,'Lobby',0,1,?),(0,'AFK',100,0,?)`, id, id); err != nil {
+	if _, err := st.db.Exec(`INSERT INTO channels(parent,name,pos,is_default,comm,kind) VALUES(0,'general',-10,0,?,'text'),(0,'Lobby',0,1,?,''),(0,'AFK',100,0,?,'')`, id, id, id); err != nil {
 		return nil, err
 	}
 	if err := st.join(id, owner); err != nil {
@@ -309,7 +309,11 @@ func (st *store) saveCommunity(c *community) error {
 func (st *store) deleteCommunity(id int64) error {
 	for _, q := range []string{
 		`DELETE FROM messages WHERE conv IN (SELECT 'c:' || id FROM channels WHERE comm=?)`,
-		`DELETE FROM channels WHERE comm=?`, `DELETE FROM member_roles WHERE comm=?`, `DELETE FROM roles WHERE comm=?`,
+		`DELETE FROM mods WHERE kind='ch-ban' AND ch IN (SELECT id FROM channels WHERE comm=?)`,
+		`DELETE FROM channels WHERE comm=?`,
+		`DELETE FROM messages WHERE conv='g:' || ?`,
+		`DELETE FROM mods WHERE kind IN ('ban','mute','vmute') AND ch=?`,
+		`UPDATE user_state SET last_comm=0 WHERE last_comm=?`, `DELETE FROM member_roles WHERE comm=?`, `DELETE FROM roles WHERE comm=?`,
 		`DELETE FROM memberships WHERE comm=?`, `DELETE FROM invites WHERE comm=?`, `DELETE FROM communities WHERE id=?`,
 	} {
 		if _, err := st.db.Exec(q, id); err != nil && !strings.Contains(err.Error(), "no such table") {

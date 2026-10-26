@@ -72,6 +72,7 @@ type config struct {
 	vendorKey         string // its public key (tests use their own)
 	audioLevel        int    // the voice's level where a channel doesn't set one (quality.go)
 	music             bool   // the music bot (needs yt-dlp and ffmpeg)
+	pushContent       bool   // push notifications carry who and what (through Google); off: only that there's something
 	ytdlp             string
 	ffmpeg            string
 }
@@ -146,6 +147,7 @@ func main() {
 	flag.Int64Var(&cfg.fileMB, "file-max-mb", int64(envInt("SV_FILE_MAX_MB", 100)), "largest shared file, MB [SV_FILE_MAX_MB]")
 	flag.IntVar(&cfg.fileDays, "file-days", envInt("SV_FILE_DAYS", 30), "days a shared file is kept [SV_FILE_DAYS]")
 	flag.Int64Var(&cfg.fileQuota, "file-quota-mb", int64(envInt("SV_FILE_QUOTA_MB", 5120)), "MB all shared files may take [SV_FILE_QUOTA_MB]")
+	flag.Int64Var(&cfg.fileSpaceMB, "file-space-mb", int64(envInt("SV_FILE_SPACE_MB", 1024)), "MB one community's chat files may take (0: no limit but the total) [SV_FILE_SPACE_MB]")
 	flag.IntVar(&cfg.maxSpaces, "max-spaces", envInt("SV_MAX_SPACES", 16), "communities kept open at once [SV_MAX_SPACES]")
 	flag.StringVar(&cfg.playCreds, "play-credentials", env("SV_PLAY_CREDENTIALS", ""), "Google Play service account key file (JSON) for donations [SV_PLAY_CREDENTIALS]")
 	flag.StringVar(&cfg.playPkg, "play-package", env("SV_PLAY_PACKAGE", "io.github.stefan3dx.spectrevoice"), "the Play app's package [SV_PLAY_PACKAGE]")
@@ -156,6 +158,7 @@ func main() {
 	flag.StringVar(&cfg.pushCreds, "push-credentials", env("SV_PUSH_CREDENTIALS", ""), "Firebase service account (JSON) for push notifications [SV_PUSH_CREDENTIALS]")
 	flag.StringVar(&cfg.licenseURL, "license-url", env("SV_LICENSE_URL", "https://license.spectrevoice.com"), "the licence service, for Pro [SV_LICENSE_URL]")
 	flag.IntVar(&cfg.audioLevel, "audio-quality", envInt("SV_AUDIO_QUALITY", defaultAudioLevel), "voice quality where a channel sets none: 1 low … 6 max [SV_AUDIO_QUALITY]")
+	flag.BoolVar(&cfg.pushContent, "push-content", envBool("SV_PUSH_CONTENT", false), "push notifications carry the sender and the text (they pass through Google) [SV_PUSH_CONTENT]")
 	flag.BoolVar(&cfg.music, "music", envBool("SV_MUSIC", true), "the music bot (!play), when yt-dlp and ffmpeg are installed [SV_MUSIC]")
 	flag.StringVar(&cfg.ytdlp, "yt-dlp", env("SV_YTDLP", "yt-dlp"), "yt-dlp program [SV_YTDLP]")
 	flag.StringVar(&cfg.ffmpeg, "ffmpeg", env("SV_FFMPEG", "ffmpeg"), "ffmpeg program [SV_FFMPEG]")
@@ -219,6 +222,10 @@ func newServer(cfg config) (*server, error) {
 	if err := s.store.migrateChannels(); err != nil {
 		return nil, fmt.Errorf("channels: %w", err)
 	}
+	// A server older than text channels gets one "general" per community, once
+	if !s.store.hasColumnValue("channels", "kind", "text") {
+		_, _ = s.store.db.Exec(`INSERT INTO channels(parent,name,pos,is_default,comm,kind) SELECT 0,'general',-10,0,id,'text' FROM communities`)
+	}
 	if cfg.vendorKey == "" {
 		s.cfg.vendorKey = vendorKey
 	}
@@ -260,6 +267,7 @@ func newServer(cfg config) (*server, error) {
 	s.bus = newBus(filepath.Join(cfg.data, "bus"))
 	s.bus.maxSpaces = cfg.maxSpaces
 	s.bus.store = s.store
+	s.bus.chfiles = s.chfiles
 	if cfg.playCreds != "" {
 		pv, err := newPlayVerifier(cfg.playCreds, cfg.playPkg, s.bus.dir, cfg.playRate, cfg.playTest)
 		if err != nil {
@@ -287,7 +295,7 @@ func newServer(cfg config) (*server, error) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
-		s.files = &fileStore{dir: dir, maxSize: cfg.fileMB << 20, keep: time.Duration(cfg.fileDays) * 24 * time.Hour, quota: cfg.fileQuota << 20}
+		s.files = &fileStore{dir: dir, maxSize: cfg.fileMB << 20, keep: time.Duration(cfg.fileDays) * 24 * time.Hour, quota: cfg.fileQuota << 20, spaceQuota: cfg.fileSpaceMB << 20}
 		s.files.recount()
 		go s.files.sweep()
 	}

@@ -17,6 +17,7 @@ package main
 import (
 	"crypto/subtle"
 	"log"
+	"slices"
 	"sync"
 	"time"
 )
@@ -105,6 +106,20 @@ func (m *mods) remove(uid, kind string, scope int64) {
 	m.list = kept
 	m.mu.Unlock()
 	_, _ = m.s.store.db.Exec(`DELETE FROM mods WHERE uid=? AND kind=? AND ch=?`, uid, kind, scope)
+}
+
+// dropScope forgets kinds at the given scopes (a deleted community or channel); the rows are deleted by the store.
+func (m *mods) dropScope(kinds []string, scopes ...int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.list[:0]
+	for _, o := range m.list {
+		if !(slices.Contains(kinds, o.Kind) && slices.Contains(scopes, o.Ch)) {
+			kept = append(kept, o)
+		}
+	}
+	clear(m.list[len(kept):])
+	m.list = kept
 }
 
 func until(minutes int64) int64 {

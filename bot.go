@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -67,6 +69,7 @@ type musicBots struct {
 	mu   sync.Mutex
 	bots map[int64]*musicBot
 	ok   bool
+	busy map[string]bool // who has a search running
 	// resolveFn replaces yt-dlp in tests
 	resolveFn func(q string) (song, error)
 }
@@ -132,6 +135,26 @@ func (mb *musicBots) botOf(comm, ch int64) (*musicBot, error) {
 	return b, nil
 }
 
+// stopIn stops comm's bot (its community is gone).
+func (mb *musicBots) stopIn(comm int64) {
+	if mb == nil {
+		return
+	}
+	mb.mu.Lock()
+	b := mb.bots[comm]
+	mb.mu.Unlock()
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.queue, b.stopped, b.paused = nil, true, false
+	if b.cancel != nil {
+		b.cancel()
+	}
+	b.mu.Unlock()
+	b.poke()
+}
+
 func (mb *musicBots) remove(b *musicBot) {
 	mb.mu.Lock()
 	if mb.bots[b.comm] == b {
@@ -152,9 +175,13 @@ func (b *musicBot) say(text string) {
 }
 
 func (b *musicBot) status() map[string]any {
+	h := b.mb.s.hub
+	h.mu.Lock()
+	ch := b.ss.ch // written under h.mu (join)
+	h.mu.Unlock()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return map[string]any{"t": "music", "sid": b.ss.sid, "ch": b.ss.ch, "now": b.now, "queue": b.queue, "paused": b.paused, "volume": b.volume}
+	return map[string]any{"t": "music", "sid": b.ss.sid, "ch": ch, "now": b.now, "queue": b.queue, "paused": b.paused, "volume": b.volume}
 }
 
 func (b *musicBot) tell() {
@@ -286,7 +313,8 @@ func (b *musicBot) play(sg *song) error {
 var ffmpegInput = defaultFFmpegInput
 
 func defaultFFmpegInput(u string) []string {
-	return []string{"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4", "-i", u}
+	// Only web streams: no local files, no other protocols
+	return []string{"-protocol_whitelist", "https,http,tls,tcp,crypto,hls", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4", "-i", u}
 }
 
 // oggPackets reads Opus packets out of an Ogg stream (the two header packets skipped). One buffer, reused.
@@ -376,6 +404,8 @@ func (mb *musicBots) resolve(q string) (song, error) {
 	target := q
 	if !strings.HasPrefix(q, "http://") && !strings.HasPrefix(q, "https://") {
 		target = "ytsearch1:" + q
+	} else if !publicURL(q) {
+		return song{}, errors.New("not a public address")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
@@ -393,6 +423,47 @@ func (mb *musicBots) resolve(q string) (song, error) {
 }
 
 // command runs a "!…" line said in a channel's chat; true when it was one of the bot's.
+// publicURL: an http(s) address whose host is on the internet (not this server's network: no SSRF into the LAN).
+func publicURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return false
+	}
+	ips, err := net.LookupIP(u.Hostname())
+	if err != nil || len(ips) == 0 {
+		return false
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() ||
+			ip.IsMulticast() || cgnat.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// resolving: one search at a time per person (yt-dlp is a process each)
+func (mb *musicBots) startResolve(uid string) bool {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	if mb.busy == nil {
+		mb.busy = map[string]bool{}
+	}
+	if mb.busy[uid] || len(mb.busy) >= 8 {
+		return false
+	}
+	mb.busy[uid] = true
+	return true
+}
+
+func (mb *musicBots) endResolve(uid string) {
+	mb.mu.Lock()
+	delete(mb.busy, uid)
+	mb.mu.Unlock()
+}
+
 func (mb *musicBots) command(ss *session, ch int64, text string) bool {
 	if !mb.enabled() || !strings.HasPrefix(text, "!") {
 		return false
@@ -426,25 +497,44 @@ func (mb *musicBots) op(ss *session, t string, m map[string]any) bool {
 	return true
 }
 
-func (mb *musicBots) run(ss *session, ch int64, cmd, arg string) bool {
+// run: one command; ch is where it was typed (only for the answer), the bot goes to the sender's voice channel.
+func (mb *musicBots) run(ss *session, _ int64, cmd, arg string) bool {
 	h := mb.s.hub
 	mb.mu.Lock()
 	b := mb.bots[ss.comm]
 	mb.mu.Unlock()
 	h.mu.Lock()
 	boss := h.may(ss, pMusic)
-	listeners := 0
+	ch := ss.ch // the sender's voice channel
+	if c := h.chans[ch]; c == nil || c.Comm != ss.comm || c.Kind != "" {
+		ch = 0
+	}
+	listeners, inBot := 0, false
 	if b != nil {
 		for _, o := range h.sessions {
 			if o.ch == b.ss.ch && !o.bot {
 				listeners++
 			}
 		}
+		inBot = ss.ch == b.ss.ch
 	}
 	h.mu.Unlock()
+	// Steering a playing bot is for those who hear it (or may run the music)
+	if b != nil && !boss && !inBot && cmd != "play" && cmd != "p" && cmd != "queue" && cmd != "q" && cmd != "" {
+		ss.refuse("music", "here", "join the bot's channel first")
+		return true
+	}
 	switch cmd {
 	case "play", "p":
 		if arg == "" {
+			return true
+		}
+		if b == nil && ch == 0 {
+			ss.refuse("music", "here", "join a voice channel first")
+			return true
+		}
+		if b != nil && !inBot && !boss {
+			ss.refuse("music", "here", "join the bot's channel first")
 			return true
 		}
 		lim := mb.s.limits().MusicQueue
@@ -457,8 +547,13 @@ func (mb *musicBots) run(ss *session, ch int64, cmd, arg string) bool {
 				return true
 			}
 		}
+		if !mb.startResolve(ss.uid) {
+			ss.refuse("music", "busy", "still looking for the last one")
+			return true
+		}
 		go func() {
 			sg, err := mb.resolve(arg)
+			mb.endResolve(ss.uid)
 			if err != nil {
 				ss.refuse("music", "gone", "nothing found for "+clip(arg, 60))
 				return
@@ -484,12 +579,14 @@ func (mb *musicBots) run(ss *session, ch int64, cmd, arg string) bool {
 		if b == nil {
 			return true
 		}
+		if ch == 0 {
+			ss.refuse("music", "here", "join a voice channel first")
+			return true
+		}
 		h.mu.Lock()
 		old := b.ss.ch
-		if c := h.chans[ch]; c != nil && c.Comm == b.comm {
-			b.ss.ch = ch
-			h.memberChanged(b.ss)
-		}
+		b.ss.ch = ch
+		h.memberChanged(b.ss)
 		h.mu.Unlock()
 		mb.s.voice.sync(old, ch)
 	case "skip", "s", "next":
@@ -499,7 +596,7 @@ func (mb *musicBots) run(ss *session, ch int64, cmd, arg string) bool {
 		b.mu.Lock()
 		mine := b.now != nil && b.now.ByUID == ss.uid
 		b.votes[ss.uid] = true
-		need := (listeners + 1) / 2
+		need := max(1, (listeners+1)/2)
 		got := len(b.votes)
 		c := b.cancel
 		b.mu.Unlock()

@@ -46,7 +46,11 @@ const (
 
 // What each tier allows (the server's own settings can only lower these).
 type limits struct {
-	Tier           string `json:"tier"`
+	Tier           string `json:"tier"` // free, pro1, pro2, pro3
+	Pro            bool   `json:"pro"`
+	MaxUsers       int    `json:"maxUsers"`   // connected at once (0: no limit); a donor's gift adds to it
+	BonusUsers     int    `json:"bonusUsers"` // the gift's part of MaxUsers
+	BonusUntil     int64  `json:"bonusUntil,omitempty"`
 	AudioMax       int    `json:"audioMax"`
 	VideoMax       int    `json:"videoMax"`
 	OwnCommunities int    `json:"ownCommunities"` // per person
@@ -59,9 +63,34 @@ type limits struct {
 }
 
 var (
-	freeLimits = limits{Tier: "free", AudioMax: 4, VideoMax: 5, OwnCommunities: 2, FileMB: 25, ChannelFilesMB: 1024, RecordMin: 30, Soundboard: 12, MusicQueue: 25}
-	proLimits  = limits{Tier: "pro", AudioMax: 6, VideoMax: 8, OwnCommunities: 50, FileMB: 500, ChannelFilesMB: 20480, RecordMin: 0, Soundboard: 120, Cosmetics: true, MusicQueue: 500}
+	freeLimits = limits{Tier: "free", MaxUsers: 30, AudioMax: 4, VideoMax: 5, OwnCommunities: 2, FileMB: 25, ChannelFilesMB: 1024, RecordMin: 30, Soundboard: 12, MusicQueue: 25}
+	proLimits  = limits{Tier: "pro1", Pro: true, MaxUsers: 100, AudioMax: 6, VideoMax: 8, OwnCommunities: 50, FileMB: 500, ChannelFilesMB: 20480, RecordMin: 0, Soundboard: 120, Cosmetics: true, MusicQueue: 500}
+	// Pro tiers differ by how many may be connected at once
+	tierUsers = map[string]int{"pro1": 100, "pro2": 200, "pro3": 0}
 )
+
+const giftUsers = 50 // a donor's gift: this many more places, for a month
+
+// tierName: the licence's tier ("pro" from the first licences is Pro 1).
+func tierName(t string) string {
+	if t == "pro" {
+		return "pro1"
+	}
+	if _, ok := tierUsers[t]; ok {
+		return t
+	}
+	return "free"
+}
+
+func limitsFor(tier string) limits {
+	tier = tierName(tier)
+	if tier == "free" {
+		return freeLimits
+	}
+	l := proLimits
+	l.Tier, l.MaxUsers = tier, tierUsers[tier]
+	return l
+}
 
 type licenseClaims struct {
 	V    int    `json:"v"`
@@ -87,7 +116,11 @@ type licensing struct {
 	token  string
 	claims *licenseClaims
 	status string // "free", "pro", "rebind" (a token for another server), "expired"
+	tier   string // pro1, pro2, pro3 while "pro"
 	last   error
+	// A donor's gift: more places for a while (its own token, gift.tok)
+	gift      string
+	giftUntil int64
 }
 
 func fingerprint(spki []byte) string {
@@ -153,7 +186,10 @@ func newLicensing(s *server) (*licensing, error) {
 	l := &licensing{s: s, key: k, spki: spki, fp: fingerprint(spki), file: filepath.Join(s.cfg.data, "license.tok"),
 		vendor: vendor, url: strings.TrimRight(s.cfg.licenseURL, "/"), http: &http.Client{Timeout: 20 * time.Second}, status: "free"}
 	if b, err := os.ReadFile(l.file); err == nil {
-		l.apply(strings.TrimSpace(string(b)), false)
+		_ = l.apply(strings.TrimSpace(string(b)), false)
+	}
+	if b, err := os.ReadFile(l.giftFile()); err == nil {
+		_ = l.applyGift(strings.TrimSpace(string(b)), false)
 	}
 	log.Printf("licence: %s (server %s)", l.status, l.fp)
 	return l, nil
@@ -213,11 +249,11 @@ func (l *licensing) apply(tok string, save bool) error {
 		status = "expired"
 	case now.Sub(time.UnixMilli(c.Iat)) > licenseGrace:
 		status = "expired"
-	case c.Tier != "pro":
+	case tierName(c.Tier) == "free":
 		status = "free"
 	}
 	l.mu.Lock()
-	l.token, l.claims, l.status = tok, c, status
+	l.token, l.claims, l.status, l.tier = tok, c, status, tierName(c.Tier)
 	l.mu.Unlock()
 	if save {
 		if err := writeFileAtomic(l.file, []byte(tok+"\n"), 0o600); err != nil {
@@ -233,10 +269,30 @@ func (l *licensing) limits() limits {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.status == "pro" {
-		return proLimits
+	return l.limitsLocked()
+}
+
+func (l *licensing) giftFile() string { return filepath.Join(filepath.Dir(l.file), "gift.tok") }
+
+// applyGift takes a donor's gift token (more places for a month).
+func (l *licensing) applyGift(tok string, save bool) error {
+	c, err := l.parse(tok)
+	if err != nil {
+		return err
 	}
-	return freeLimits
+	if c.Tier != "gift" || c.Srv != l.fp {
+		return errors.New("that gift is for another server")
+	}
+	if c.Exp != 0 && time.Now().UnixMilli() > c.Exp {
+		return errors.New("the gift has ended")
+	}
+	l.mu.Lock()
+	l.gift, l.giftUntil = tok, c.Exp
+	l.mu.Unlock()
+	if save {
+		return writeFileAtomic(l.giftFile(), []byte(tok+"\n"), 0o600)
+	}
+	return nil
 }
 
 // welcome: what the app gets to see the tier and check it itself.
@@ -269,10 +325,22 @@ func (l *licensing) statusMsg() map[string]any {
 }
 
 func (l *licensing) limitsLocked() limits {
-	if l.status == "pro" {
-		return proLimits
+	lim := freeLimits
+	if l.status == "pro" && l.claims != nil {
+		// The end and the grace count while running too (a blocked licence service doesn't keep Pro forever)
+		now := time.Now()
+		if (l.claims.Exp != 0 && now.UnixMilli() > l.claims.Exp) || now.Sub(time.UnixMilli(l.claims.Iat)) > licenseGrace {
+			l.status = "expired"
+		}
 	}
-	return freeLimits
+	if l.status == "pro" {
+		lim = limitsFor(l.tier)
+	}
+	if l.gift != "" && time.Now().UnixMilli() < l.giftUntil && lim.MaxUsers != 0 {
+		lim.MaxUsers += giftUsers
+		lim.BonusUsers, lim.BonusUntil = giftUsers, l.giftUntil
+	}
+	return lim
 }
 
 var licenseKeyRe = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
@@ -377,9 +445,32 @@ func (h *hub) licenseChanged() {
 	}
 }
 
+// gift: a donation (a Google Play purchase made in the app by one of the server's owners) gives the server more
+// places for a month; the licence service checks the purchase and signs the gift.
+func (l *licensing) donate(product, purchase string) error {
+	if l.url == "" {
+		return errors.New("no licence service set (SV_LICENSE_URL)")
+	}
+	b, _ := json.Marshal(map[string]any{"server": l.fp, "pub": base64.StdEncoding.EncodeToString(l.spki), "product": product, "purchase": purchase})
+	resp, err := l.http.Post(l.url+"/v1/gift", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("licence service: %w", err)
+	}
+	defer resp.Body.Close()
+	var r struct{ Token, Error string }
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&r)
+	if resp.StatusCode != 200 || r.Token == "" {
+		if r.Error == "" {
+			r.Error = resp.Status
+		}
+		return errors.New(r.Error)
+	}
+	return l.applyGift(r.Token, true)
+}
+
 func (s *server) licenseOp(ss *session, t string, m map[string]any) bool {
 	switch t {
-	case "license", "license-activate", "license-release":
+	case "license", "license-activate", "license-release", "license-gift":
 	default:
 		return false
 	}
@@ -388,6 +479,11 @@ func (s *server) licenseOp(ss *session, t string, m map[string]any) bool {
 	staff := h.staff(ss.uid)
 	h.mu.Unlock()
 	if !staff {
+		ss.refuse(t, "role", "only the server's admins")
+		return true
+	}
+	// Moving the licence (a paid thing) is for the owners only
+	if (t == "license-activate" || t == "license-release") && s.store.role(ss.uid) != roleOwner {
 		ss.refuse(t, "role", "only the server's owners")
 		return true
 	}
@@ -406,6 +502,17 @@ func (s *server) licenseOp(ss *session, t string, m map[string]any) bool {
 	case "license-release":
 		_ = s.lic.release()
 		h.licenseChanged()
+	case "license-gift":
+		go func() {
+			if err := s.lic.donate(clip(str(m, "product"), 100), clip(str(m, "purchase"), 2000)); err != nil {
+				ss.refuse(t, "license", err.Error())
+			} else {
+				log.Printf("licence: a donor's gift of %d places, by %s", giftUsers, ss.uid)
+				h.licenseChanged()
+			}
+			ss.send(s.lic.statusMsg())
+		}()
+		return true
 	}
 	ss.send(s.lic.statusMsg())
 	return true

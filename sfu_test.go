@@ -82,11 +82,14 @@ func (c *client) read(ended chan<- bool) {
 
 func TestPublishAndWatch(t *testing.T) {
 	s, ts := newTestServer(t, nil)
-	alice := newUID(t)
+	// Streams belong to a community: the streamer and the viewer are on the server, in it
+	ac, _ := dialV(t, ts, newKey(t), "Alice", "")
+	alice := ac.uid
+	vc, _ := dialV(t, ts, newKey(t), "Vio", "")
 	room := alice + ":screen"
 	base := "ws" + strings.TrimPrefix(ts.URL, "http") + "/streams?token="
 	wsURL := base + url.QueryEscape(s.makeToken(alice))
-	viewerURL := base + url.QueryEscape(s.makeToken(newUID(t)))
+	viewerURL := base + url.QueryEscape(s.makeToken(vc.uid))
 	status := func(q string) (int, message) {
 		res, err := http.Get(ts.URL + "/streams/status?room=" + url.QueryEscape(room) + q)
 		if err != nil {

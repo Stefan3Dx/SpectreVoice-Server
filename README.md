@@ -30,6 +30,19 @@ Update: `sudo bash install.sh --update`.
 
 At home behind a router: forward these to the server and set `SV_PUBLIC_IP` to your public IP or DDNS name.
 
+## Privacy
+
+Everything stays on this server: accounts are keys made on the devices (no e-mail, no phone number), chat history,
+files and settings are here and nowhere else. What leaves it, and only when you turn it on or use it:
+
+- **Push notifications** (`SV_PUSH_CREDENTIALS`): through Google; by default only "there is a message" and which
+  server, never who or what (`SV_PUSH_CONTENT=false`). On the phone they're off until the person turns them on.
+- **Music bot**: `!play some words` searches YouTube from this server (the words go there); `!play <link>` plays
+  only that link (public addresses only).
+- **Pro licence**: once a day the licence key and this server's key fingerprint go to the licence service. Nothing
+  about the people on it.
+- **Crash reports** from the apps go to the developer only if the person says yes, with addresses and ids taken out.
+
 ## Settings
 
 `/etc/spectrevoice/server.env` (see [deploy/server.env.example](deploy/server.env.example)), then

@@ -74,3 +74,12 @@ func (s *server) channelAudio(c *channel) int {
 	}
 	return clampAudio(max(1, l), s.limits().AudioMax)
 }
+
+// maxUsers: how many may be connected at once: the server's own setting, under its tier (plus a donor's gift).
+func (s *server) maxUsers() int {
+	n := s.cfg.maxUsers
+	if t := s.limits().MaxUsers; t > 0 && t < n {
+		n = t
+	}
+	return n
+}

@@ -53,7 +53,7 @@ func (h *hub) enterLocked(ss *session, comm int64) map[string]any {
 	ss.ch = 0
 	ss.talk = false
 	ss.whispering, ss.whisperTo, ss.whisperCh = false, nil, nil
-	out := map[string]any{"communities": h.myCommunities(ss.uid), "staff": h.staff(ss.uid)}
+	out := map[string]any{"communities": h.myCommunities(ss.uid), "staff": h.staff(ss.uid), "live": h.liveList(comm)}
 	if comm == 0 {
 		ss.role, ss.roles = roleMember, nil
 		out["community"] = nil
@@ -86,10 +86,11 @@ func (h *hub) enterLocked(ss *session, comm int64) map[string]any {
 	out["role"] = ss.role
 	out["space"] = spaceOf(comm)
 	h.broadcast(map[string]any{"t": "member", "m": ss.member()}, func(o *session) bool { return o.comm == comm && o != ss })
+	newCh := ss.ch // read here, under h.mu
 	go func() {
 		h.s.store.setLastCommunity(ss.uid, comm)
 		if oldCh != 0 {
-			h.s.voice.sync(oldCh, ss.ch)
+			h.s.voice.sync(oldCh, newCh)
 		}
 	}()
 	return out
@@ -137,6 +138,11 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 	case "community-join":
 		comm := i64(m, "c")
 		if code := str(m, "invite"); code != "" {
+			// A banned person doesn't use up a place of the invite
+			if in, err := st.invite(code); err == nil && h.s.mods.banned(ss.uid, in.Comm) {
+				ss.refuse(t, "banned", "you are banned from that community")
+				return true
+			}
 			inv, err := h.s.useInvite(code)
 			if err != nil {
 				ss.refuse(t, "invite", err.Error())
@@ -253,17 +259,27 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 				inside = append(inside, o)
 			}
 		}
+		var chs []int64
 		for id, ch := range h.chans {
 			if ch.Comm == comm {
 				delete(h.chans, id)
+				chs = append(chs, id)
 			}
 		}
 		h.forget(comm)
 		h.mu.Unlock()
+		h.s.music.stopIn(comm)
+		h.s.chfiles.dropChannels(chs) // before the store: it reads the channels' rows
 		if err := st.deleteCommunity(comm); err != nil {
 			ss.refuse(t, "server", err.Error())
 			return true
 		}
+		// Nothing of it stays behind for a later community with the same id
+		if h.s.mods != nil {
+			h.s.mods.dropScope([]string{"ban", "mute", "vmute"}, comm)
+			h.s.mods.dropScope([]string{"ch-ban"}, chs...)
+		}
+		h.s.bus.drop(spaceOf(comm))
 		log.Printf("community %d deleted by %s", comm, ss.uid)
 		for _, o := range inside {
 			h.mu.Lock()

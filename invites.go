@@ -20,6 +20,7 @@ import (
 	"html"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -112,8 +113,13 @@ func (s *server) useInvite(code string) (*invite, error) {
 	if !in.valid() {
 		return nil, errors.New("this invite has expired")
 	}
-	if _, err := s.store.db.Exec(`UPDATE invites SET uses=uses+1 WHERE code=?`, code); err != nil {
+	// One step: two people can't both take the last use
+	res, err := s.store.db.Exec(`UPDATE invites SET uses=uses+1 WHERE code=? AND (max_uses=0 OR uses<max_uses)`, code)
+	if err != nil {
 		return nil, err
+	}
+	if k, _ := res.RowsAffected(); k == 0 {
+		return nil, errors.New("this invite has expired")
 	}
 	in.Uses++
 	return in, nil
@@ -129,11 +135,21 @@ func (s *server) inviteURL(base, code string) string {
 
 // requestBase: how the app reached the server (https://sfu.example.com), behind the proxy too.
 func requestBase(r *http.Request) string {
+	// The proxy's headers count only from the proxy (on this machine or the LAN), not from anyone
+	viaProxy := false
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		if ip := net.ParseIP(h); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+			viaProxy = true
+		}
+	}
 	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+	if r.TLS != nil || (viaProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")) {
 		scheme = "https"
 	}
-	host := r.Header.Get("X-Forwarded-Host")
+	host := ""
+	if viaProxy {
+		host = r.Header.Get("X-Forwarded-Host")
+	}
 	if host == "" {
 		host = r.Host
 	}

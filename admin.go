@@ -99,8 +99,8 @@ func (s *server) adminOp(ss *session, t string, _ map[string]any) bool {
 	h.mu.Unlock()
 	switch {
 	case !staff:
-		ss.refuse(t, "role", "only the server's owners")
-	case s.limits().Tier != "pro":
+		ss.refuse(t, "role", "only the server's admins")
+	case !s.limits().Pro:
 		ss.refuse(t, "pro", "the admin panel comes with a Pro licence")
 	default:
 		ss.send(map[string]any{"t": "admin-link", "url": ss.base + "/admin/login?code=" + s.admin.newCode(ss.uid)})
@@ -130,7 +130,7 @@ func (s *server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "Open the admin panel from the app (Server › Admin panel).")
 		return
 	}
-	if s.limits().Tier != "pro" {
+	if !s.limits().Pro {
 		w.WriteHeader(http.StatusPaymentRequired)
 		_, _ = io.WriteString(w, "The admin panel comes with a Pro licence.")
 		return
@@ -225,17 +225,12 @@ func (s *server) adminOverview() map[string]any {
 	return map[string]any{
 		"name": s.cfg.name, "version": version, "uptime": int64(time.Since(started).Seconds()), "license": s.lic.statusMsg(),
 		"now": now, "users": users, "active7d": active7, "messages": msgs, "communities": comms,
-		"disk": dirSize(s.cfg.data), "maxUsers": s.cfg.maxUsers, "music": s.music.enabled(),
+		"disk": dirSize(s.cfg.data), "maxUsers": s.maxUsers(), "music": s.music.enabled(),
 	}
 }
 
 func (s *server) adminCommunities() []map[string]any {
-	rows, err := s.store.db.Query(`SELECT c.id, c.name, c.owner, c.open, c.created,
- (SELECT COUNT(*) FROM memberships m WHERE m.comm=c.id), (SELECT COUNT(*) FROM channels ch WHERE ch.comm=c.id) FROM communities c ORDER BY c.id`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
+	// Count under h.mu before the query: rows hold the only DB connection, and h.mu holders query the DB
 	online := map[int64]int{}
 	s.hub.mu.Lock()
 	for _, ss := range s.hub.sessions {
@@ -244,6 +239,12 @@ func (s *server) adminCommunities() []map[string]any {
 		}
 	}
 	s.hub.mu.Unlock()
+	rows, err := s.store.db.Query(`SELECT c.id, c.name, c.owner, c.open, c.created,
+ (SELECT COUNT(*) FROM memberships m WHERE m.comm=c.id), (SELECT COUNT(*) FROM channels ch WHERE ch.comm=c.id) FROM communities c ORDER BY c.id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
 		var id, created, members, chans int64

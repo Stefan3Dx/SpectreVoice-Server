@@ -13,6 +13,7 @@ package main
 
 import (
 	"database/sql"
+	"sync"
 
 	"fmt"
 	"io"
@@ -40,6 +41,8 @@ type channelFiles struct {
 	s   *server
 	dir string
 	db  *sql.DB
+	// upMu: checking the space left and taking it is one step (parallel uploads can't each see it all free)
+	upMu sync.Mutex
 }
 
 func newChannelFiles(s *server, dir string) (*channelFiles, error) {
@@ -220,6 +223,26 @@ func (cf *channelFiles) removeTree(id int64) {
 	}
 }
 
+// dropBy deletes the files uid put in channels (their account is wiped); how many.
+func (cf *channelFiles) dropBy(uid string) int {
+	rows, err := cf.db.Query(`SELECT id FROM chfiles WHERE by=? AND dir=0`, uid)
+	if err != nil {
+		return 0
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close() // before removeTree: one DB connection
+	for _, id := range ids {
+		cf.removeTree(id)
+	}
+	return len(ids)
+}
+
 // dropChannels: deleted channels take their files with them.
 func (cf *channelFiles) dropChannels(chs []int64) {
 	if cf == nil {
@@ -273,12 +296,22 @@ func (cf *channelFiles) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too big", http.StatusRequestEntityTooLarge)
 		return
 	}
+	cf.upMu.Lock()
 	left := lim.ChannelFilesMB<<20 - cf.used(comm)
-	if left <= 0 || r.ContentLength > left {
+	var items int
+	_ = cf.db.QueryRow(`SELECT COUNT(*) FROM chfiles WHERE ch=?`, ch).Scan(&items)
+	if left <= 0 || r.ContentLength > left || items >= 5000 {
+		cf.upMu.Unlock()
 		http.Error(w, "the community's space for files is full", http.StatusInsufficientStorage)
 		return
 	}
-	res, err := cf.db.Exec(`INSERT INTO chfiles(ch,comm,parent,name,size,by,at) VALUES(?,?,?,?,0,?,?)`, ch, comm, folder, name, uid, time.Now().UnixMilli())
+	// The row holds the most it may become until the upload ends (then its real size)
+	reserve := min(maxFile, left)
+	if r.ContentLength > 0 {
+		reserve = min(reserve, r.ContentLength)
+	}
+	res, err := cf.db.Exec(`INSERT INTO chfiles(ch,comm,parent,name,size,by,at) VALUES(?,?,?,?,?,?,?)`, ch, comm, folder, name, reserve, uid, time.Now().UnixMilli())
+	cf.upMu.Unlock()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -291,7 +324,7 @@ func (cf *channelFiles) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	n, err := io.Copy(f, http.MaxBytesReader(w, r.Body, min(maxFile, left)))
+	n, err := io.Copy(f, http.MaxBytesReader(w, r.Body, reserve))
 	f.Close()
 	if err != nil {
 		cf.removeTree(id)

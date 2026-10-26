@@ -158,6 +158,14 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				c.send(message{Type: "error", Message: "you may only stream as yourself"})
 				return
 			}
+			var comm int64
+			if s.hub != nil {
+				var may bool
+				if comm, may = s.hub.streamComm(uid); !may {
+					c.send(message{Type: "error", Message: "not allowed to stream here"})
+					return
+				}
+			}
 			rm, err = s.openRoom(m.Room, c)
 			if err != nil {
 				rm = nil
@@ -173,7 +181,7 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if s.hub != nil {
-				s.hub.setLive(rm.name, uid, clip(m.Title, 80), true)
+				s.hub.setLive(rm.name, uid, clip(m.Title, 80), comm, true)
 			}
 		case "subscribe":
 			if pc != nil {
@@ -183,7 +191,7 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 			s.mu.Lock()
 			rm = s.rooms[m.Room]
 			s.mu.Unlock()
-			if rm == nil {
+			if rm == nil || (s.hub != nil && !s.hub.mayWatch(uid, m.Room)) {
 				c.send(message{Type: "ended"})
 				return
 			}
@@ -263,7 +271,7 @@ func (s *server) endRoom(rm *room, only *webrtc.PeerConnection) {
 	}
 	s.mu.Unlock()
 	if gone && s.hub != nil {
-		s.hub.setLive(rm.name, "", "", false)
+		s.hub.setLive(rm.name, "", "", 0, false)
 	}
 	for sub := range subs {
 		sub.c.send(message{Type: "ended"})

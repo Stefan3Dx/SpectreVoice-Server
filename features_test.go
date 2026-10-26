@@ -59,7 +59,7 @@ func TestLicenseActivation(t *testing.T) {
 	}
 	ana.send(map[string]any{"t": "license-activate", "key": "SV-GOOD-KEY"})
 	tier := ana.wait(isT("tier"))
-	if tier["limits"].(map[string]any)["tier"] != "pro" || tier["token"] == nil {
+	if tier["limits"].(map[string]any)["tier"] != "pro1" || tier["limits"].(map[string]any)["maxUsers"].(float64) != 100 || tier["token"] == nil {
 		t.Fatal(tier)
 	}
 	// The app's own check: the server signs its nonce with the key the token names
@@ -121,6 +121,20 @@ func TestChannelFeatures(t *testing.T) {
 	bob.send(map[string]any{"t": "join", "ch": sp["id"]})
 	if e := bob.wait(isT("error")); e["op"] != "join" {
 		t.Fatal(e)
+	}
+	// A text channel: everyone reads and writes it, nobody joins it, its history stays
+	ana.send(map[string]any{"t": "ch-save", "name": "anunturi", "kind": "text", "password": "x"})
+	tc := ana.wait(func(m map[string]any) bool { return m["t"] == "channel" && m["c"].(map[string]any)["kind"] == "text" })["c"].(map[string]any)
+	if tc["locked"] == true {
+		t.Fatal(tc)
+	}
+	bob.send(map[string]any{"t": "join", "ch": tc["id"]})
+	if e := bob.wait(isT("error")); e["op"] != "join" {
+		t.Fatal(e)
+	}
+	bob.send(map[string]any{"t": "say", "to": "c:" + itoa(int(tc["id"].(float64))), "text": "în text"})
+	if msg := ana.wait(isT("msg"))["m"].(map[string]any); msg["text"] != "în text" {
+		t.Fatal(msg)
 	}
 	// Kicked out of a channel: back to the default one
 	bob.send(map[string]any{"t": "join", "ch": afk})

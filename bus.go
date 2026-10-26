@@ -94,6 +94,7 @@ type busClient struct {
 	ws      *websocket.Conn
 	uid     string
 	admin   bool
+	staff   bool        // a server admin (not just a community manager): server-wide wipe and reports
 	authed  bool        // proved it is uid (always, now: the token says so)
 	out     chan []byte // waiting to be written by writer, so one slow client doesn't hold up the others
 	tokens  float64     // messages it may still send now (the read loop's rate limit)
@@ -213,6 +214,7 @@ type bus struct {
 	conns     sync.WaitGroup // connections still being handled (tests wait for their last save)
 	playV     *playVerifier  // Google Play donations (play.go); nil: not taken
 	store     *store         // the server's database (account deletion wipes chat too)
+	chfiles   *channelFiles  // and the files they put in channels
 	reports   *reports       // reports and deletion requests (moderation.go)
 }
 
@@ -311,6 +313,27 @@ func (b *bus) leave(sp *busSpace, c *busClient) {
 		if err := writeFileAtomic(spaceFile(b.dir, sp.name), data, 0o644); err != nil {
 			log.Printf("bus: !!! space %q not saved: %v", sp.name, err)
 		}
+	}
+}
+
+// drop forgets a space (its community was deleted): its file goes and those in it are let go.
+func (b *bus) drop(name string) {
+	if b == nil {
+		return
+	}
+	b.fileMu.Lock()
+	defer b.fileMu.Unlock()
+	b.mu.Lock()
+	if sp := b.spaces[name]; sp != nil {
+		delete(b.spaces, name)
+		sp.dirty = false
+		for c := range sp.clients {
+			_ = c.ws.Close()
+		}
+	}
+	b.mu.Unlock()
+	if b.dir != "" {
+		_ = os.Remove(spaceFile(b.dir, name))
 	}
 }
 
@@ -490,7 +513,8 @@ func (s *server) handleBus(w http.ResponseWriter, r *http.Request) {
 		_ = ws.Close()
 		return
 	}
-	c.admin = s.store.role(uid).atLeast(roleAdmin)
+	c.staff = s.store.role(uid).atLeast(roleAdmin)
+	c.admin = c.staff
 	if comm := commOfSpace(name); comm != 0 && s.hub != nil {
 		s.hub.mu.Lock()
 		c.admin = c.admin || s.hub.permsOf(comm, uid)&pManageCommunity != 0

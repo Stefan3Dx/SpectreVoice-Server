@@ -55,7 +55,8 @@ yesno() { # yesno VAR "question" 1|0
 }
 setenv() { # setenv KEY VALUE (in server.env)
   local k=$1 v=$2
-  if grep -qE "^#?\s*${k}=" "$ENVF"; then sed -i -E "s|^#?\s*${k}=.*|${k}=${v//|/\\|}|" "$ENVF"; else echo "${k}=${v}" >>"$ENVF"; fi
+  local e=${v//\\/\\\\}; e=${e//|/\\|}; e=${e//&/\\&} # sed's special characters in the value
+  if grep -qE "^#?\s*${k}=" "$ENVF"; then sed -i -E "s|^#?\s*${k}=.*|${k}=${e}|" "$ENVF"; else printf '%s=%s\n' "$k" "$v" >>"$ENVF"; fi
 }
 
 [[ $EUID -eq 0 ]] || { echo "Run as root: sudo bash install.sh"; exit 1; }
@@ -75,6 +76,8 @@ LANIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="s
 FIRST=0
 [[ -f $ENVF ]] || FIRST=1
 [[ $UPDATE -eq 1 && $FIRST -eq 1 ]] && warn "Nothing installed yet: installing with the defaults"
+# An update keeps what was chosen: the music bot only if it's on
+if [[ $FIRST -eq 0 ]]; then if grep -q "^SV_MUSIC=true" "$ENVF"; then MUSIC=1; else MUSIC=0; fi; fi
 if [[ $FIRST -eq 1 ]]; then
   ask NAME "Server name" "Spectre Voice"
   ask DOMAIN "Domain for HTTPS (empty: LAN only, e.g. voice.example.com)" ""
@@ -91,8 +94,11 @@ if [[ $FIRST -eq 1 ]]; then
 fi
 
 # ---- The program ----
+TAG=main # the service file comes from the same release as the program
 install_binary() {
   [[ $SOURCE -eq 1 ]] && return 1
+  TAG=$(curl -fsSI "https://github.com/${REPO}/releases/latest" 2>/dev/null | awk -F/ 'tolower($1) ~ /^location:/ {print $NF}' | tr -d '\r' || true)
+  [[ -n "$TAG" ]] || TAG=main
   local url="https://github.com/${REPO}/releases/latest/download/spectrevoice-server-linux-${ARCH}.tar.gz"
   local tmp; tmp=$(mktemp -d)
   if curl -fsSL "$url" -o "$tmp/s.tgz" && curl -fsSL "https://github.com/${REPO}/releases/latest/download/SHA256SUMS" -o "$tmp/SHA256SUMS"; then
@@ -137,18 +143,26 @@ if [[ $FIRST -eq 1 ]]; then
   setenv SV_UDP_MIN "${UDP%-*}"
   setenv SV_UDP_MAX "${UDP#*-}"
   setenv SV_MUSIC "$([[ $MUSIC -eq 1 ]] && echo true || echo false)"
-  [[ -n "$DOMAIN" ]] && setenv SV_INVITE_BASE "https://${DOMAIN}/i/"
+  if [[ -n "$DOMAIN" ]]; then
+    setenv SV_INVITE_BASE "https://${DOMAIN}/i/"
+    setenv SV_LISTEN "127.0.0.1:7880" # from outside only through Caddy (HTTPS)
+  fi
 fi
 unit=/etc/systemd/system/spectrevoice.service
 if [[ -f "$HERE/deploy/spectrevoice.service" ]]; then cp "$HERE/deploy/spectrevoice.service" "$unit"
-else curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/deploy/spectrevoice.service" -o "$unit"; fi
+else curl -fsSL "https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/spectrevoice.service" -o "$unit"; fi
 
 # ---- Music bot ----
-if [[ $MUSIC -eq 1 ]] || grep -q "^SV_MUSIC=true" "$ENVF"; then
+if [[ $MUSIC -eq 1 ]]; then
   say "Music bot: ffmpeg and yt-dlp"
   apt-get install -y -qq ffmpeg >/dev/null
   ytarch=$([[ $ARCH == arm64 ]] && echo yt-dlp_linux_aarch64 || echo yt-dlp_linux)
   curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${ytarch}" -o /usr/local/bin/yt-dlp && chmod 755 /usr/local/bin/yt-dlp
+  # YouTube breaks old yt-dlp within weeks: keep it new (daily)
+  printf '[Unit]\nDescription=Update yt-dlp (Spectre Voice music bot)\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/yt-dlp -U\n' >/etc/systemd/system/spectrevoice-ytdlp.service
+  printf '[Unit]\nDescription=Update yt-dlp daily\n[Timer]\nOnCalendar=daily\nRandomizedDelaySec=6h\nPersistent=true\n[Install]\nWantedBy=timers.target\n' >/etc/systemd/system/spectrevoice-ytdlp.timer
+  systemctl daemon-reload
+  systemctl enable --now spectrevoice-ytdlp.timer >/dev/null 2>&1 || true
 fi
 
 # ---- HTTPS (Caddy) ----
@@ -160,10 +174,17 @@ if [[ $FIRST -eq 1 && -n "$DOMAIN" ]]; then
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' >/etc/apt/sources.list.d/caddy-stable.list
     apt-get update -qq && apt-get install -y -qq caddy >/dev/null
   fi
-  {
-    [[ -n "$EMAIL" ]] && printf '{\n\temail %s\n}\n\n' "$EMAIL"
-    printf '%s {\n\tencode zstd gzip\n\treverse_proxy 127.0.0.1:7880\n}\n' "$DOMAIN"
-  } >/etc/caddy/Caddyfile
+  # Our site in its own file; an existing Caddyfile (other sites) is kept and only imports it
+  printf '%s {\n\tencode zstd gzip\n\treverse_proxy 127.0.0.1:7880\n}\n' "$DOMAIN" >/etc/caddy/spectrevoice.caddy
+  if [[ ! -s /etc/caddy/Caddyfile ]] || grep -q "The Caddyfile is an easy way" /etc/caddy/Caddyfile; then
+    {
+      [[ -n "$EMAIL" ]] && printf '{\n\temail %s\n}\n\n' "$EMAIL"
+      echo "import /etc/caddy/spectrevoice.caddy"
+    } >/etc/caddy/Caddyfile
+  elif ! grep -q "spectrevoice.caddy" /etc/caddy/Caddyfile; then
+    cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak.$(date +%s)"
+    printf '\nimport /etc/caddy/spectrevoice.caddy\n' >>/etc/caddy/Caddyfile
+  fi
   systemctl enable --now caddy >/dev/null 2>&1 || true
   systemctl reload caddy 2>/dev/null || systemctl restart caddy
 fi
@@ -184,8 +205,25 @@ max-port=49352
 no-cli
 no-tlsv1
 no-tlsv1_1
-external-ip=${PUBLIC}
+no-multicast-peers
+# Relay only to the internet, never into this network
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=198.18.0.0-198.19.255.255
+denied-peer-ip=224.0.0.0-255.255.255.255
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 EOF
+  # external-ip takes an address, not a name (DDNS): resolve it
+  extip=$PUBLIC
+  [[ $extip =~ ^[0-9.]+$ ]] || extip=$(getent ahostsv4 "$PUBLIC" 2>/dev/null | awk 'NR==1{print $1}')
+  if [[ -n "$extip" ]]; then echo "external-ip=${extip}" >>/etc/turnserver.conf; fi
   sed -i 's/^#\?TURNSERVER_ENABLED=.*/TURNSERVER_ENABLED=1/' /etc/default/coturn 2>/dev/null || true
   systemctl enable --now coturn >/dev/null 2>&1 || true
   systemctl restart coturn || true

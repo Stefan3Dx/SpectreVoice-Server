@@ -42,24 +42,27 @@ var (
 )
 
 type session struct {
-	sid    int
-	uid    string
-	name   string
-	role   role    // the simple role in its community (for the apps that show only that)
-	roles  []int64 // its roles in its community
-	client string
-	comm   int64  // the community it's in now (0: none yet)
-	base   string // how the app reached the server (https://sfu.example.com), for links
-	ch     int64
-	mic    bool // muted microphone
-	snd    bool // muted sound (deafened)
-	away   bool
-	talk   bool
-	ws     *websocket.Conn
-	out    chan []byte
-	done   chan struct{}
-	once   sync.Once
-	voice  *voicePeer
+	// relay budget (bytes it may still pass on to others; only its own read loop touches these)
+	relayLeft float64
+	relayAt   time.Time
+	sid       int
+	uid       string
+	name      string
+	role      role    // the simple role in its community (for the apps that show only that)
+	roles     []int64 // its roles in its community
+	client    string
+	comm      int64  // the community it's in now (0: none yet)
+	base      string // how the app reached the server (https://sfu.example.com), for links
+	ch        int64
+	mic       bool // muted microphone
+	snd       bool // muted sound (deafened)
+	away      bool
+	talk      bool
+	ws        *websocket.Conn
+	out       chan []byte
+	done      chan struct{}
+	once      sync.Once
+	voice     *voicePeer
 	// Whisper: while on, the voice goes only to these sessions and channels (not to one's own channel)
 	whisperTo  []int
 	whisperCh  []int64
@@ -104,6 +107,7 @@ type liveStream struct {
 	UID   string `json:"uid"`
 	Title string `json:"title,omitempty"`
 	Since int64  `json:"since"`
+	Comm  int64  `json:"comm,omitempty"` // only that community is told (and may watch)
 }
 
 func (ss *session) member() member {
@@ -233,6 +237,9 @@ func (h *hub) memberChanged(ss *session) {
 func (h *hub) defaultChannel(comm int64) int64 {
 	var first int64
 	for _, c := range h.sortedChannels(comm) {
+		if c.Kind != "" { // text and spacers: nobody lands in them
+			continue
+		}
 		if c.Default {
 			return c.ID
 		}
@@ -345,7 +352,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		nonce: clip(hello.Nonce, 100), since: time.Now().UnixMilli()}
 	comm := h.pickCommunity(uid, hello.Comm)
 	h.mu.Lock()
-	if len(h.sessions) >= h.s.cfg.maxUsers && !rl.atLeast(roleAdmin) {
+	if len(h.sessions) >= h.s.maxUsers() && !rl.atLeast(roleAdmin) {
 		h.mu.Unlock()
 		fail("full", "the server is full")
 		return
@@ -357,7 +364,6 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		"t": "welcome", "sid": ss.sid, "uid": uid, "token": h.s.makeToken(uid),
 		"server": map[string]any{"name": h.s.cfg.name, "motd": h.s.cfg.motd, "version": version, "ice": h.s.publicICE(), "create": h.s.cfg.createCommunities,
 			"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil},
-		"live": h.liveList(),
 		"tier": h.s.lic.welcome(hello.Nonce),
 	}
 	for k, v := range h.enterLocked(ss, comm) {
@@ -511,9 +517,9 @@ func (h *hub) join(ss *session, ch int64, pass string) {
 	case ss.ch == ch:
 		h.mu.Unlock()
 		return
-	case c.Kind == "spacer":
+	case c.Kind == "spacer" || c.Kind == "text":
 		h.mu.Unlock()
-		ss.refuse("join", "bad", "that's a spacer, not a channel")
+		ss.refuse("join", "bad", "not a voice channel")
 		return
 	case !h.may(ss, pBypassLocks) && !c.passOK(pass):
 		h.mu.Unlock()
@@ -546,7 +552,7 @@ func (h *hub) move(ss *session, sid int, ch int64) {
 		return
 	}
 	o, c := h.sessions[sid], h.chans[ch]
-	if o == nil || c == nil || o.ch == ch || o.comm != ss.comm || c.Comm != ss.comm {
+	if o == nil || c == nil || o.ch == ch || o.comm != ss.comm || c.Comm != ss.comm || c.Kind != "" {
 		h.mu.Unlock()
 		return
 	}
@@ -557,7 +563,7 @@ func (h *hub) move(ss *session, sid int, ch int64) {
 	}
 	old := o.ch
 	o.ch = ch
-	o.talk = false
+	o.talk, o.talker = false, false
 	h.memberChanged(o)
 	h.mu.Unlock()
 	o.send(map[string]any{"t": "moved", "ch": ch, "by": ss.name})
@@ -627,6 +633,15 @@ func (h *hub) say(ss *session, t, to string, m map[string]any) {
 			ss.refuse(t, "full", "too long")
 			return
 		}
+		// A byte budget (64 KB/s, bursts of 256 KB): one app can't flood a whole community off the server
+		now := time.Now()
+		ss.relayLeft = min(256<<10, ss.relayLeft+now.Sub(ss.relayAt).Seconds()*(64<<10))
+		ss.relayAt = now
+		if ss.relayLeft < float64(len(raw)) {
+			ss.refuse(t, "slow", "too much at once")
+			return
+		}
+		ss.relayLeft -= float64(len(raw))
 		h.mu.Lock()
 		h.deliver(map[string]any{"t": "relay", "to": conv, "from": ss.uid, "sid": ss.sid, "name": ss.name, "data": json.RawMessage(raw)}, ch, ss.uid, other)
 		h.mu.Unlock()
@@ -810,13 +825,13 @@ func (h *hub) saveChannel(ss *session, m map[string]any) {
 		}
 		c.Pic = clip(v, 400)
 	}
-	if v, ok := m["kind"].(string); ok && (v == "" || v == "spacer") {
+	if v, ok := m["kind"].(string); ok && (v == "" || v == "spacer" || v == "text") {
 		c.Kind = v
 	}
 	if v, ok := boolOf(m, "moderated"); ok {
 		c.Moderated = v
 	}
-	if c.Parent != 0 && (h.chans[c.Parent] == nil || h.chans[c.Parent].Comm != c.Comm || c.Parent == c.ID || h.isUnder(c.Parent, c.ID)) {
+	if c.Parent != 0 && (h.chans[c.Parent] == nil || h.chans[c.Parent].Comm != c.Comm || c.Parent == c.ID || (c.ID != 0 && h.isUnder(c.Parent, c.ID))) {
 		h.mu.Unlock()
 		ss.refuse("ch-save", "bad", "bad parent")
 		return
@@ -835,6 +850,10 @@ func (h *hub) saveChannel(ss *session, m map[string]any) {
 		}
 		c.pass = hp
 	}
+	if c.Kind == "text" || c.Kind == "spacer" {
+		// Text channels are read by the whole community (their history stays on the server); nobody lands in them
+		c.pass, c.Default, c.MaxUsers, c.Moderated = "", false, 0, false
+	}
 	c.HasPass = c.pass != ""
 	if err := h.s.store.saveChannel(&c); err != nil {
 		ss.refuse("ch-save", "server", err.Error())
@@ -851,10 +870,21 @@ func (h *hub) saveChannel(ss *session, m map[string]any) {
 	cp := c
 	h.chans[c.ID] = &cp
 	h.toComm(c.Comm, map[string]any{"t": "channel", "c": cp})
+	// Turned into a text channel or a spacer: who was talking in it goes to the default channel
+	var def int64
+	if c.Kind != "" {
+		def = h.defaultChannel(c.Comm)
+		for _, o := range h.sessions {
+			if o.ch == c.ID && o.comm == c.Comm {
+				o.ch, o.talk, o.talker = def, false, false
+				h.memberChanged(o)
+			}
+		}
+	}
 	h.mu.Unlock()
 	log.Printf("channel %d %q saved by %s", c.ID, c.Name, ss.uid)
 	if id != 0 {
-		h.s.voice.sync(c.ID) // moderated or not changes who's heard
+		h.s.voice.sync(c.ID, def) // moderated or not changes who's heard
 	}
 }
 
@@ -910,12 +940,15 @@ func (h *hub) deleteChannel(ss *session, id int64) {
 		}
 	}
 	h.s.chfiles.dropChannels(gone)
+	if h.s.mods != nil {
+		h.s.mods.dropScope([]string{"ch-ban"}, gone...)
+	}
 	h.mu.Lock()
 	var moved []*session
 	for _, o := range h.sessions {
 		if isGone[o.ch] {
 			o.ch = def
-			o.talk = false
+			o.talk, o.talker = false, false
 			moved = append(moved, o)
 		}
 	}
@@ -956,30 +989,56 @@ func (h *hub) refreshRoles(comm int64) {
 		o.send(map[string]any{"t": "role", "role": nr, "roles": ids, "perms": permList(h.permsOf(comm, o.uid)), "staff": h.staff(o.uid)})
 		h.memberChanged(o)
 	}
+	if h.s.voice != nil {
+		go h.s.voice.syncAll() // the speak permission may have changed (h.mu is held here)
+	}
 }
 
-// setLive records a stream starting or ending and tells everyone.
-func (h *hub) setLive(room, uid, title string, on bool) {
+// setLive records a stream starting or ending and tells its community.
+func (h *hub) setLive(room, uid, title string, comm int64, on bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if on {
-		ls := liveStream{Room: room, UID: uid, Title: title, Since: time.Now().UnixMilli()}
+		ls := liveStream{Room: room, UID: uid, Title: title, Since: time.Now().UnixMilli(), Comm: comm}
 		h.live[room] = ls
-		h.broadcast(map[string]any{"t": "live", "on": true, "s": ls}, nil)
+		h.toComm(comm, map[string]any{"t": "live", "on": true, "s": ls})
 		return
 	}
-	if _, ok := h.live[room]; !ok {
+	ls, ok := h.live[room]
+	if !ok {
 		return
 	}
 	delete(h.live, room)
-	h.broadcast(map[string]any{"t": "live", "on": false, "s": liveStream{Room: room}}, nil)
+	h.toComm(ls.Comm, map[string]any{"t": "live", "on": false, "s": liveStream{Room: room}})
 }
 
-// liveList: the streams now, oldest first; h.mu held.
-func (h *hub) liveList() []liveStream {
+// streamComm: the community uid streams in (where its app is now), if it may stream there.
+func (h *hub) streamComm(uid string) (int64, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, o := range h.sessions {
+		if o.uid == uid && !o.bot && o.comm != 0 {
+			return o.comm, h.may(o, pStream)
+		}
+	}
+	return 0, false
+}
+
+// mayWatch: uid may watch room (a member of the stream's community).
+func (h *hub) mayWatch(uid, room string) bool {
+	h.mu.Lock()
+	ls, ok := h.live[room]
+	h.mu.Unlock()
+	return ok && (ls.Comm == 0 || h.s.store.isMember(ls.Comm, uid))
+}
+
+// liveList: comm's streams now, oldest first; h.mu held.
+func (h *hub) liveList(comm int64) []liveStream {
 	out := make([]liveStream, 0, len(h.live))
 	for _, l := range h.live {
-		out = append(out, l)
+		if l.Comm == comm {
+			out = append(out, l)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Since < out[j].Since })
 	return out

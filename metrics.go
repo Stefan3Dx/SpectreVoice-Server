@@ -82,10 +82,6 @@ func (m *metrics) loop() {
 // take reads everything now and gives the minute's sample.
 func (m *metrics) take() sample {
 	now := time.Now()
-	secs := now.Sub(m.lastAt).Seconds()
-	if secs <= 0 {
-		secs = 1
-	}
 	sm := sample{T: now.UnixMilli(), Goroutines: runtime.NumGoroutine()}
 	h := m.s.hub
 	h.mu.Lock()
@@ -94,7 +90,7 @@ func (m *metrics) take() sample {
 			sm.Online++
 		}
 	}
-	sm.Streams = len(h.liveList())
+	sm.Streams = len(h.live)
 	h.mu.Unlock()
 	sm.Voice = m.s.voice.count()
 	m.s.mu.Lock()
@@ -112,6 +108,10 @@ func (m *metrics) take() sample {
 	cpu := procCPU()
 	rx, tx := netBytes()
 	m.mu.Lock()
+	secs := now.Sub(m.lastAt).Seconds() // under m.mu: the admin panel may take one at the same time
+	if secs <= 0 {
+		secs = 1
+	}
 	sm.Messages, sm.Joins = msgs-m.lastMsgs, joins-m.lastJoins
 	sm.VoiceKbps = float64(vin-m.lastVoice) * 8 / 1000 / secs
 	if rx >= m.lastRx && tx >= m.lastTx {

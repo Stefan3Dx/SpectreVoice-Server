@@ -254,7 +254,7 @@ func (h *hub) pushFor(ss *session, msg *chatMsg, ch int64, other string) {
 		on := h.online(other)
 		h.mu.Unlock()
 		if !on {
-			p.notify(other, map[string]string{"kind": "dm", "title": ss.name, "body": text, "from": ss.uid, "conv": "u:" + ss.uid})
+			p.notify(other, h.s.pushData(map[string]string{"kind": "dm", "title": msg.Name, "body": text, "from": ss.uid, "conv": "u:" + ss.uid}))
 		}
 		return
 	}
@@ -269,6 +269,10 @@ func (h *hub) pushFor(ss *session, msg *chatMsg, ch int64, other string) {
 		comm, cname = -ch, "general"
 	} else if c := h.chans[ch]; c != nil {
 		comm, cname = c.Comm, c.Name
+		if c.pass != "" {
+			h.mu.Unlock()
+			return // a locked channel: its words don't leave it, not even as a notification
+		}
 	}
 	everyone := h.may(ss, pMentionAll)
 	h.mu.Unlock()
@@ -303,6 +307,24 @@ func (h *hub) pushFor(ss *session, msg *chatMsg, ch int64, other string) {
 	}
 	h.mu.Unlock()
 	for u := range want {
-		p.notify(u, map[string]string{"kind": "mention", "title": ss.name + " · #" + cname, "body": text, "from": ss.uid, "conv": map[bool]string{true: fmt.Sprintf("g:%d", comm), false: fmt.Sprintf("c:%d", ch)}[ch < 0], "comm": fmt.Sprint(comm)})
+		p.notify(u, h.s.pushData(map[string]string{"kind": "mention", "title": msg.Name + " · #" + cname, "body": text, "from": ss.uid, "conv": map[bool]string{true: fmt.Sprintf("g:%d", comm), false: fmt.Sprintf("c:%d", ch)}[ch < 0], "comm": fmt.Sprint(comm)}))
 	}
+}
+
+// pushData: what goes through Google to the phone. By default nothing of the message (who, what): only that there
+// is one, and where, so the app opens it from this server. SV_PUSH_CONTENT=true sends the name and text too.
+func (s *server) pushData(d map[string]string) map[string]string {
+	out := d
+	if !s.cfg.pushContent {
+		if d["kind"] == "dm" {
+			out = map[string]string{"kind": "dm"} // not even who wrote (conv names them): the app asks its server
+		} else {
+			out = map[string]string{"kind": d["kind"], "conv": d["conv"], "comm": d["comm"]}
+		}
+	}
+	// Which server it's from (the app may know several): the host the invites name
+	if u, err := url.Parse(s.cfg.inviteBase); err == nil && u.Host != "" {
+		out["srv"] = u.Host
+	}
+	return out
 }

@@ -48,7 +48,7 @@ func TestCommunitiesRolesInvites(t *testing.T) {
 	ana.send(map[string]any{"t": "community-create", "name": "Clanul Ana", "open": false})
 	cm := ana.wait(isT("community"))
 	mine := commID(cm)
-	if mine == 0 || !hasPerm(cm, "administrator") || len(cm["channels"].([]any)) != 2 {
+	if mine == 0 || !hasPerm(cm, "administrator") || len(cm["channels"].([]any)) != 3 {
 		t.Fatal(cm)
 	}
 	// Bob, still in the first community, doesn't see her (nor she him, there)
@@ -231,6 +231,7 @@ func TestPushForOffline(t *testing.T) {
 	_ = os.WriteFile(credFile, cred, 0o600)
 
 	s, hs := newTestServer(t, func(c *config) { c.pushCreds = credFile })
+	s.cfg.pushContent = false
 	s.push.api = fake.URL
 	// Bob's phone registers, then goes away
 	bobKey := newKey(t)
