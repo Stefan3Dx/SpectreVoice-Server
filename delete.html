@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spectre Voice – Ștergerea datelor</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f7f7fa; --fg: #1d1d24; --muted: #5d5d6b; --line: #dcdce4; --card: #fff; --accent: #7c5cff; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111117; --fg: #ececf2; --muted: #a0a0b0; --line: #2c2c38; --card: #1a1a22; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 8px; }
+  h2 { font-size: 1.1rem; margin: 28px 0 6px; }
+  .muted { color: var(--muted); font-size: .93rem; }
+  form { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: grid; gap: 12px; margin-top: 16px; }
+  label { display: grid; gap: 4px; font-weight: 600; font-size: .95rem; }
+  input { font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  button { font: inherit; font-weight: 700; padding: 11px 16px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; cursor: pointer; }
+  .ok { background: #16a34a22; border: 1px solid #16a34a66; padding: 12px; border-radius: 10px; }
+  .err { background: #dc262622; border: 1px solid #dc262666; padding: 12px; border-radius: 10px; }
+  ul { padding-left: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+<h1>Ștergerea datelor Spectre Voice</h1>
+<p class="muted">Data deletion request · English below</p>
+{{MESSAGE}}
+<h2>Cel mai rapid: din aplicație</h2>
+<p>Setări › Identitate › <b>Șterge datele mele de pe server</b>. Ștergerea se face pe loc.</p>
+<h2>Sau cu formularul de mai jos</h2>
+<p>Ai nevoie de identificatorul tău (uid), din aplicație: Setări › Identitate › Copiază uid-ul.</p>
+<form method="post" action="/delete">
+  <label>Identificator (uid)<input name="uid" required maxlength="128" autocomplete="off" placeholder="ex. AbCdEf…"></label>
+  <label>Porecla <span class="muted">(opțional)</span><input name="name" maxlength="40"></label>
+  <label>Email sau alt contact <span class="muted">(opțional, ca să-ți confirmăm)</span><input name="contact" maxlength="120"></label>
+  <button type="submit">Trimite cererea</button>
+</form>
+<h2>Ce se șterge</h2>
+<ul>
+  <li>profilul (bio, culori, poza de profil de pe server, insignele cumpărate cu Lei), intrarea, portofelul de Lei și scorurile;</li>
+  <li>mesajele tale din chat (pe canale și private) și conversațiile private cu tine;</li>
+  <li>ce ai scris în activitatea serverului și sunetele partajate de tine; răspunsurile tale la planuri și sondaje.</li>
+</ul>
+<h2>Ce se păstrează</h2>
+<ul>
+  <li>donațiile (sunt plăți): rămân suma și data, fără numele tău;</li>
+  <li>fișierele trimise în chat se șterg singure după cel mult 30 de zile;</li>
+  <li>banările și mute-urile primite (cu motivul), cât sunt active.</li>
+</ul>
+<p class="muted">Ștergem în cel mult 30 de zile de la cerere. Dezinstalarea aplicației șterge de pe telefon identitatea și setările.</p>
+<hr>
+<h2>English</h2>
+<p>Fastest: in the app, Settings › Identity › <b>Delete my data from the server</b> (immediate). Or send the form above with your uid (Settings › Identity › Copy uid). Deleted: profile, chat messages, intro, Lei purse, scores, your activity posts and shared sounds, your plan and poll answers. Kept: donations (payments) without your name; chat files expire within 30 days. Requests are handled within 30 days.</p>
+</main>
+</body>
+</html>

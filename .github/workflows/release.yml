@@ -1,0 +1,39 @@
+name: Release
+# A tag "v1.2.3" builds the server for Linux (amd64, arm64) and publishes it; install.sh downloads it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. 1.0.0)"
+        required: true
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        shell: bash
+        run: |
+          V="${{ github.event.inputs.version }}"
+          [[ "$GITHUB_REF" == refs/tags/v* ]] && V="${GITHUB_REF#refs/tags/v}"
+          echo "V=$V" >> "$GITHUB_ENV"
+          mkdir -p dist
+          for a in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath -ldflags "-s -w -X main.version=$V" -o spectrevoice-server .
+            tar -czf "dist/spectrevoice-server-linux-$a.tar.gz" spectrevoice-server LICENSE.md NOTICE
+          done
+          cp install.sh dist/
+          (cd dist && sha256sum *.tar.gz install.sh > SHA256SUMS)
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$V" dist/* --title "Spectre Voice Server $V" --generate-notes || \
+            gh release upload "v$V" dist/* --clobber

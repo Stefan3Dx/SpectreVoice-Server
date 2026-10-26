@@ -1,0 +1,5 @@
+# /etc/caddy/Caddyfile on the VPS. Replace example.com with your domain (DNS: sfu.example.com -> the VPS).
+sfu.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:7880
+}

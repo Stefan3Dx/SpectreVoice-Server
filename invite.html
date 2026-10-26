@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}} · Spectre Voice</title>
+<meta property="og:title" content="{{TITLE}}">
+<meta property="og:description" content="{{META}} · Spectre Voice">
+<style>
+  :root { color-scheme: dark; --bg: #0b0d14; --card: #151826; --fg: #ececf2; --muted: #a0a0b0; --accent: #7c5cff; --line: #262a3d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(1200px 600px at 20% -10%, #2a1f5c 0%, var(--bg) 60%); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 24px 16px; }
+  main { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 28px 24px; text-align: center; box-shadow: 0 30px 80px #0008; }
+  .logo { width: 72px; height: 72px; border-radius: 20px; margin: 0 auto 14px; background: linear-gradient(135deg, #6d4aff, #120f24); display: grid; place-items: center; }
+  .logo svg { width: 46px; height: 46px; }
+  h1 { font-size: 1.35rem; margin: 6px 0; }
+  .muted { color: var(--muted); font-size: .92rem; }
+  .about { margin: 10px 0 0; }
+  a.btn { display: block; margin: 12px 0 0; padding: 13px 16px; border-radius: 14px; font-weight: 700; text-decoration: none; color: #fff; background: var(--accent); }
+  a.btn.alt { background: transparent; border: 1px solid var(--line); color: var(--fg); font-weight: 600; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  code { background: #0006; padding: 2px 6px; border-radius: 6px; }
+  .hidden { display: none; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0 14px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="logo"><svg viewBox="0 0 108 108"><path fill="#fff" d="M33,48 a3,3 0 0 1 6,0 v12 a3,3 0 0 1 -6,0 z M43,38 a3,3 0 0 1 6,0 v32 a3,3 0 0 1 -6,0 z M51,30 a3,3 0 0 1 6,0 v48 a3,3 0 0 1 -6,0 z M59,38 a3,3 0 0 1 6,0 v32 a3,3 0 0 1 -6,0 z M69,48 a3,3 0 0 1 6,0 v12 a3,3 0 0 1 -6,0 z"/></svg></div>
+  <div class="muted">{{SERVER}}</div>
+  <h1>{{TITLE}}</h1>
+  <div class="muted">{{META}}</div>
+  <p class="about">{{ABOUT}}</p>
+  <div class="{{SHOW}}">
+    <a class="btn" href="{{OPEN}}">Deschide în Spectre Voice</a>
+    <hr>
+    <div class="muted">Nu ai aplicația? Instaleaz-o, apoi deschide din nou linkul.</div>
+    <div class="row">
+      <a class="btn alt" href="{{PLAY}}">Android (Google Play)</a>
+      <a class="btn alt" href="/download/windows">Windows</a>
+    </div>
+    <p class="muted">Sau, în aplicație: Comunități › Intră cu invitație › <code>{{CODE}}</code> pe serverul <code>{{ADDRESS}}</code>.</p>
+  </div>
+</main>
+</body>
+</html>

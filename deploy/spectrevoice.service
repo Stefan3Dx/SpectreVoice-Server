@@ -1,0 +1,23 @@
+[Unit]
+Description=Spectre Voice Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=spectrevoice
+Group=spectrevoice
+EnvironmentFile=/etc/spectrevoice/server.env
+ExecStart=/usr/local/bin/spectrevoice-server
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/spectrevoice
+StateDirectory=spectrevoice
+
+[Install]
+WantedBy=multi-user.target

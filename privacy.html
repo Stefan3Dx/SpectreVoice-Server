@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spectre Voice – Politica de confidențialitate</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f7f7fa; --fg: #1d1d24; --muted: #5d5d6b; --line: #dcdce4; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111117; --fg: #ececf2; --muted: #a0a0b0; --line: #2c2c38; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.7rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 28px 0 6px; }
+  p, li { color: var(--fg); }
+  .muted { color: var(--muted); font-size: .92rem; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
+  ul { padding-left: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+<h1>Politica de confidențialitate Spectre Voice</h1>
+<p class="muted">Ultima actualizare: 26 octombrie 2026 · English below</p>
+
+<p>Spectre Voice este o aplicație gratuită de voce, chat, jocuri și stream-uri pentru comunități. Nu are reclame, nu folosește instrumente de analiză sau de urmărire și nu vinde date. Nu există conturi: identitatea ta este o cheie creată pe dispozitiv.</p>
+
+<h2>Ce date ajung la server</h2>
+<ul>
+  <li><b>Identitatea.</b> Cheia publică a dispozitivului și uid-ul derivat din ea, porecla aleasă, rolul (dacă ai unul) și momentul ultimei conectări. Cheia privată nu părăsește dispozitivul.</li>
+  <li><b>Vocea.</b> Trece prin server către cei din același canal, criptată (WebRTC, DTLS-SRTP). Serverul nu o înregistrează.</li>
+  <li><b>Chatul.</b> Mesajele pe canale și cele private sunt păstrate pe server, ca istoric, până le ștergi tu, le șterge un moderator sau ceri ștergerea datelor.</li>
+  <li><b>Profil, jocuri, Lei, susținători.</b> Ce alegi să publici (profil, poză, scoruri, Lei virtuali) este vizibil celorlalți din comunitate.</li>
+  <li><b>Fișiere și stream-uri.</b> Fișierele trimise în chat se șterg automat după cel mult 30 de zile; stream-urile trec prin server și nu sunt înregistrate.</li>
+  <li><b>Donații.</b> Plata se face prin Google Play; nu vedem datele cardului. Serverul verifică la Google că plata e reală și trece suma, data și porecla ta în lista susținătorilor.</li>
+  <li><b>Raportări și moderare.</b> Când raportezi pe cineva, uid-ul și porecla ta, ale lui, motivul și ce scrii ajung la administratorii serverului. Banările și mute-urile se păstrează cu motivul lor.</li>
+  <li><b>Rapoarte de eroare.</b> Doar dacă alegi să le trimiți, jurnalul aplicației ajunge la server.</li>
+  <li><b>Adresa IP</b> este folosită pentru conexiune și, temporar, pentru limitarea abuzurilor; nu este păstrată în profil.</li>
+</ul>
+
+<h2>Cât păstrăm</h2>
+<p>Profilul, scorurile, chatul și donațiile rămân cât timp există comunitatea sau până ceri ștergerea; fișierele cel mult 30 de zile; rapoartele de eroare, ultimele 300.</p>
+
+<h2>Ștergerea datelor</h2>
+<p>Din aplicație: Setări › Identitate › <b>Șterge datele mele de pe server</b>, sau pe pagina <a href="/delete">/delete</a>. Donațiile rămân (sunt plăți), fără numele tău.</p>
+
+<h2>Siguranță</h2>
+<p>Poți raporta sau bloca pe oricine. Moderatorii pot muta, da afară, bana și șterge mesaje. Conexiunile sunt criptate (HTTPS/WSS, DTLS-SRTP pentru voce).</p>
+
+<h2>Copii</h2>
+<p>Aplicația nu se adresează copiilor sub 13 ani.</p>
+
+<h2>Contact</h2>
+<p>CONTACT_EMAIL</p>
+
+<hr>
+<h1>Spectre Voice Privacy Policy</h1>
+<p>Spectre Voice is a free voice, chat, games and streaming app for communities. No ads, no analytics or tracking, no data sold, no accounts: your identity is a key made on your device.</p>
+<ul>
+  <li><b>Identity:</b> your device's public key and uid, your chosen name, your role and when you last connected. The private key never leaves the device.</li>
+  <li><b>Voice</b> passes through the server, encrypted (WebRTC), to the people in your channel; it is not recorded.</li>
+  <li><b>Chat:</b> channel and private messages are kept as history until you or a moderator delete them, or you ask for your data to be deleted.</li>
+  <li><b>Profile, games, Lei, donors:</b> what you publish is visible to the community. <b>Files</b> expire within 30 days; <b>streams</b> are not recorded.</li>
+  <li><b>Donations</b> go through Google Play; we never see card details. The server checks the purchase with Google and lists the amount, date and your name among supporters.</li>
+  <li><b>Reports and moderation</b> reach the server's admins. <b>Crash reports</b> are sent only if you choose to.</li>
+</ul>
+<p>Delete your data in the app (Settings › Identity) or at <a href="/delete">/delete</a>. Not for children under 13. Contact: CONTACT_EMAIL</p>
+</main>
+</body>
+</html>
