@@ -365,6 +365,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	ss.send(welcome)
 	h.mu.Unlock()
+	statJoins.Add(1)
 	log.Printf("in: %s %q (%s) sid %d", uid, name, ss.client, ss.sid)
 	go ss.writer()
 	defer h.leave(ss)
@@ -492,7 +493,7 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 		h.s.voice.signal(ss, t, m)
 	default:
 		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
-			!h.s.licenseOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) {
+			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) {
 			ss.refuse(t, "bad", "unknown message")
 		}
 	}
@@ -642,6 +643,7 @@ func (h *hub) say(ss *session, t, to string, m map[string]any) {
 		ss.refuse(t, "server", "not saved")
 		return
 	}
+	statMessages.Add(1)
 	out := map[string]any{"t": "msg", "m": msg}
 	if n := str(m, "n"); n != "" {
 		out["n"] = clip(n, 64) // the app's own id, so it can match its pending message
@@ -951,7 +953,7 @@ func (h *hub) refreshRoles(comm int64) {
 		}
 		nr, ids := h.legacyRole(comm, o.uid), a.member[o.uid]
 		o.role, o.roles = nr, ids
-		o.send(map[string]any{"t": "role", "role": nr, "roles": ids, "perms": permList(h.permsOf(comm, o.uid))})
+		o.send(map[string]any{"t": "role", "role": nr, "roles": ids, "perms": permList(h.permsOf(comm, o.uid)), "staff": h.staff(o.uid)})
 		h.memberChanged(o)
 	}
 }

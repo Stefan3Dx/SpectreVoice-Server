@@ -53,7 +53,7 @@ func (h *hub) enterLocked(ss *session, comm int64) map[string]any {
 	ss.ch = 0
 	ss.talk = false
 	ss.whispering, ss.whisperTo, ss.whisperCh = false, nil, nil
-	out := map[string]any{"communities": h.myCommunities(ss.uid)}
+	out := map[string]any{"communities": h.myCommunities(ss.uid), "staff": h.staff(ss.uid)}
 	if comm == 0 {
 		ss.role, ss.roles = roleMember, nil
 		out["community"] = nil

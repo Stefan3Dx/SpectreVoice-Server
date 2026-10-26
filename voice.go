@@ -260,6 +260,7 @@ func (v *voice) carry(p *voicePeer, remote *webrtc.TrackRemote, recv *webrtc.RTP
 		if err != nil {
 			return
 		}
+		statVoiceIn.Add(int64(n))
 		if pkt.Unmarshal(buf[:n]) != nil {
 			continue
 		}

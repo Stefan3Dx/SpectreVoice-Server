@@ -109,7 +109,9 @@ func TestChannelFeatures(t *testing.T) {
 	afk := chanID(t, ana.wel, "AFK")
 	// A channel with an icon, a quality level above Free's top (clamped), moderated
 	ana.send(map[string]any{"t": "ch-save", "name": "Muzică", "icon": "🎸", "quality": 6, "moderated": true})
-	c := ana.wait(func(m map[string]any) bool { return m["t"] == "channel" && m["c"].(map[string]any)["name"] == "Muzică" })["c"].(map[string]any)
+	c := ana.wait(func(m map[string]any) bool {
+		return m["t"] == "channel" && m["c"].(map[string]any)["name"] == "Muzică"
+	})["c"].(map[string]any)
 	if c["icon"] != "🎸" || c["quality"].(float64) != 4 || c["moderated"] != true {
 		t.Fatal(c)
 	}
@@ -122,7 +124,9 @@ func TestChannelFeatures(t *testing.T) {
 	}
 	// Kicked out of a channel: back to the default one
 	bob.send(map[string]any{"t": "join", "ch": afk})
-	bob.wait(func(m map[string]any) bool { return m["t"] == "member" && m["m"].(map[string]any)["ch"].(float64) == float64(afk) })
+	bob.wait(func(m map[string]any) bool {
+		return m["t"] == "member" && m["m"].(map[string]any)["ch"].(float64) == float64(afk)
+	})
 	ana.send(map[string]any{"t": "ch-kick", "sid": bob.sid})
 	if mv := bob.wait(isT("moved")); mv["kick"] != true {
 		t.Fatal(mv)
@@ -145,10 +149,14 @@ func TestChannelFeatures(t *testing.T) {
 		t.Fatal("muted voice heard")
 	}
 	ana.send(map[string]any{"t": "voice-unmute", "uid": bob.uid})
-	ana.wait(func(m map[string]any) bool { return m["t"] == "member" && m["m"].(map[string]any)["uid"] == bob.uid && m["m"].(map[string]any)["vmuted"] == nil })
+	ana.wait(func(m map[string]any) bool {
+		return m["t"] == "member" && m["m"].(map[string]any)["uid"] == bob.uid && m["m"].(map[string]any)["vmuted"] == nil
+	})
 	// Away message and connection quality, for everyone to see
 	bob.send(map[string]any{"t": "state", "away": true, "awayMsg": "la masă", "rtt": 42, "loss": 1})
-	m := ana.wait(func(m map[string]any) bool { return m["t"] == "member" && m["m"].(map[string]any)["awayMsg"] == "la masă" })["m"].(map[string]any)
+	m := ana.wait(func(m map[string]any) bool {
+		return m["t"] == "member" && m["m"].(map[string]any)["awayMsg"] == "la masă"
+	})["m"].(map[string]any)
 	if m["rtt"].(float64) != 42 || m["since"] == nil {
 		t.Fatal(m)
 	}

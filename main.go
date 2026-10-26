@@ -94,6 +94,9 @@ type server struct {
 	lic     *licensing
 	music   *musicBots
 	chfiles *channelFiles
+	metrics *metrics
+	admin   *adminAuth
+	logs    *logRing
 	// testSpaces lets tests open communities besides mainSpace (nil in production)
 	testSpaces func(name string) bool
 }
@@ -198,7 +201,8 @@ func newServer(cfg config) (*server, error) {
 	if err := os.MkdirAll(cfg.data, 0o750); err != nil {
 		return nil, err
 	}
-	s := &server{cfg: cfg, rooms: map[string]*room{}}
+	s := &server{cfg: cfg, rooms: map[string]*room{}, admin: newAdminAuth(), logs: newLogRing(500)}
+	log.SetOutput(io.MultiWriter(os.Stderr, s.logs))
 	var err error
 	if s.secret, err = loadSecret(cfg.data); err != nil {
 		return nil, fmt.Errorf("secret: %w", err)
@@ -239,6 +243,7 @@ func newServer(cfg config) (*server, error) {
 	}
 	s.voice = newVoice(s)
 	go s.lic.refreshLoop()
+	s.metrics = newMetrics(s)
 	if code := s.claimCode(); code != "" {
 		log.Printf("nobody owns this server yet: in the app, Server › Claim, type %s", code)
 	}
@@ -328,6 +333,8 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("/i/", s.handleInvitePage)
 	mux.HandleFunc("/download/", s.handleDownload)
 	mux.HandleFunc("/api/invite/", s.handleInviteInfo)
+	mux.HandleFunc("/admin", s.handleAdmin)
+	mux.HandleFunc("/admin/", s.handleAdmin)
 	mux.HandleFunc("/cf/upload", s.chfiles.handleUpload)
 	mux.HandleFunc("/cf/", s.chfiles.handleDownload)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok\n") })

@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spectre Voice · Admin</title>
+<style>
+  :root {
+    --bg: #0d0e17; --card: #161827; --edge: #262a40; --text: #e8e8f2; --muted: #9a9ab5; --faint: #6b6b88;
+    --accent: #7c5cff; --green: #34d399; --amber: #fbbf24; --red: #f87171; --cyan: #22d3ee;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f4f4fa; --card: #ffffff; --edge: #e2e2ee; --text: #1c1d33; --muted: #5d5f7a; --faint: #8a8ca6; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Inter, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--edge); position: sticky; top: 0; background: var(--bg); z-index: 2; }
+  header h1 { font-size: 18px; margin: 0; flex: 1; }
+  .badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: color-mix(in srgb, var(--amber) 25%, transparent); color: var(--amber); }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav button, .btn { border: 1px solid var(--edge); background: var(--card); color: var(--text); padding: 6px 12px; border-radius: 9px; cursor: pointer; font: inherit; }
+  nav button.on, .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.danger { color: var(--red); }
+  main { padding: 20px 24px 40px; max-width: 1300px; margin: 0 auto; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+  .charts { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); margin-top: 14px; }
+  .card { background: var(--card); border: 1px solid var(--edge); border-radius: 14px; padding: 14px 16px; }
+  .kpi .v { font-size: 24px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 4px 0 8px; }
+  .kpi .l { color: var(--muted); font-size: 12px; }
+  .card h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
+  .card h3 span { color: var(--text); font-weight: 700; }
+  svg { width: 100%; height: 150px; display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--edge); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+  th { color: var(--muted); font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input, textarea { background: var(--bg); color: var(--text); border: 1px solid var(--edge); border-radius: 9px; padding: 8px 10px; font: inherit; }
+  textarea { width: 100%; min-height: 70px; }
+  pre { background: var(--bg); border: 1px solid var(--edge); border-radius: 10px; padding: 12px; max-height: 520px; overflow: auto; font-size: 12px; }
+  .muted { color: var(--muted); }
+  .bars div { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 12.5px; }
+  .bars span:first-child { flex: 0 0 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bars b { flex: 1; font-weight: normal; }
+  .bars i { display: block; height: 8px; background: var(--accent); border-radius: 4px; }
+  .hide { display: none; }
+  .card:has(table) { overflow-x: auto; }
+  @media (max-width: 600px) {
+    header, main { padding-left: 16px; padding-right: 16px; }
+    header { flex-wrap: wrap; }
+    header h1 { font-size: 16px; }
+    nav { width: 100%; overflow-x: auto; flex-wrap: nowrap; }
+    nav button { white-space: nowrap; }
+    .grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .kpi .v { font-size: 20px; }
+    .charts { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Spectre Voice</h1>
+  <span class="badge">PRO</span>
+  <nav id="nav">
+    <button data-tab="dash" class="on">Panou</button>
+    <button data-tab="comms">Comunități</button>
+    <button data-tab="people">Online</button>
+    <button data-tab="tools">Anunțuri și banuri</button>
+    <button data-tab="logs">Jurnal</button>
+  </nav>
+</header>
+<main>
+  <section id="dash">
+    <div class="row" style="margin-bottom:12px">
+      <span class="muted">Interval:</span>
+      <button class="btn" data-h="6">6 h</button><button class="btn primary" data-h="24">24 h</button>
+      <button class="btn" data-h="168">7 zile</button><button class="btn" data-h="720">30 zile</button>
+      <span class="muted" id="updated" style="margin-left:auto"></span>
+    </div>
+    <div class="grid" id="kpis"></div>
+    <div class="charts" id="charts"></div>
+    <div class="charts">
+      <div class="card"><h3>Mesaje pe oră din zi (7 zile)</h3><svg id="hours" viewBox="0 0 400 150" preserveAspectRatio="none"></svg></div>
+      <div class="card"><h3>Canalele cele mai vii (7 zile)</h3><div class="bars" id="topch"></div></div>
+      <div class="card"><h3>Cei mai activi (7 zile)</h3><div class="bars" id="toppl"></div></div>
+    </div>
+  </section>
+  <section id="comms" class="hide"><div class="card"><table id="commt"></table></div></section>
+  <section id="people" class="hide"><div class="card"><table id="sesst"></table></div></section>
+  <section id="tools" class="hide">
+    <div class="card">
+      <h3>Anunț pentru toți cei conectați</h3>
+      <textarea id="ann" maxlength="500" placeholder="Ex.: Serverul repornește la 23:00 pentru o actualizare."></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn primary" id="annb">Trimite</button><span class="muted" id="anns"></span></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Banuri pe tot serverul</h3><table id="bant"></table></div>
+  </section>
+  <section id="logs" class="hide"><pre id="logp"></pre></section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+let hours = 24;
+
+async function api(path, body) {
+  const r = await fetch("/admin/api/" + path, body ? { method: "POST", headers: { "Content-Type": "application/json", "X-Admin": "1" }, body: JSON.stringify(body) } : {});
+  if (!r.ok) throw new Error(r.status + " " + (await r.text()));
+  return r.json();
+}
+
+function fmtBytes(n) { const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return n.toFixed(i ? 1 : 0) + " " + u[i]; }
+function fmtDur(s) { const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return (d ? d + "z " : "") + h + "h " + m + "m"; }
+function ago(ms) { return fmtDur(Math.max(0, (Date.now() - ms) / 1000)); }
+
+// A line chart in SVG: one or two series, the last value in the title
+function chart(svg, series, colors, unit) {
+  const W = 400, H = 150, P = 4;
+  const all = series.flatMap((s) => s.map((p) => p[1]));
+  const max = Math.max(1, ...all) * 1.1;
+  const t0 = Math.min(...series[0].map((p) => p[0])), t1 = Math.max(...series[0].map((p) => p[0]));
+  const x = (t) => P + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (W - 2 * P);
+  const y = (v) => H - P - (v / max) * (H - 2 * P - 14);
+  let g = "";
+  for (let i = 1; i <= 3; i++) g += `<line x1="0" x2="${W}" y1="${y(max / 1.1 * i / 3)}" y2="${y(max / 1.1 * i / 3)}" stroke="${css("--edge")}" stroke-width="1"/>`;
+  g += `<text x="${W - 4}" y="12" text-anchor="end" font-size="10" fill="${css("--faint")}">${(max / 1.1).toFixed(max < 10 ? 1 : 0)} ${unit}</text>`;
+  series.forEach((s, i) => {
+    if (!s.length) return;
+    const d = s.map((p, k) => (k ? "L" : "M") + x(p[0]).toFixed(1) + " " + y(p[1]).toFixed(1)).join(" ");
+    g += `<path d="${d} L${x(s[s.length - 1][0]).toFixed(1)} ${H - P} L${x(s[0][0]).toFixed(1)} ${H - P} Z" fill="${colors[i]}" opacity="0.12"/>`;
+    g += `<path d="${d}" fill="none" stroke="${colors[i]}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+  });
+  svg.innerHTML = g;
+}
+
+const CHARTS = [
+  { id: "c-online", t: "Conectați", s: [["online", "conectați"]], u: "", c: ["--accent"] },
+  { id: "c-voice", t: "Voce și stream-uri", s: [["voice", "pe voce"], ["streams", "stream-uri"]], u: "", c: ["--green", "--red"] },
+  { id: "c-msg", t: "Activitate / minut", s: [["messages", "mesaje"], ["joins", "intrări"]], u: "", c: ["--cyan", "--amber"] },
+  { id: "c-net", t: "Rețea", s: [["netInKbps", "primit"], ["netOutKbps", "trimis"]], u: "kbit/s", c: ["--green", "--accent"] },
+  { id: "c-cpu", t: "CPU", s: [["cpu", "CPU"]], u: "%", c: ["--amber"] },
+  { id: "c-ram", t: "RAM", s: [["rssMB", "RAM"]], u: "MB", c: ["--cyan"] },
+];
+
+function kpi(v, l) { return `<div class="card kpi"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`; }
+
+async function dash() {
+  const [o, m, top] = await Promise.all([api("overview"), api("metrics?h=" + hours), api("top")]);
+  $("title").textContent = o.name + " · " + o.version;
+  const n = o.now || {};
+  const lic = o.license || {};
+  $("kpis").innerHTML = [
+    kpi(n.online ?? 0, "conectați acum (max " + o.maxUsers + ")"), kpi(n.voice ?? 0, "pe voce"), kpi(n.streams ?? 0, "stream-uri live · " + (n.viewers ?? 0) + " privitori"),
+    kpi(o.communities, "comunități"), kpi(o.users, "oameni · " + o.active7d + " activi în 7 zile"), kpi(o.messages, "mesaje păstrate"),
+    kpi(fmtDur(o.uptime), "pornit de"), kpi(fmtBytes(o.disk), "pe disc"), kpi((n.cpu ?? 0).toFixed(1) + "%", "CPU"), kpi((n.rssMB ?? 0).toFixed(0) + " MB", "RAM"),
+    kpi(lic.lic || "—", "licența" + (lic.exp ? " până la " + new Date(lic.exp).toLocaleDateString() : "")),
+  ].join("");
+  const box = $("charts");
+  if (!box.children.length) box.innerHTML = CHARTS.map((c) => `<div class="card"><h3><em style="font-style:normal">${esc(c.t)}${c.s.length > 1 ? c.s.map(([, n], i) => `<i class="dot" style="background:${css(c.c[i])}"></i>${esc(n)}`).join("") : ""}</em> <span id="${c.id}-v"></span></h3><svg id="${c.id}" viewBox="0 0 400 150" preserveAspectRatio="none"></svg></div>`).join("");
+  for (const c of CHARTS) {
+    const series = c.s.map(([k]) => m.map((p) => [p.t, +p[k] || 0]));
+    if (!m.length) { $(c.id).innerHTML = `<text x="200" y="80" text-anchor="middle" fill="${css("--faint")}" font-size="12">Datele apar după primul minut</text>`; continue; }
+    chart($(c.id), series, c.c.map(css), c.u);
+    $(c.id + "-v").textContent = series.map((s) => (s.length ? s[s.length - 1][1] : 0).toFixed(c.u ? 0 : 0)).join(" · ") + (c.u ? " " + c.u : "");
+  }
+  // Messages by hour of day: bars
+  const hs = top.hours || [], hmax = Math.max(1, ...hs);
+  $("hours").innerHTML = hs.map((v, i) => `<rect x="${i * 400 / 24 + 2}" width="${400 / 24 - 4}" y="${150 - 16 - v / hmax * 120}" height="${v / hmax * 120}" rx="2" fill="${css("--accent")}"><title>${i}:00 · ${v}</title></rect>` +
+    (i % 3 === 0 ? `<text x="${i * 400 / 24 + 400 / 48}" y="148" text-anchor="middle" font-size="9" fill="${css("--faint")}">${i}</text>` : "")).join("");
+  const bars = (list) => { const mx = Math.max(1, ...list.map((x) => x.n)); return list.map((x) => `<div><span>${esc(x.name)}</span><b><i style="width:${x.n / mx * 100}%"></i></b><span class="muted">${x.n}</span></div>`).join("") || '<span class="muted">Nimic încă.</span>'; };
+  $("topch").innerHTML = bars(top.channels || []);
+  $("toppl").innerHTML = bars(top.people || []);
+  $("updated").textContent = "actualizat " + new Date().toLocaleTimeString();
+}
+
+async function comms() {
+  const l = await api("communities");
+  $("commt").innerHTML = "<tr><th>#</th><th>Nume</th><th>Proprietar</th><th>Membri</th><th>Online</th><th>Canale</th><th>Tip</th><th>Creată</th></tr>" +
+    l.map((c) => `<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${esc(c.ownerName || c.owner)}</td><td>${c.members}</td><td>${c.online}</td><td>${c.channels}</td><td>${c.open ? "deschisă" : "invitație"}</td><td>${new Date(c.created).toLocaleDateString()}</td></tr>`).join("");
+}
+
+async function people() {
+  const l = await api("sessions");
+  $("sesst").innerHTML = "<tr><th>Nume</th><th>Aplicație</th><th>Comunitate</th><th>Canal</th><th>Ping</th><th>Conectat de</th><th></th></tr>" +
+    l.map((s) => `<tr><td>${s.bot ? "🤖 " : ""}${esc(s.name)}${s.away ? " 🌙" : ""}</td><td>${esc(s.client)}</td><td>${s.comm}</td><td>${esc(s.channel)}</td><td>${s.rtt ? s.rtt + " ms" + (s.loss ? " · " + s.loss + "%" : "") : "—"}</td><td>${ago(s.since)}</td>` +
+      `<td>${s.bot ? "" : `<button class="btn danger" data-kick="${s.sid}">Kick</button>`}</td></tr>`).join("");
+}
+
+async function tools() {
+  const l = await api("bans");
+  $("bant").innerHTML = "<tr><th>Nume</th><th>Până la</th><th>Motiv</th><th></th></tr>" +
+    (l.map((b) => `<tr><td>${esc(b.name || b.uid)}</td><td>${b.until ? new Date(b.until).toLocaleString() : "definitiv"}</td><td>${esc(b.why)}</td><td><button class="btn" data-unban="${esc(b.uid)}">Scoate</button></td></tr>`).join("") || '<tr><td colspan="4" class="muted">Niciun ban.</td></tr>');
+}
+
+async function logs() { $("logp").textContent = (await api("logs")).join("\n"); $("logp").scrollTop = 1e9; }
+
+const TABS = { dash, comms, people, tools, logs };
+let tab = "dash";
+async function show(t) {
+  tab = t;
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === t));
+  Object.keys(TABS).forEach((k) => $(k).classList.toggle("hide", k !== t));
+  try { await TABS[t](); } catch (e) { $("updated").textContent = "eroare: " + e.message; }
+}
+$("nav").addEventListener("click", (e) => { if (e.target.dataset.tab) show(e.target.dataset.tab); });
+document.querySelectorAll("[data-h]").forEach((b) => b.addEventListener("click", () => {
+  hours = +b.dataset.h;
+  document.querySelectorAll("[data-h]").forEach((x) => x.classList.toggle("primary", x === b));
+  show("dash");
+}));
+document.addEventListener("click", async (e) => {
+  const k = e.target.dataset.kick, u = e.target.dataset.unban;
+  if (k && confirm("Îl scoți de pe server?")) { await api("kick", { sid: +k }); people(); }
+  if (u) { await api("unban", { uid: u }); tools(); }
+});
+$("annb").addEventListener("click", async () => {
+  const text = $("ann").value.trim();
+  if (!text) return;
+  await api("announce", { text });
+  $("anns").textContent = "Trimis.";
+  $("ann").value = "";
+});
+show("dash");
+setInterval(() => { if (tab === "dash" || tab === "people") show(tab); }, 30000);
+</script>
+</body>
+</html>
