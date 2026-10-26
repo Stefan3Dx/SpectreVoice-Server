@@ -45,6 +45,8 @@ func newMods(s *server) *mods {
 	_, _ = s.store.db.Exec(`CREATE TABLE IF NOT EXISTS mods(uid TEXT NOT NULL, kind TEXT NOT NULL, ch INTEGER NOT NULL DEFAULT 0, until INTEGER NOT NULL DEFAULT 0, why TEXT NOT NULL DEFAULT '', by TEXT NOT NULL DEFAULT '', PRIMARY KEY(uid,kind,ch))`)
 	// Before communities, "ban" and "mute" were for the whole server, which was the first community
 	_, _ = s.store.db.Exec(`UPDATE mods SET ch=1 WHERE ch=0 AND kind IN ('ban','mute')`)
+	// Ended bans and mutes aren't kept (with their reasons) for ever
+	_, _ = s.store.db.Exec(`DELETE FROM mods WHERE until>0 AND until<?`, time.Now().UnixMilli())
 	rows, err := s.store.db.Query(`SELECT uid,kind,ch,until,why,by FROM mods`)
 	if err == nil {
 		for rows.Next() {
@@ -55,7 +57,26 @@ func newMods(s *server) *mods {
 		}
 		rows.Close()
 	}
+	go m.prune()
 	return m
+}
+
+// prune drops ended bans and mutes, hourly.
+func (m *mods) prune() {
+	for range time.Tick(time.Hour) {
+		now := time.Now().UnixMilli()
+		m.mu.Lock()
+		kept := m.list[:0]
+		for _, b := range m.list {
+			if b.Until == 0 || b.Until > now {
+				kept = append(kept, b)
+			}
+		}
+		clear(m.list[len(kept):])
+		m.list = kept
+		m.mu.Unlock()
+		_, _ = m.s.store.db.Exec(`DELETE FROM mods WHERE until>0 AND until<?`, now)
+	}
 }
 
 func (m *mods) active(uid, kind string, scope int64) bool {

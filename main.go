@@ -153,7 +153,7 @@ func main() {
 	flag.StringVar(&cfg.playPkg, "play-package", env("SV_PLAY_PACKAGE", "io.github.stefan3dx.spectrevoice"), "the Play app's package [SV_PLAY_PACKAGE]")
 	flag.Float64Var(&cfg.playRate, "play-eur-ron", 5.0, "RON one euro donated through Google Play counts as")
 	flag.BoolVar(&cfg.playTest, "play-allow-test", envBool("SV_PLAY_ALLOW_TEST", false), "count license testers' purchases [SV_PLAY_ALLOW_TEST]")
-	flag.StringVar(&cfg.contact, "contact-email", env("SV_CONTACT_EMAIL", "contact@spectrevoice.com"), "contact shown at /privacy [SV_CONTACT_EMAIL]")
+	flag.StringVar(&cfg.contact, "contact-email", env("SV_CONTACT_EMAIL", ""), "the owner's contact for data requests, shown at /privacy [SV_CONTACT_EMAIL]")
 	flag.StringVar(&cfg.createCommunities, "create-communities", env("SV_CREATE_COMMUNITIES", "anyone"), "who makes communities: anyone or staff [SV_CREATE_COMMUNITIES]")
 	flag.StringVar(&cfg.pushCreds, "push-credentials", env("SV_PUSH_CREDENTIALS", ""), "Firebase service account (JSON) for push notifications [SV_PUSH_CREDENTIALS]")
 	flag.StringVar(&cfg.licenseURL, "license-url", env("SV_LICENSE_URL", "https://license.spectrevoice.com"), "the licence service, for Pro [SV_LICENSE_URL]")

@@ -65,8 +65,15 @@ func (s *server) handleCrash(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not saved", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("crash report from %q: %s", q.Get("name"), name)
+		log.Printf("crash report: %s", name)
 		files, _ := os.ReadDir(dir)
+		// 30 days at most, and the newest 300
+		for _, f := range files {
+			if fi, err := f.Info(); err == nil && time.Since(fi.ModTime()) > 30*24*time.Hour {
+				_ = os.Remove(filepath.Join(dir, f.Name()))
+			}
+		}
+		files, _ = os.ReadDir(dir)
 		if len(files) > 300 {
 			names := make([]string, 0, len(files))
 			for _, f := range files {

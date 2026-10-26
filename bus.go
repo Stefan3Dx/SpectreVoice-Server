@@ -680,6 +680,16 @@ func backupRoom(dir, f string, size int64) bool {
 	return count < busMaxBackups && total+size <= busBackupBytes
 }
 
+// pruneBackups drops backups not saved again for a year (forgotten ones don't stay for ever).
+func pruneBackups(dir string) {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > 365*24*time.Hour {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
 func (s *server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(r) {
 		http.Error(w, "sign in first", http.StatusUnauthorized)
@@ -701,6 +711,7 @@ func (s *server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		}
 		s.bus.backupMu.Lock()
 		defer s.bus.backupMu.Unlock()
+		pruneBackups(dir)
 		if !backupRoom(dir, f, int64(len(data))) {
 			http.Error(w, "no room for more backups", http.StatusInsufficientStorage)
 			return
@@ -718,6 +729,12 @@ func (s *server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(data)
+	case http.MethodDelete:
+		// Whoever knows the id (derived from the name and password) may delete it
+		s.bus.backupMu.Lock()
+		_ = os.Remove(f)
+		s.bus.backupMu.Unlock()
+		_, _ = io.WriteString(w, "ok\n")
 	default:
 		http.Error(w, "method", http.StatusMethodNotAllowed)
 	}

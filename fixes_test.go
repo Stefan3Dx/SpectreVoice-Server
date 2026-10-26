@@ -3,6 +3,7 @@ package main
 // Regression tests for the debugging session's fixes (DEBUGGING.md in the apps' repo lists them).
 
 import (
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
@@ -126,3 +127,25 @@ func TestNobodyLandsInText(t *testing.T) {
 }
 
 func anyone(c *config) { c.createCommunities = "anyone" }
+
+// Wiping someone takes them out of everyone's records too: daily counters, weekly winners.
+func TestWipeScrubsCounters(t *testing.T) {
+	st := map[string]map[string]json.RawMessage{
+		"scores": {
+			"_day:2026-10-27": json.RawMessage(`{"t":{"U1":60,"U2":30},"v":{"U1":5},"n":{"U1":"Ana","U2":"Bob"}}`),
+			"_hist:2026-43":   json.RawMessage(`{"CHESS":{"u":"U1","n":"Ana","s":3},"POKER":{"u":"U2","n":"Bob","s":1}}`),
+		},
+		"donors": {"U1": json.RawMessage(`{"n":"Ana","m":"pentru voi","a":5}`)},
+	}
+	wipeState(st, "U1")
+	day, hist, don := string(st["scores"]["_day:2026-10-27"]), string(st["scores"]["_hist:2026-43"]), string(st["donors"]["U1"])
+	if strings.Contains(day, "U1") || strings.Contains(day, "Ana") || !strings.Contains(day, "U2") {
+		t.Fatal(day)
+	}
+	if strings.Contains(hist, "U1") || !strings.Contains(hist, "U2") {
+		t.Fatal(hist)
+	}
+	if strings.Contains(don, "Ana") || strings.Contains(don, "pentru") {
+		t.Fatal(don)
+	}
+}

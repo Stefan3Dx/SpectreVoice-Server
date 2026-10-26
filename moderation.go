@@ -264,12 +264,30 @@ func wipeState(state map[string]map[string]json.RawMessage, uid string) (int, []
 			put("events", id, rec)
 		}
 	}
-	// Donations stay (they're payments), without their name; a rank given by hand goes
+	// Donations stay (they're payments), without their name or note; a rank given by hand goes
 	if raw, ok := state["donors"][uid]; ok {
 		rec := decodeRecord(raw)
-		if rec["n"] != "Anonim" {
+		if _, note := rec["m"]; rec["n"] != "Anonim" || note {
 			rec["n"] = "Anonim"
+			delete(rec, "m")
 			put("donors", uid, rec)
+		}
+	}
+	// Everything else that names them by uid: daily time and talk counters, weekly winners, tournaments, warnings
+	for kind, recs := range state {
+		for id, raw := range recs {
+			if id == uid {
+				continue
+			}
+			var v any
+			if json.Unmarshal(raw, &v) != nil {
+				continue
+			}
+			if scrubUID(v, uid) {
+				if m, ok := v.(map[string]any); ok {
+					put(kind, id, m)
+				}
+			}
 		}
 	}
 	if raw, ok := state["donors"]["_ranks"]; ok {
@@ -280,6 +298,46 @@ func wipeState(state map[string]map[string]json.RawMessage, uid string) (int, []
 		}
 	}
 	return n, ops
+}
+
+// scrubUID drops, anywhere inside v, map keys that are uid and entries that name uid ("u"/"uid"); true if it changed.
+func scrubUID(v any, uid string) bool {
+	changed := false
+	names := func(x any) bool {
+		m, ok := x.(map[string]any)
+		return ok && (m["u"] == uid || m["uid"] == uid)
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		for k, x := range t {
+			if k == uid || names(x) {
+				delete(t, k)
+				changed = true
+			} else if scrubUID(x, uid) {
+				changed = true
+			}
+		}
+		for k, x := range t { // lists are values: filtered in place through the map
+			if l, ok := x.([]any); ok {
+				kept := l[:0]
+				for _, e := range l {
+					if names(e) {
+						changed = true
+						continue
+					}
+					kept = append(kept, e)
+				}
+				t[k] = kept
+			}
+		}
+	case []any:
+		for _, x := range t {
+			if scrubUID(x, uid) {
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // wipe removes uid's content from every space: those open now (everyone in them is told) and those on disk.

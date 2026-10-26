@@ -8,7 +8,7 @@
 #   sudo bash install.sh --domain voice.example.com --email you@example.com --yes   public, HTTPS + TURN
 #   sudo bash install.sh --source        build from this folder's source instead of downloading
 #
-# Options: --name NAME  --domain NAME  --email ADDR  --public-ip IP|DDNS  --no-music  --no-turn  --udp 50000-50200
+# Options: --name NAME  --domain NAME  --email ADDR  --contact ADDR  --public-ip IP|DDNS  --no-music  --no-turn  --udp 50000-50200
 set -euo pipefail
 
 REPO="Stefan3Dx/SpectreVoice-Server"
@@ -19,7 +19,7 @@ DATA=/var/lib/spectrevoice
 ENVF=$ETC/server.env
 
 YES=0 UPDATE=0 SOURCE=0 MUSIC=1 TURN=1
-NAME="" DOMAIN="" EMAIL="" PUBLIC="" UDP="50000-50200"
+NAME="" DOMAIN="" EMAIL="" CONTACT="" PUBLIC="" UDP="50000-50200"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --yes|-y) YES=1 ;;
@@ -30,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --name) NAME="$2"; shift ;;
     --domain) DOMAIN="$2"; shift ;;
     --email) EMAIL="$2"; shift ;;
+    --contact) CONTACT="$2"; shift ;;
     --public-ip) PUBLIC="$2"; shift ;;
     --udp) UDP="$2"; shift ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
@@ -80,6 +81,8 @@ FIRST=0
 if [[ $FIRST -eq 0 ]]; then if grep -q "^SV_MUSIC=true" "$ENVF"; then MUSIC=1; else MUSIC=0; fi; fi
 if [[ $FIRST -eq 1 ]]; then
   ask NAME "Server name" "Spectre Voice"
+  # You hold the people's data on your server (GDPR): your privacy page (/privacy) gives this address for their requests
+  ask CONTACT "Your e-mail for people's data requests (shown at /privacy)" "${EMAIL:-}"
   ask DOMAIN "Domain for HTTPS (empty: LAN only, e.g. voice.example.com)" ""
   if [[ -n "$DOMAIN" ]]; then
     ask EMAIL "E-mail for the HTTPS certificate (Let's Encrypt)" ""
@@ -139,6 +142,7 @@ if [[ $FIRST -eq 1 ]]; then
   else curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/deploy/server.env.example" -o "$ENVF"; fi
   chown root:spectrevoice "$ENVF" && chmod 640 "$ENVF"
   setenv SV_NAME "$NAME"
+  [[ -n "$CONTACT" ]] && setenv SV_CONTACT_EMAIL "$CONTACT"
   setenv SV_PUBLIC_IP "$PUBLIC"
   setenv SV_UDP_MIN "${UDP%-*}"
   setenv SV_UDP_MAX "${UDP#*-}"
@@ -230,6 +234,13 @@ EOF
   setenv SV_TURN "turn:${DOMAIN}:3478"
   setenv SV_TURN_USER spectre
   setenv SV_TURN_PASS "$tpass"
+fi
+
+# The system journal (the server's log: connections, uploads, moderation) kept 30 days at most (privacy policy)
+if [[ ! -f /etc/systemd/journald.conf.d/spectrevoice.conf ]]; then
+  install -d /etc/systemd/journald.conf.d
+  printf '[Journal]\nMaxRetentionSec=30day\n' >/etc/systemd/journald.conf.d/spectrevoice.conf
+  systemctl restart systemd-journald 2>/dev/null || true
 fi
 
 systemctl daemon-reload
