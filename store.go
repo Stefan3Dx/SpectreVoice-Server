@@ -376,6 +376,7 @@ func (st *store) wipeUser(uid string) (int, error) {
 		`DELETE FROM member_roles WHERE uid=?`,
 		`DELETE FROM memberships WHERE uid=? AND comm NOT IN (SELECT id FROM communities WHERE owner=?1)`,
 		`DELETE FROM user_state WHERE uid=?`,
+		`DELETE FROM comm_requests WHERE uid=?`,
 		`DELETE FROM users WHERE uid=? AND role=''`,
 	} {
 		if _, err := st.db.Exec(q, uid); err != nil && !strings.Contains(err.Error(), "no such table") {

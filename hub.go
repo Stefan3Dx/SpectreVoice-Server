@@ -498,7 +498,7 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 	case "rtc", "ice":
 		h.s.voice.signal(ss, t, m)
 	default:
-		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
+		if !h.communityOp(ss, t, m) && !h.codeOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
 			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) {
 			ss.refuse(t, "bad", "unknown message")
 		}

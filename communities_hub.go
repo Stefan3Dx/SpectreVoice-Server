@@ -4,8 +4,8 @@ package main
 //
 //	<- {"t":"enter","c":ID}                          go into one of your communities -> {"t":"community",…}
 //	<- {"t":"communities"}                           -> {"t":"communities","items":[…]}  (yours)
-//	<- {"t":"discover"}                              -> {"t":"discover","items":[…]}     (open ones)
-//	<- {"t":"community-join","c":ID | "invite":CODE} join an open one, or by invite; you go into it
+//	<- {"t":"discover"}                              -> {"t":"discover","items":[]}  (no public list: by code, community_codes.go)
+//	<- {"t":"community-join","invite":CODE | "code":C} by invite, or by the community's code (open: in; closed: a request)
 //	<- {"t":"community-create","name":…,"open":bool} (when the server allows) a new one, yours
 //	<- {"t":"community-save","name","about","icon","open"}   (manage_community) the current one
 //	<- {"t":"community-leave","c":ID}                leave one (not the owner)
@@ -130,11 +130,8 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 	case "communities":
 		ss.send(map[string]any{"t": "communities", "items": h.myCommunities(ss.uid)})
 	case "discover":
-		list, _ := st.openCommunities(100)
-		if list == nil {
-			list = []community{}
-		}
-		ss.send(map[string]any{"t": "discover", "items": list})
+		// No public list of communities any more (privacy): they're found by their code
+		ss.send(map[string]any{"t": "discover", "items": []community{}})
 	case "community-join":
 		comm := i64(m, "c")
 		if code := str(m, "invite"); code != "" {
@@ -152,8 +149,25 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 			if inv.Channel != 0 {
 				defer func() { h.join(ss, inv.Channel, "") }()
 			}
-		} else if c, err := st.community(comm); err != nil || !c.Open {
-			ss.refuse(t, "closed", "this community is joined by invite only")
+		} else if code := str(m, "code"); code != "" {
+			h.mu.Lock()
+			name := ss.name
+			h.mu.Unlock()
+			c, requested, err := h.joinByCode(ss, code, name)
+			if err != nil {
+				ss.refuse(t, "code", err.Error())
+				return true
+			}
+			if requested {
+				return true
+			}
+			comm = c
+		} else if h.s.mods.banned(ss.uid, comm) {
+			ss.refuse(t, "banned", "you are banned from that community")
+			return true
+		} else if c, err := st.community(comm); err != nil || !c.Open || !st.isMember(comm, ss.uid) {
+			// Only by invite or code now (no list to pick from)
+			ss.refuse(t, "closed", "use the community's code or an invite")
 			return true
 		}
 		if h.s.mods.banned(ss.uid, comm) {

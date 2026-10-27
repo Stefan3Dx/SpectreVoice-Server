@@ -91,6 +91,7 @@ type community struct {
 	Icon    string `json:"icon,omitempty"`
 	Owner   string `json:"owner"`
 	Open    bool   `json:"open"`
+	Code    string `json:"code,omitempty"` // to find it (community_codes.go)
 	Created int64  `json:"created"`
 	Members int    `json:"members,omitempty"`
 }
@@ -120,6 +121,9 @@ func (st *store) migrateCommunities(name string) error {
 	if _, err := st.db.Exec(communitySchema); err != nil {
 		return err
 	}
+	if err := st.migrateCodes(); err != nil {
+		return err
+	}
 	if !st.hasColumn("channels", "comm") {
 		if _, err := st.db.Exec(`ALTER TABLE channels ADD COLUMN comm INTEGER NOT NULL DEFAULT 1`); err != nil {
 			return err
@@ -137,7 +141,7 @@ func (st *store) migrateCommunities(name string) error {
 	now := time.Now().UnixMilli()
 	owner := ""
 	_ = st.db.QueryRow(`SELECT uid FROM users WHERE role='owner' ORDER BY created LIMIT 1`).Scan(&owner)
-	if _, err := st.db.Exec(`INSERT INTO communities(id,slug,name,owner,open,created) VALUES(1,'main',?,?,1,?)`, name, owner, now); err != nil {
+	if _, err := st.db.Exec(`INSERT INTO communities(id,slug,name,owner,open,code,created) VALUES(1,'main',?,?,1,?,?)`, name, owner, st.freeCode(), now); err != nil {
 		return err
 	}
 	_, _ = st.db.Exec(`UPDATE channels SET comm=1`)
@@ -196,14 +200,14 @@ func slugify(name string) string {
 func scanCommunity(row interface{ Scan(...any) error }) (*community, error) {
 	c := &community{}
 	var open int
-	if err := row.Scan(&c.ID, &c.Slug, &c.Name, &c.About, &c.Icon, &c.Owner, &open, &c.Created); err != nil {
+	if err := row.Scan(&c.ID, &c.Slug, &c.Name, &c.About, &c.Icon, &c.Owner, &open, &c.Code, &c.Created); err != nil {
 		return nil, err
 	}
 	c.Open = open == 1
 	return c, nil
 }
 
-const commCols = `id,slug,name,about,icon,owner,open,created`
+const commCols = `id,slug,name,about,icon,owner,open,code,created`
 
 func (st *store) community(id int64) (*community, error) {
 	return scanCommunity(st.db.QueryRow(`SELECT `+commCols+` FROM communities WHERE id=?`, id))
@@ -238,7 +242,7 @@ func (st *store) queryCommunities(q string, args ...any) ([]community, error) {
 
 // communitiesOf: those uid is a member of, in the order joined.
 func (st *store) communitiesOf(uid string) ([]community, error) {
-	return st.queryCommunities(`SELECT c.id,c.slug,c.name,c.about,c.icon,c.owner,c.open,c.created FROM communities c JOIN memberships m ON m.comm=c.id WHERE m.uid=? ORDER BY m.joined`, uid)
+	return st.queryCommunities(`SELECT c.id,c.slug,c.name,c.about,c.icon,c.owner,c.open,c.code,c.created FROM communities c JOIN memberships m ON m.comm=c.id WHERE m.uid=? ORDER BY m.joined`, uid)
 }
 
 // openCommunities: those anyone may join, the biggest first.
@@ -280,7 +284,7 @@ func (st *store) createCommunity(name, owner string, open bool) (*community, err
 	if open {
 		o = 1
 	}
-	res, err := st.db.Exec(`INSERT INTO communities(slug,name,owner,open,created) VALUES(?,?,?,?,?)`, slug, name, owner, o, now)
+	res, err := st.db.Exec(`INSERT INTO communities(slug,name,owner,open,code,created) VALUES(?,?,?,?,?,?)`, slug, name, owner, o, st.freeCode(), now)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +318,7 @@ func (st *store) deleteCommunity(id int64) error {
 		`DELETE FROM messages WHERE conv='g:' || ?`,
 		`DELETE FROM mods WHERE kind IN ('ban','mute','vmute') AND ch=?`,
 		`UPDATE user_state SET last_comm=0 WHERE last_comm=?`, `DELETE FROM member_roles WHERE comm=?`, `DELETE FROM roles WHERE comm=?`,
-		`DELETE FROM memberships WHERE comm=?`, `DELETE FROM invites WHERE comm=?`, `DELETE FROM communities WHERE id=?`,
+		`DELETE FROM memberships WHERE comm=?`, `DELETE FROM invites WHERE comm=?`, `DELETE FROM comm_requests WHERE comm=?`, `DELETE FROM communities WHERE id=?`,
 	} {
 		if _, err := st.db.Exec(q, id); err != nil && !strings.Contains(err.Error(), "no such table") {
 			return err
