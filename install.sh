@@ -10,7 +10,8 @@
 #   sudo bash install.sh --source        build from this folder's source instead of downloading
 #
 # Options: --lang en|ro|es|de|pl|fr|it|pt|hu|tr  --name NAME  --domain NAME  --email ADDR  --contact ADDR
-#          --public-ip IP|DDNS  --port N  --no-music  --no-turn  --no-firewall  --udp 50000-50200 (a range instead of one port)
+#          --public-ip IP|DDNS  --port N  --no-music  --no-turn  --no-firewall  --no-auto-update
+#          --udp 50000-50200 (a range instead of one port)
 set -euo pipefail
 
 REPO="Stefan3Dx/SpectreVoice-Server"
@@ -20,7 +21,7 @@ ETC=/etc/spectrevoice
 DATA=/var/lib/spectrevoice
 ENVF=$ETC/server.env
 
-YES=0 UPDATE=0 SOURCE=0 MUSIC=1 TURN=1 FIREWALL=1
+YES=0 UPDATE=0 SOURCE=0 MUSIC=1 TURN=1 FIREWALL=1 AUTOUPD=1
 NAME="" DOMAIN="" EMAIL="" CONTACT="" PUBLIC="" UDP="" PORT="" LANGSEL="" MODE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,6 +31,7 @@ while [[ $# -gt 0 ]]; do
     --no-music) MUSIC=0 ;;
     --no-turn) TURN=0 ;;
     --no-firewall) FIREWALL=0 ;;
+    --no-auto-update) AUTOUPD=0 ;;
     --lang) LANGSEL="$2"; shift ;;
     --name) NAME="$2"; shift ;;
     --domain) DOMAIN="$2"; shift ;;
@@ -38,7 +40,7 @@ while [[ $# -gt 0 ]]; do
     --public-ip) PUBLIC="$2"; shift ;;
     --port) PORT="$2"; shift ;;
     --udp) UDP="$2"; shift ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,15p' "$0"; exit 0 ;;
     *) echo "unknown option: $1"; exit 1 ;;
   esac
   shift
@@ -48,6 +50,7 @@ done
 # Texts: English is the reference; a missing text falls back to it.
 # ======================================================================================================================
 declare -A L_en=(
+  [q_auto]="Automatic server updates (daily, around 4 AM)" [autodone]="Automatic updates: on"
   [title]="Spectre Voice Server — installer"
   [step]="Step %s of %s · %s"
   [s_lang]="Language" [s_name]="Name and contact" [s_net]="Network" [s_port]="Port" [s_extra]="Extras" [s_fw]="Firewall" [s_inst]="Installing"
@@ -86,6 +89,7 @@ declare -A L_en=(
   [enter]="Enter keeps the value in brackets."
 )
 declare -A L_ro=(
+  [q_auto]="Actualizări automate ale serverului (zilnic, pe la 4 dimineața)" [autodone]="Actualizări automate: pornite"
   [title]="Spectre Voice Server — instalare"
   [step]="Pasul %s din %s · %s"
   [s_lang]="Limba" [s_name]="Nume și contact" [s_net]="Rețea" [s_port]="Port" [s_extra]="Extra" [s_fw]="Firewall" [s_inst]="Instalare"
@@ -124,6 +128,7 @@ declare -A L_ro=(
   [enter]="Enter păstrează valoarea din paranteze."
 )
 declare -A L_es=(
+  [q_auto]="Actualizaciones automáticas del servidor (a diario, hacia las 4 de la mañana)" [autodone]="Actualizaciones automáticas: activadas"
   [title]="Spectre Voice Server — instalación"
   [step]="Paso %s de %s · %s"
   [s_lang]="Idioma" [s_name]="Nombre y contacto" [s_net]="Red" [s_port]="Puerto" [s_extra]="Extras" [s_fw]="Cortafuegos" [s_inst]="Instalación"
@@ -162,6 +167,7 @@ declare -A L_es=(
   [enter]="Enter mantiene el valor entre corchetes."
 )
 declare -A L_de=(
+  [q_auto]="Automatische Server-Updates (täglich, gegen 4 Uhr morgens)" [autodone]="Automatische Updates: an"
   [title]="Spectre Voice Server — Installation"
   [step]="Schritt %s von %s · %s"
   [s_lang]="Sprache" [s_name]="Name und Kontakt" [s_net]="Netzwerk" [s_port]="Port" [s_extra]="Extras" [s_fw]="Firewall" [s_inst]="Installation"
@@ -200,6 +206,7 @@ declare -A L_de=(
   [enter]="Enter behält den Wert in Klammern."
 )
 declare -A L_pl=(
+  [q_auto]="Automatyczne aktualizacje serwera (codziennie, około 4 rano)" [autodone]="Automatyczne aktualizacje: włączone"
   [title]="Spectre Voice Server — instalacja"
   [step]="Krok %s z %s · %s"
   [s_lang]="Język" [s_name]="Nazwa i kontakt" [s_net]="Sieć" [s_port]="Port" [s_extra]="Dodatki" [s_fw]="Zapora" [s_inst]="Instalacja"
@@ -238,6 +245,7 @@ declare -A L_pl=(
   [enter]="Enter zostawia wartość w nawiasach."
 )
 declare -A L_fr=(
+  [q_auto]="Mises à jour automatiques du serveur (chaque jour, vers 4 h du matin)" [autodone]="Mises à jour automatiques : activées"
   [title]="Spectre Voice Server — installation"
   [step]="Étape %s sur %s · %s"
   [s_lang]="Langue" [s_name]="Nom et contact" [s_net]="Réseau" [s_port]="Port" [s_extra]="Options" [s_fw]="Pare-feu" [s_inst]="Installation"
@@ -276,6 +284,7 @@ declare -A L_fr=(
   [enter]="Entrée garde la valeur entre crochets."
 )
 declare -A L_it=(
+  [q_auto]="Aggiornamenti automatici del server (ogni giorno, verso le 4 del mattino)" [autodone]="Aggiornamenti automatici: attivi"
   [title]="Spectre Voice Server — installazione"
   [step]="Passo %s di %s · %s"
   [s_lang]="Lingua" [s_name]="Nome e contatto" [s_net]="Rete" [s_port]="Porta" [s_extra]="Extra" [s_fw]="Firewall" [s_inst]="Installazione"
@@ -314,6 +323,7 @@ declare -A L_it=(
   [enter]="Invio mantiene il valore tra parentesi."
 )
 declare -A L_pt=(
+  [q_auto]="Atualizações automáticas do servidor (diariamente, por volta das 4 da manhã)" [autodone]="Atualizações automáticas: ativadas"
   [title]="Spectre Voice Server — instalação"
   [step]="Passo %s de %s · %s"
   [s_lang]="Idioma" [s_name]="Nome e contacto" [s_net]="Rede" [s_port]="Porta" [s_extra]="Extras" [s_fw]="Firewall" [s_inst]="Instalação"
@@ -352,6 +362,7 @@ declare -A L_pt=(
   [enter]="Enter mantém o valor entre parênteses."
 )
 declare -A L_hu=(
+  [q_auto]="Automatikus szerverfrissítések (naponta, hajnali 4 körül)" [autodone]="Automatikus frissítések: bekapcsolva"
   [title]="Spectre Voice Server — telepítés"
   [step]="%s. lépés / %s · %s"
   [s_lang]="Nyelv" [s_name]="Név és kapcsolat" [s_net]="Hálózat" [s_port]="Port" [s_extra]="Extrák" [s_fw]="Tűzfal" [s_inst]="Telepítés"
@@ -390,6 +401,7 @@ declare -A L_hu=(
   [enter]="Az Enter megtartja a zárójeles értéket."
 )
 declare -A L_tr=(
+  [q_auto]="Otomatik sunucu güncellemeleri (her gün, sabah 4 civarı)" [autodone]="Otomatik güncellemeler: açık"
   [title]="Spectre Voice Server — kurulum"
   [step]="Adım %s / %s · %s"
   [s_lang]="Dil" [s_name]="Ad ve iletişim" [s_net]="Ağ" [s_port]="Port" [s_extra]="Ekstralar" [s_fw]="Güvenlik duvarı" [s_inst]="Kurulum"
@@ -568,6 +580,7 @@ if [[ $FIRST -eq 1 ]]; then
   stepn 5 "$(t s_extra)"
   [[ $MODE -le 2 ]] && yesno TURN "$(t q_turn)" "$TURN"
   yesno MUSIC "$(t q_music)" "$MUSIC"
+  yesno AUTOUPD "$(t q_auto)" "$AUTOUPD"
 
   # ---- Step 6: the firewall ----
   stepn 6 "$(t s_fw)"
@@ -601,7 +614,7 @@ install_binary() {
   if curl -fsSL "$url" -o "$tmp/s.tgz" && curl -fsSL "https://github.com/${REPO}/releases/latest/download/SHA256SUMS" -o "$tmp/SHA256SUMS"; then
     (cd "$tmp" && grep "linux-${ARCH}.tar.gz" SHA256SUMS | sed "s|spectrevoice-server-linux-${ARCH}.tar.gz|s.tgz|" | sha256sum -c --quiet) || { warn "checksum mismatch"; rm -rf "$tmp"; return 1; }
     tar -xzf "$tmp/s.tgz" -C "$tmp"
-    install -m 755 "$tmp/spectrevoice-server" "$BIN"
+    install -m 755 "$tmp/spectrevoice-server" "$BIN.new" && mv -f "$BIN.new" "$BIN"
     rm -rf "$tmp"
     return 0
   fi
@@ -746,6 +759,42 @@ if [[ $FIRST -eq 1 && $FIREWALL -eq 1 && -n ${FW:-} ]]; then
   done
   [[ $FW == firewalld ]] && firewall-cmd -q --reload
   say "$(t fwdone)"
+fi
+
+# ---- Automatic updates: the newest release from GitHub, checked (SHA256SUMS), daily around 4 AM ----
+# (on by default, also for servers installed before; SV_AUTO_UPDATE=false in server.env stops them)
+if [[ $AUTOUPD -eq 1 ]]; then
+  cat >/usr/local/sbin/spectrevoice-update <<'UPD'
+#!/usr/bin/env bash
+# Spectre Voice Server: installs the newest release when there is one (run daily by spectrevoice-update.timer).
+set -euo pipefail
+REPO="Stefan3Dx/SpectreVoice-Server"
+BIN=/usr/local/bin/spectrevoice-server
+grep -qs '^SV_AUTO_UPDATE=false' /etc/spectrevoice/server.env && exit 0
+ARCH=$(dpkg --print-architecture)
+have=$($BIN version 2>/dev/null || echo 0)
+tag=$(curl -fsSI "https://github.com/${REPO}/releases/latest" | awk -F/ 'tolower($1) ~ /^location:/ {print $NF}' | tr -d '\r')
+want=${tag#v}
+[[ -n $want && $want != "$have" ]] || exit 0
+newest=$(printf '%s\n%s\n' "$have" "$want" | sort -V | tail -1)
+[[ $newest == "$want" ]] || exit 0
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+base="https://github.com/${REPO}/releases/download/${tag}"
+curl -fsSL "${base}/spectrevoice-server-linux-${ARCH}.tar.gz" -o "$tmp/s.tgz"
+curl -fsSL "${base}/SHA256SUMS" -o "$tmp/SHA256SUMS"
+(cd "$tmp" && grep "linux-${ARCH}.tar.gz" SHA256SUMS | sed "s|spectrevoice-server-linux-${ARCH}.tar.gz|s.tgz|" | sha256sum -c --quiet)
+tar -xzf "$tmp/s.tgz" -C "$tmp"
+install -m 755 "$tmp/spectrevoice-server" "$BIN.new" && mv -f "$BIN.new" "$BIN" # a running file is replaced, not written over
+curl -fsSL "${base}/install.sh" -o /usr/local/sbin/spectrevoice-install.sh 2>/dev/null || true
+systemctl restart spectrevoice
+echo "Spectre Voice Server: ${have} -> ${want}"
+UPD
+  chmod 755 /usr/local/sbin/spectrevoice-update
+  printf '[Unit]\nDescription=Spectre Voice Server update\nAfter=network-online.target\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/spectrevoice-update\n' >/etc/systemd/system/spectrevoice-update.service
+  printf '[Unit]\nDescription=Spectre Voice Server update, daily\n[Timer]\nOnCalendar=*-*-* 04:00:00\nRandomizedDelaySec=1h\nPersistent=true\n[Install]\nWantedBy=timers.target\n' >/etc/systemd/system/spectrevoice-update.timer
+  systemctl daemon-reload
+  systemctl enable --now spectrevoice-update.timer >/dev/null 2>&1 || true
+  [[ $FIRST -eq 1 ]] && say "$(t autodone)"
 fi
 
 # The system journal (the server's log: connections, uploads, moderation) kept 30 days at most (privacy policy)
