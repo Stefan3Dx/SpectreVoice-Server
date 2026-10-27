@@ -165,8 +165,8 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 		} else if h.s.mods.banned(ss.uid, comm) {
 			ss.refuse(t, "banned", "you are banned from that community")
 			return true
-		} else if c, err := st.community(comm); err != nil || !c.Open || !st.isMember(comm, ss.uid) {
-			// Only by invite or code now (no list to pick from)
+		} else if _, err := st.community(comm); err != nil || !st.isMember(comm, ss.uid) {
+			// By id only for its members (back into one, open or closed); newcomers by invite or code
 			ss.refuse(t, "closed", "use the community's code or an invite")
 			return true
 		}

@@ -54,6 +54,16 @@ func TestCommunityCodes(t *testing.T) {
 	if !s.store.isMember(commID(cm), bob.uid) {
 		t.Fatal("Bob isn't in")
 	}
+	// A member gets back into the closed community by its id (switching between his communities)
+	bob.send(map[string]any{"t": "community-join", "c": commID(cm)})
+	if c := bob.wait(isT("community")); commID(c) != commID(cm) {
+		t.Fatal(c)
+	}
+	// A channel of another community: refused for history (the app keeps it quiet)
+	bob.send(map[string]any{"t": "history", "to": "c:999999"})
+	if e := bob.wait(isT("error")); e["op"] != "history" {
+		t.Fatal(e)
+	}
 	ana.send(map[string]any{"t": "community-answer", "uid": carl.uid, "accept": false})
 	if a := carl.wait(isT("community-answered")); a["accepted"] != false || s.store.isMember(commID(cm), carl.uid) {
 		t.Fatal(a)
