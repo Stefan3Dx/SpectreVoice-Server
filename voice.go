@@ -125,7 +125,7 @@ func (v *voice) signal(ss *session, t string, m map[string]any) {
 // open makes the server's side of an app's voice connection.
 func (v *voice) open(ss *session) (*voicePeer, error) {
 	v.mu.Lock()
-	if len(v.peers) >= v.s.maxUsers()*2+8 { // phone and PC each, plus the bots
+	if mu := v.s.maxUsers(); mu > 0 && len(v.peers) >= mu*2+8 { // phone and PC each, plus the bots
 		v.mu.Unlock()
 		return nil, errors.New("voice is full")
 	}

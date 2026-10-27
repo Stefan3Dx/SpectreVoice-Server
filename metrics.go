@@ -1,6 +1,6 @@
 package main
 
-// The server's numbers over time, for the Pro admin panel: a sample a minute (who's online, voice, streams,
+// The server's numbers over time, for the admin panel: a sample a minute (who's online, voice, streams,
 // messages, joins, network, CPU, memory), kept 30 days in SQLite. Reading /proc is cheap; nothing runs per packet
 // besides the atomic counters.
 

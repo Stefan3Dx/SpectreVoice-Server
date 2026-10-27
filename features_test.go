@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -16,86 +15,80 @@ import (
 	"time"
 )
 
-// A licence service for tests: its own vendor key; it activates "SV-GOOD-KEY" for the server that asks.
+// A donation service for tests: its own vendor key; "SVD-GOOD" gives 150 places for 30 days, "SVD-ALL-1" no limit.
 func fakeLicenseService(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 	vk := newKey(t)
 	pub, _ := x509.MarshalPKIXPublicKey(&vk.PublicKey)
-	issue := func(srv string) string {
-		c, _ := json.Marshal(licenseClaims{V: 1, Lic: "L1", Tier: "pro", Srv: srv, Iat: time.Now().UnixMilli()})
+	issue := func(srv string, slots int) string {
+		c, _ := json.Marshal(slotClaims{V: 1, Lic: "D1", Tier: "gift", Srv: srv, Iat: time.Now().UnixMilli(), Exp: time.Now().Add(30 * 24 * time.Hour).UnixMilli(), Slots: &slots})
 		body := base64.RawURLEncoding.EncodeToString(c)
 		return body + "." + base64.RawURLEncoding.EncodeToString(signRaw(vk, []byte(body)))
 	}
 	ls := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if r.URL.Path != "/v1/activate" || req["key"] != "SV-GOOD-KEY" {
+		slots := map[string]int{"SVD-GOOD": 150, "SVD-ALL-1": 0}
+		n, ok := slots[req["code"]]
+		if r.URL.Path != "/v1/gift" || !ok {
 			w.WriteHeader(403)
-			_, _ = io.WriteString(w, `{"error":"unknown key"}`)
+			_, _ = io.WriteString(w, `{"error":"unknown code"}`)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": issue(req["server"])})
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": issue(req["server"], n)})
 	}))
 	t.Cleanup(ls.Close)
 	return ls, base64.StdEncoding.EncodeToString(pub)
 }
 
-func TestLicenseActivation(t *testing.T) {
+// Everything is free; a donation adds places for a month, and they add up.
+func TestDonationSlots(t *testing.T) {
 	ls, vendor := fakeLicenseService(t)
 	s, hs := newTestServer(t, func(c *config) { c.licenseURL = ls.URL; c.vendorKey = vendor; c.owners = "" })
 	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
-	if tier := ana.wel["tier"].(map[string]any); tier["limits"].(map[string]any)["tier"] != "free" || tier["token"] != nil {
-		t.Fatal(tier)
+	lim := ana.wel["tier"].(map[string]any)["limits"].(map[string]any)
+	if lim["maxUsers"].(float64) != 30 || lim["audioMax"].(float64) != 6 || lim["videoMax"].(float64) != 8 || lim["cosmetics"] != true {
+		t.Fatal(lim)
 	}
-	// Only the server's owners
-	ana.send(map[string]any{"t": "license-activate", "key": "SV-GOOD-KEY"})
+	if s.maxUsers() != 30 {
+		t.Fatal(s.maxUsers())
+	}
+	// Only the server's admins redeem
+	ana.send(map[string]any{"t": "slots-redeem", "code": "SVD-GOOD"})
 	if e := ana.wait(isT("error")); e["why"] != "role" {
 		t.Fatal(e)
 	}
 	_ = s.store.setRole(ana.uid, roleOwner)
-	ana.send(map[string]any{"t": "license-activate", "key": "SV-BAD-KEY"})
-	if e := ana.wait(isT("error")); e["why"] != "license" {
+	ana.send(map[string]any{"t": "slots-redeem", "code": "SVD-BAD1"})
+	if e := ana.wait(isT("error")); e["why"] != "slots" {
 		t.Fatal(e)
 	}
-	ana.send(map[string]any{"t": "license-activate", "key": "SV-GOOD-KEY"})
+	ana.send(map[string]any{"t": "slots-redeem", "code": "SVD-GOOD"})
 	tier := ana.wait(isT("tier"))
-	if tier["limits"].(map[string]any)["tier"] != "pro1" || tier["limits"].(map[string]any)["maxUsers"].(float64) != 100 || tier["token"] == nil {
+	if l := tier["limits"].(map[string]any); l["maxUsers"].(float64) != 180 || l["supporter"] != true {
 		t.Fatal(tier)
 	}
-	// The app's own check: the server signs its nonce with the key the token names
-	nonce := make([]byte, 32)
-	nonce[0] = 7
-	bob := dialNonce(t, hs, base64.StdEncoding.EncodeToString(nonce))
-	bt := bob["tier"].(map[string]any)
-	der, _ := base64.StdEncoding.DecodeString(bt["key"].(string))
-	k, _ := x509.ParsePKIXPublicKey(der)
-	sig, _ := base64.StdEncoding.DecodeString(bt["sig"].(string))
-	if !verifyRaw(k.(*ecdsa.PublicKey), append([]byte(serverSigPrefix), nonce...), sig) {
-		t.Fatal("server signature")
+	ana.wait(func(m map[string]any) bool { return m["t"] == "slots" && len(m["donations"].([]any)) == 1 })
+	// Kept across a restart (the tokens are on disk), for this server only
+	s2, err := newLicensing(s)
+	if err != nil || s2.limits().MaxUsers != 180 {
+		t.Fatal(err, s2.limits())
 	}
-	c, err := s.lic.parse(bt["token"].(string))
-	if err != nil || c.Srv != fingerprint(der) {
-		t.Fatal(c, err)
+	// No limit
+	ana.send(map[string]any{"t": "slots-redeem", "code": "SVD-ALL-1"})
+	ana.wait(func(m map[string]any) bool { return m["t"] == "tier" && m["limits"].(map[string]any)["maxUsers"].(float64) == 0 })
+	if s.limits().MaxUsers != 0 || s.maxUsers() != s.cfg.maxUsers { // only the owner's own cap is left
+		t.Fatal(s.limits(), s.maxUsers())
 	}
-	// Pro limits apply: more communities per person
-	if s.limits().OwnCommunities != proLimits.OwnCommunities {
+	// Ended donations go
+	s.lic.mu.Lock()
+	for _, c := range s.lic.tokens {
+		c.Exp = time.Now().Add(-time.Minute).UnixMilli()
+	}
+	s.lic.mu.Unlock()
+	if s.maxUsers() != 30 || s.limits().Supporter {
 		t.Fatal(s.limits())
 	}
-	// A new server key (another server): the token is for someone else, back to Free until activated again
-	s2, _ := newTestServer(t, func(c *config) { c.licenseURL = ls.URL; c.vendorKey = vendor })
-	if err := s2.lic.apply(bt["token"].(string), false); err != nil || s2.lic.status != "rebind" || s2.limits().Tier != "free" {
-		t.Fatal(s2.lic.status, err)
-	}
-	// Released: Free again
-	ana.send(map[string]any{"t": "license-release"})
-	ana.wait(func(m map[string]any) bool { return m["t"] == "license" && m["status"] == "free" })
-}
-
-func dialNonce(t *testing.T, hs *httptest.Server, nonce string) map[string]any {
-	t.Helper()
-	key := newKey(t)
-	c, _ := dialVWith(t, hs, key, "Bob", map[string]any{"nonce": nonce})
-	return c.wel
 }
 
 func TestChannelFeatures(t *testing.T) {
@@ -107,12 +100,12 @@ func TestChannelFeatures(t *testing.T) {
 	s.hub.forget(1)
 	s.hub.mu.Unlock()
 	afk := chanID(t, ana.wel, "AFK")
-	// A channel with an icon, a quality level above Free's top (clamped), moderated
-	ana.send(map[string]any{"t": "ch-save", "name": "Muzică", "icon": "🎸", "quality": 6, "moderated": true})
+	// A channel with an icon, the top quality (free for everyone), moderated; above the top is clamped
+	ana.send(map[string]any{"t": "ch-save", "name": "Muzică", "icon": "🎸", "quality": 9, "moderated": true})
 	c := ana.wait(func(m map[string]any) bool {
 		return m["t"] == "channel" && m["c"].(map[string]any)["name"] == "Muzică"
 	})["c"].(map[string]any)
-	if c["icon"] != "🎸" || c["quality"].(float64) != 4 || c["moderated"] != true {
+	if c["icon"] != "🎸" || c["quality"].(float64) != 6 || c["moderated"] != true {
 		t.Fatal(c)
 	}
 	// A spacer can't be joined

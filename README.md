@@ -39,8 +39,8 @@ files and settings are here and nowhere else. What leaves it, and only when you 
   server, never who or what (`SV_PUSH_CONTENT=false`). On the phone they're off until the person turns them on.
 - **Music bot**: `!play some words` searches YouTube from this server (the words go there); `!play <link>` plays
   only that link (public addresses only).
-- **Pro licence**: once a day the licence key and this server's key fingerprint go to the licence service. Nothing
-  about the people on it.
+- **Donations for places**: when you redeem one, this server's key fingerprint goes to the donation service.
+  Nothing about the people on it.
 - **Crash reports** from the apps go to the developer only if the person says yes, with addresses and ids taken out.
 
 ## Settings
@@ -48,12 +48,12 @@ files and settings are here and nowhere else. What leaves it, and only when you 
 `/etc/spectrevoice/server.env` (see [deploy/server.env.example](deploy/server.env.example)), then
 `systemctl restart spectrevoice`.
 
-## Free and Pro
+## Free, with donations
 
-Every server is Free: voice up to 96 kbit/s stereo, streams up to 1080p30, 2 communities per person, files up to
-25 MB. A Pro licence (bought once, typed in the app: *Server › Licence*) lifts these: studio voice up to 256 kbit/s,
-streams up to 4K60, 50 communities per person, files up to 500 MB, cosmetics. The licence is bound to this
-server's key; moving to another server, the app asks for it again and it moves there.
+Everything is free on every server: voice up to 256 kbit/s stereo, streams up to 4K60, the admin panel, every
+theme. A server has **30 places** (people connected at once). A donation made for it adds places for 30 days:
+from +20 to no limit, by the donation's size, and donations add up. In the app: *Server › Donate*, or a donation
+code from the website (*Server › Donation code*). `SV_MAX_USERS` sets your own lower cap.
 
 ## Build
 

@@ -18,13 +18,7 @@ func TestAdminPanel(t *testing.T) {
 	s.hub.mu.Lock()
 	s.hub.refreshRoles(1)
 	s.hub.mu.Unlock()
-	// Free: no panel
-	ana.send(map[string]any{"t": "admin-link"})
-	if e := ana.wait(isT("error")); e["why"] != "pro" {
-		t.Fatal(e)
-	}
-	ana.send(map[string]any{"t": "license-activate", "key": "SV-GOOD-KEY"})
-	ana.wait(isT("tier"))
+	// Every server has the panel
 	ana.send(map[string]any{"t": "say", "to": "c:" + itoa(int(chanID(t, ana.wel, "Lobby"))), "text": "salut"})
 	ana.wait(isT("msg"))
 	s.metrics.take()

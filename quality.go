@@ -8,15 +8,15 @@ package main
 //	2 Standard  32 kbit/s mono, voice, DTX
 //	3 High      64 kbit/s mono, voice          (the default)
 //	4 Music     96 kbit/s stereo, music
-//	5 Studio   160 kbit/s stereo, music        (Pro)
-//	6 Max      256 kbit/s stereo, music        (Pro)
+//	5 Studio   160 kbit/s stereo, music
+//	6 Max      256 kbit/s stereo, music
 //
 // Video (screen and camera; H.264 by default, VP9 / AV1 when both ends have them):
 //
-//	1 360p30 0.8 Mbit/s · 2 480p30 1.2 · 3 720p30 2.5 · 4 720p60 4 · 5 1080p30 5 (Free's top)
-//	6 1080p60 8 · 7 1440p60 12 · 8 2160p60 20   (Pro)
+//	1 360p30 0.8 Mbit/s · 2 480p30 1.2 · 3 720p30 2.5 · 4 720p60 4 · 5 1080p30 5
+//	6 1080p60 8 · 7 1440p60 12 · 8 2160p60 20 
 //
-// A channel has its voice level (0: the server's default); the apps encode at min(channel, tier, their own
+// A channel has its voice level (0: the server's default); the apps encode at min(channel, their own
 // setting). The server forwards packets as they are (no transcoding), so quality costs it bandwidth, not CPU.
 
 type audioLevel struct {
@@ -58,7 +58,7 @@ var videoLevels = []videoLevel{
 
 const defaultAudioLevel = 3
 
-// clampAudio keeps a channel's level within 0 (default) .. the tier's top.
+// clampAudio keeps a channel's level within 0 (default) .. the top.
 func clampAudio(l, top int) int {
 	if l < 0 {
 		return 0
@@ -66,7 +66,7 @@ func clampAudio(l, top int) int {
 	return min(l, top)
 }
 
-// channelAudio: the level a channel's voice is encoded at (its own, or the server's default), under the tier.
+// channelAudio: the level a channel's voice is encoded at (its own, or the server's default).
 func (s *server) channelAudio(c *channel) int {
 	l := c.Quality
 	if l == 0 {
@@ -75,11 +75,14 @@ func (s *server) channelAudio(c *channel) int {
 	return clampAudio(max(1, l), s.limits().AudioMax)
 }
 
-// maxUsers: how many may be connected at once: the server's own setting, under its tier (plus a donor's gift).
+// maxUsers: how many may be connected at once: the server's own setting, under its places (30, plus what donations add).
 func (s *server) maxUsers() int {
-	n := s.cfg.maxUsers
-	if t := s.limits().MaxUsers; t > 0 && t < n {
-		n = t
+	n, t := s.cfg.maxUsers, s.limits().MaxUsers
+	switch {
+	case n <= 0:
+		return t // 0 = no limit
+	case t > 0 && t < n:
+		return t
 	}
 	return n
 }

@@ -1,9 +1,9 @@
 package main
 
-// The admin panel (Pro servers): a web page at /admin with the server's numbers over time, its communities,
+// The admin panel (every server): a web page at /admin with the server's numbers over time, its communities,
 // who's online, bans, announcements and the log. The app opens it with a one-time link:
 //
-//	<- {"t":"admin-link"}  (staff, Pro)  -> {"t":"admin-link","url":"https://…/admin/login?code=…"}
+//	<- {"t":"admin-link"}  (staff)  -> {"t":"admin-link","url":"https://…/admin/login?code=…"}
 //
 // The code works once, for two minutes, and becomes a 12-hour cookie for that browser.
 
@@ -100,8 +100,6 @@ func (s *server) adminOp(ss *session, t string, _ map[string]any) bool {
 	switch {
 	case !staff:
 		ss.refuse(t, "role", "only the server's admins")
-	case !s.limits().Pro:
-		ss.refuse(t, "pro", "the admin panel comes with a Pro licence")
 	default:
 		ss.send(map[string]any{"t": "admin-link", "url": ss.base + "/admin/login?code=" + s.admin.newCode(ss.uid)})
 	}
@@ -128,11 +126,6 @@ func (s *server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.store.role(uid).atLeast(roleAdmin) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(w, "Open the admin panel from the app (Server › Admin panel).")
-		return
-	}
-	if !s.limits().Pro {
-		w.WriteHeader(http.StatusPaymentRequired)
-		_, _ = io.WriteString(w, "The admin panel comes with a Pro licence.")
 		return
 	}
 	if path == "" || path == "/" {

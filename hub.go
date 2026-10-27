@@ -352,7 +352,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		nonce: clip(hello.Nonce, 100), since: time.Now().UnixMilli()}
 	comm := h.pickCommunity(uid, hello.Comm)
 	h.mu.Lock()
-	if len(h.sessions) >= h.s.maxUsers() && !rl.atLeast(roleAdmin) {
+	if mu := h.s.maxUsers(); mu > 0 && h.people() >= mu && !rl.atLeast(roleAdmin) {
 		h.mu.Unlock()
 		fail("full", "the server is full")
 		return
@@ -364,7 +364,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		"t": "welcome", "sid": ss.sid, "uid": uid, "token": h.s.makeToken(uid),
 		"server": map[string]any{"name": h.s.cfg.name, "motd": h.s.cfg.motd, "version": version, "ice": h.s.publicICE(), "create": h.s.cfg.createCommunities,
 			"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil},
-		"tier": h.s.lic.welcome(hello.Nonce),
+		"tier": h.s.lic.welcome(),
 	}
 	for k, v := range h.enterLocked(ss, comm) {
 		welcome[k] = v
@@ -961,6 +961,17 @@ func (h *hub) deleteChannel(ss *session, id int64) {
 	}
 	h.mu.Unlock()
 	h.s.voice.sync(append(gone, def)...)
+}
+
+// people: how many are connected (bots don't take a place); h.mu held.
+func (h *hub) people() int {
+	n := 0
+	for _, o := range h.sessions {
+		if !o.bot {
+			n++
+		}
+	}
+	return n
 }
 
 // sessionsOf gives a uid's sessions (a person may be on a phone and a PC).

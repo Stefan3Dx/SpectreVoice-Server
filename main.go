@@ -68,7 +68,7 @@ type config struct {
 	createCommunities string
 	pushCreds         string // Firebase service account (JSON) for push notifications ("": none)
 	inviteBase        string // what invite links start with (https://sfu.example.com/i/)
-	licenseURL        string // the licence service (Pro)
+	licenseURL        string // the donation service (places for donations)
 	vendorKey         string // its public key (tests use their own)
 	audioLevel        int    // the voice's level where a channel doesn't set one (quality.go)
 	music             bool   // the music bot (needs yt-dlp and ffmpeg)
@@ -130,7 +130,7 @@ func main() {
 	flag.StringVar(&cfg.name, "name", env("SV_NAME", "Spectre Voice"), "the server's name in the apps [SV_NAME]")
 	flag.StringVar(&cfg.motd, "motd", env("SV_MOTD", ""), "message shown on joining [SV_MOTD]")
 	flag.StringVar(&cfg.joinPass, "password", env("SV_PASSWORD", ""), "server password ('' for an open server) [SV_PASSWORD]")
-	flag.IntVar(&cfg.maxUsers, "max-users", envInt("SV_MAX_USERS", 200), "most people connected at once [SV_MAX_USERS]")
+	flag.IntVar(&cfg.maxUsers, "max-users", envInt("SV_MAX_USERS", 0), "your own cap on people connected at once (0: only the places: 30, plus donations) [SV_MAX_USERS]")
 	flag.StringVar(&cfg.owners, "owners", env("SV_OWNERS", ""), "uids made owners at start, comma separated [SV_OWNERS]")
 	flag.StringVar(&cfg.publicIP, "public-ip", env("SV_PUBLIC_IP", ""), "address announced for voice: the LAN IP, or the public IP / DDNS name when ports are forwarded (the LAN keeps working) [SV_PUBLIC_IP]")
 	udpMin := flag.Int("udp-min", envInt("SV_UDP_MIN", 50000), "lowest UDP port for voice and streams [SV_UDP_MIN]")
@@ -156,7 +156,7 @@ func main() {
 	flag.StringVar(&cfg.contact, "contact-email", env("SV_CONTACT_EMAIL", ""), "the owner's contact for data requests, shown at /privacy [SV_CONTACT_EMAIL]")
 	flag.StringVar(&cfg.createCommunities, "create-communities", env("SV_CREATE_COMMUNITIES", "anyone"), "who makes communities: anyone or staff [SV_CREATE_COMMUNITIES]")
 	flag.StringVar(&cfg.pushCreds, "push-credentials", env("SV_PUSH_CREDENTIALS", ""), "Firebase service account (JSON) for push notifications [SV_PUSH_CREDENTIALS]")
-	flag.StringVar(&cfg.licenseURL, "license-url", env("SV_LICENSE_URL", "https://license.spectrevoice.com"), "the licence service, for Pro [SV_LICENSE_URL]")
+	flag.StringVar(&cfg.licenseURL, "license-url", env("SV_LICENSE_URL", "https://license.spectrevoice.com"), "the donation service: donations add places for a month [SV_LICENSE_URL]")
 	flag.IntVar(&cfg.audioLevel, "audio-quality", envInt("SV_AUDIO_QUALITY", defaultAudioLevel), "voice quality where a channel sets none: 1 low … 6 max [SV_AUDIO_QUALITY]")
 	flag.BoolVar(&cfg.pushContent, "push-content", envBool("SV_PUSH_CONTENT", false), "push notifications carry the sender and the text (they pass through Google) [SV_PUSH_CONTENT]")
 	flag.BoolVar(&cfg.music, "music", envBool("SV_MUSIC", true), "the music bot (!play), when yt-dlp and ffmpeg are installed [SV_MUSIC]")
@@ -249,7 +249,7 @@ func newServer(cfg config) (*server, error) {
 		return nil, err
 	}
 	s.voice = newVoice(s)
-	go s.lic.refreshLoop()
+	go s.lic.slotsWatch()
 	s.metrics = newMetrics(s)
 	if code := s.claimCode(); code != "" {
 		log.Printf("nobody owns this server yet: in the app, Server › Claim, type %s", code)
