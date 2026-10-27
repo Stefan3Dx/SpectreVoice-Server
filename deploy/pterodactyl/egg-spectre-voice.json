@@ -1,0 +1,169 @@
+{
+    "_comment": "Spectre Voice Server egg for Pterodactyl (PTDL_v2). Guide: deploy/pterodactyl/README.md",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-10-27T12:00:00+02:00",
+    "name": "Spectre Voice",
+    "author": "support@spectrevoice.com",
+    "description": "Spectre Voice Server: voice, chat, games and streams for a community. One port (TCP for the apps, UDP for the voice, the same number). The plan's places are set by the host (SV_MAX_USERS, 10 to 1000) and unlocked by the host's plan code (SV_PARTNER_CODE).",
+    "features": null,
+    "docker_images": {
+        "Debian": "ghcr.io/parkervcp/yolks:debian"
+    },
+    "file_denylist": [
+        "spectrevoice-server",
+        "data/server.key",
+        "data/bin/*",
+        "data/slots/*",
+        "data/clock.tok",
+        "data/machine.id"
+    ],
+    "startup": "SV_DATA=/home/container/data SV_LISTEN=0.0.0.0:{{SERVER_PORT}} SV_UDP_PORT={{SERVER_PORT}} SV_YTDLP=/home/container/bin/yt-dlp SV_FFMPEG=/home/container/bin/ffmpeg ./spectrevoice-server",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"Spectre Voice Server \"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Spectre Voice Server — Pterodactyl install (runs in the installer container; the server's files are /mnt/server)\nset -euo pipefail\napt-get update -qq >/dev/null && apt-get install -y -qq curl ca-certificates xz-utils >/dev/null\ncd /mnt/server\nARCH=$([[ \"$(uname -m)\" == \"aarch64\" ]] && echo arm64 || echo amd64)\nBASE=\"${DOWNLOAD_BASE:-https://github.com/Stefan3Dx/SpectreVoice-Server/releases/latest/download}\"\necho \"Spectre Voice Server: downloading for ${ARCH} from ${BASE}\"\ncurl -fsSL \"${BASE}/spectrevoice-server-linux-${ARCH}.tar.gz\" -o s.tgz\ncurl -fsSL \"${BASE}/SHA256SUMS\" -o SHA256SUMS\ngrep \"linux-${ARCH}.tar.gz\" SHA256SUMS | sed \"s|spectrevoice-server-linux-${ARCH}.tar.gz|s.tgz|\" | sha256sum -c --quiet\ntar -xzf s.tgz && rm -f s.tgz SHA256SUMS\nchmod 755 spectrevoice-server\nmkdir -p data bin\n# The music bot (optional): yt-dlp and a static ffmpeg, in ./bin\nif [[ \"${INSTALL_MUSIC:-0}\" == \"1\" ]]; then\n  echo \"Music bot: yt-dlp and ffmpeg\"\n  yt=$([[ $ARCH == arm64 ]] && echo yt-dlp_linux_aarch64 || echo yt-dlp_linux)\n  curl -fsSL \"https://github.com/yt-dlp/yt-dlp/releases/latest/download/${yt}\" -o bin/yt-dlp && chmod 755 bin/yt-dlp\n  ff=$([[ $ARCH == arm64 ]] && echo linuxarm64 || echo linux64)\n  curl -fsSL \"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${ff}-gpl.tar.xz\" -o ff.txz\n  tar -xJf ff.txz --strip-components=2 -C bin --wildcards '*/bin/ffmpeg' && rm -f ff.txz\nfi\necho \"Spectre Voice Server installed. The owner's claim code is printed at the first start (and kept in data/claim.code).\"\n",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Server name",
+            "description": "The name people see in the apps.",
+            "env_variable": "SV_NAME",
+            "default_value": "Spectre Voice",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Server password",
+            "description": "Empty: an open server.",
+            "env_variable": "SV_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:72",
+            "field_type": "text"
+        },
+        {
+            "name": "Contact e-mail",
+            "description": "For people's data requests (GDPR), shown at /privacy.",
+            "env_variable": "SV_CONTACT_EMAIL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|email|max:120",
+            "field_type": "text"
+        },
+        {
+            "name": "Places (plan)",
+            "description": "People connected at once: the plan's size, 10 to 1000. Set by the host.",
+            "env_variable": "SV_MAX_USERS",
+            "default_value": "30",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|integer|between:10,1000",
+            "field_type": "text"
+        },
+        {
+            "name": "Plan code",
+            "description": "The host's plan code (SVP-…) from the Spectre Voice partner API: it unlocks the places above 30. Hidden from the customer.",
+            "env_variable": "SV_PARTNER_CODE",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:64|regex:/^(SVP-[A-Z0-9-]{8,60})?$/",
+            "field_type": "text"
+        },
+        {
+            "name": "Public address",
+            "description": "The node's public IP or name, announced for the voice (needed behind NAT).",
+            "env_variable": "SV_PUBLIC_IP",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Invite links base",
+            "description": "e.g. https://voice.example.com/i/ when a domain points at this server; empty: the server's address.",
+            "env_variable": "SV_INVITE_BASE",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "TURN relay",
+            "description": "Optional: turn:relay.example.com:3478 for people behind strict networks.",
+            "env_variable": "SV_TURN",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "TURN user",
+            "description": "",
+            "env_variable": "SV_TURN_USER",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:120",
+            "field_type": "text"
+        },
+        {
+            "name": "TURN password",
+            "description": "",
+            "env_variable": "SV_TURN_PASS",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:120",
+            "field_type": "text"
+        },
+        {
+            "name": "Music bot",
+            "description": "1: install yt-dlp and ffmpeg (reinstall to apply) and turn the music bot on.",
+            "env_variable": "INSTALL_MUSIC",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Music bot on",
+            "description": "true or false (needs the music bot installed).",
+            "env_variable": "SV_MUSIC",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|in:true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Download from",
+            "description": "Where the server is downloaded from (releases).",
+            "env_variable": "DOWNLOAD_BASE",
+            "default_value": "https://github.com/Stefan3Dx/SpectreVoice-Server/releases/latest/download",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|max:255",
+            "field_type": "text"
+        }
+    ]
+}

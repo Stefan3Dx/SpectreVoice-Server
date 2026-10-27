@@ -69,6 +69,8 @@ type config struct {
 	pushCreds         string // Firebase service account (JSON) for push notifications ("": none)
 	inviteBase        string // what invite links start with (https://sfu.example.com/i/)
 	licenseURL        string // the donation service (places for donations)
+	partnerCode       string // a hosting partner's plan code (SVP-…): its places, redeemed at start
+	udpPort           int    // one UDP port for all the voice and streams (hosting panels), instead of the range
 	vendorKey         string // its public key (tests use their own)
 	audioLevel        int    // the voice's level where a channel doesn't set one (quality.go)
 	music             bool   // the music bot (needs yt-dlp and ffmpeg)
@@ -78,6 +80,7 @@ type config struct {
 }
 
 type server struct {
+	udpMux  *ice.MultiUDPMuxDefault // with SV_UDP_PORT
 	cfg     config
 	api     *webrtc.API
 	ice     []webrtc.ICEServer
@@ -135,6 +138,8 @@ func main() {
 	flag.StringVar(&cfg.publicIP, "public-ip", env("SV_PUBLIC_IP", ""), "address announced for voice: the LAN IP, or the public IP / DDNS name when ports are forwarded (the LAN keeps working) [SV_PUBLIC_IP]")
 	udpMin := flag.Int("udp-min", envInt("SV_UDP_MIN", 50000), "lowest UDP port for voice and streams [SV_UDP_MIN]")
 	udpMax := flag.Int("udp-max", envInt("SV_UDP_MAX", 50200), "highest UDP port [SV_UDP_MAX]")
+	flag.IntVar(&cfg.udpPort, "udp-port", envInt("SV_UDP_PORT", 0), "one UDP port for all voice and streams, instead of the range (hosting panels: the same number as the HTTP port) [SV_UDP_PORT]")
+	flag.StringVar(&cfg.partnerCode, "partner-code", env("SV_PARTNER_CODE", ""), "a hosting partner's plan code (SVP-…), set by the host [SV_PARTNER_CODE]")
 	flag.StringVar(&cfg.stun, "stun", env("SV_STUN", ""), "STUN server for the server itself, e.g. stun:stun.l.google.com:19302 [SV_STUN]")
 	flag.StringVar(&cfg.turn, "turn", env("SV_TURN", ""), "TURN server handed to the apps, e.g. turn:sfu.example.com:3478 [SV_TURN]")
 	flag.StringVar(&cfg.turnUser, "turn-user", env("SV_TURN_USER", ""), "TURN user [SV_TURN_USER]")
@@ -194,7 +199,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("Spectre Voice Server %s on %s (UDP %d-%d%s), data in %s", version, cfg.listen, cfg.udpMin, cfg.udpMax,
+	udp := fmt.Sprintf("UDP %d-%d", cfg.udpMin, cfg.udpMax)
+	if cfg.udpPort > 0 {
+		udp = fmt.Sprintf("UDP %d", cfg.udpPort)
+	}
+	log.Printf("Spectre Voice Server %s on %s (%s%s), data in %s", version, cfg.listen, udp,
 		map[bool]string{true: ", announced as " + cfg.publicIP, false: ""}[cfg.publicIP != ""], cfg.data)
 	go s.watchdog(cfg.listen)
 	srv := &http.Server{Addr: cfg.listen, Handler: s.handler(), ReadHeaderTimeout: 15 * time.Second}
@@ -379,7 +388,15 @@ func (s *server) setup() error {
 	ir.Add(pli)
 	se := webrtc.SettingEngine{}
 	se.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
-	if err := se.SetEphemeralUDPPortRange(uint16(s.cfg.udpMin), uint16(s.cfg.udpMax)); err != nil {
+	if s.cfg.udpPort > 0 {
+		// Everything on one UDP port (a hosting panel gives one port per server)
+		mux, err := ice.NewMultiUDPMuxFromPort(s.cfg.udpPort)
+		if err != nil {
+			return fmt.Errorf("udp port %d: %w", s.cfg.udpPort, err)
+		}
+		se.SetICEUDPMux(mux)
+		s.udpMux = mux
+	} else if err := se.SetEphemeralUDPPortRange(uint16(s.cfg.udpMin), uint16(s.cfg.udpMax)); err != nil {
 		return err
 	}
 	if s.cfg.publicIP != "" {

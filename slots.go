@@ -484,10 +484,13 @@ func (l *licensing) redeem(product, purchase, code string) error {
 	if err != nil {
 		return err
 	}
+	l.keepClock(r.Clock, nonce)
+	if r.Token == "" {
+		return nil // a hosting plan within the free 30 places: nothing to add
+	}
 	if err := l.add(r.Token); err != nil {
 		return err
 	}
-	l.keepClock(r.Clock, nonce)
 	l.ed.accepted(l)
 	return nil
 }
@@ -506,6 +509,21 @@ func (h *hub) licenseChanged() {
 // slotsWatch tells everyone when the places change (a donation ends, one comes in at a check-in).
 func (l *licensing) slotsWatch() {
 	go l.ed.background(l)
+	if code := strings.ToUpper(strings.TrimSpace(l.s.cfg.partnerCode)); code != "" {
+		// A hosting plan's places: redeemed at every start (the host may have changed the plan)
+		go func() {
+			err := l.redeem("", "", code)
+			l.mu.Lock()
+			l.last = err
+			l.mu.Unlock()
+			if err != nil {
+				log.Printf("places: the hosting plan's code: %v", err)
+			} else {
+				log.Printf("places: the hosting plan gives %s", placesText(l.limits().MaxUsers))
+				l.s.hub.licenseChanged()
+			}
+		}()
+	}
 	last := l.limits().MaxUsers
 	for range time.Tick(time.Minute) {
 		if n := l.limits().MaxUsers; n != last {

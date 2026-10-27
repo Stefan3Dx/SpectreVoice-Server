@@ -80,8 +80,15 @@ func (c *client) read(ended chan<- bool) {
 	}
 }
 
-func TestPublishAndWatch(t *testing.T) {
-	s, ts := newTestServer(t, nil)
+func TestPublishAndWatch(t *testing.T) { publishAndWatch(t, nil) }
+
+// A hosting panel's one port: all the media through a single UDP port
+func TestPublishAndWatchOnePort(t *testing.T) {
+	publishAndWatch(t, func(c *config) { c.udpPort = 41733 })
+}
+
+func publishAndWatch(t *testing.T, mod func(*config)) {
+	s, ts := newTestServer(t, mod)
 	// Streams belong to a community: the streamer and the viewer are on the server, in it
 	ac, _ := dialV(t, ts, newKey(t), "Alice", "")
 	alice := ac.uid
