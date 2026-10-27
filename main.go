@@ -147,7 +147,7 @@ func main() {
 	flag.IntVar(&cfg.maxRooms, "max-streams", envInt("SV_MAX_STREAMS", 16), "most streams at once [SV_MAX_STREAMS]")
 	flag.IntVar(&cfg.maxSubs, "max-viewers", envInt("SV_MAX_VIEWERS", 50), "most viewers per stream [SV_MAX_VIEWERS]")
 	flag.BoolVar(&cfg.updates, "updates", envBool("SV_UPDATES", false), "serve the apps' updates (Android direct APK, Windows MSI) from GitHub releases [SV_UPDATES]")
-	flag.StringVar(&cfg.ghApk, "updates-repo", env("SV_UPDATES_REPO", "Stefan3Dx/SpectreVoice"), "GitHub repo of the releases (token: SV_GITHUB_TOKEN) [SV_UPDATES_REPO]")
+	flag.StringVar(&cfg.ghApk, "updates-repo", env("SV_UPDATES_REPO", "Stefan3Dx/SpectreVoice-Releases"), "public GitHub repo of the apps' releases (a private one needs SV_GITHUB_TOKEN) [SV_UPDATES_REPO]")
 	flag.BoolVar(&cfg.files, "files", envBool("SV_FILES", true), "files shared in the chat [SV_FILES]")
 	flag.Int64Var(&cfg.fileMB, "file-max-mb", int64(envInt("SV_FILE_MAX_MB", 100)), "largest shared file, MB [SV_FILE_MAX_MB]")
 	flag.IntVar(&cfg.fileDays, "file-days", envInt("SV_FILE_DAYS", 30), "days a shared file is kept [SV_FILE_DAYS]")
