@@ -63,5 +63,15 @@ go test ./... && CGO_ENABLED=0 go build -o spectrevoice-server .
 
 ## License
 
-[PolyForm Shield 1.0.0](LICENSE.md): free to use, change and run, including for your own community or business;
-not to make a product that competes with Spectre Voice.
+[Elastic License 2.0](LICENSE.md), with an added permission: free to use and run, including to host your own
+community or business for others; not to offer Spectre Voice servers as a hosting service, and not to change,
+disable or get around the places limit and the donation checks (the licence key functionality).
+
+## Places and donations
+
+Every server has 30 places (people connected at once). A donation made for a server, from the app, adds places for
+30 days: the server sends the donation together with its own key and its machine's hashed parts to the donation
+service, which signs a token for that server on that machine. The places themselves come with the official Plus
+build, which the server then downloads (signed by the service, checked before it runs) and keeps in
+`/var/lib/spectrevoice/bin`. The Plus build checks in every 6 hours; a week without the service pauses the extra
+places until it is reached again. A server without donations never contacts the donation service.

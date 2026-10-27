@@ -3,93 +3,14 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
-
-// A donation service for tests: its own vendor key; "SVD-GOOD" gives 150 places for 30 days, "SVD-ALL-1" no limit.
-func fakeLicenseService(t *testing.T) (*httptest.Server, string) {
-	t.Helper()
-	vk := newKey(t)
-	pub, _ := x509.MarshalPKIXPublicKey(&vk.PublicKey)
-	issue := func(srv string, slots int) string {
-		c, _ := json.Marshal(slotClaims{V: 1, Lic: "D1", Tier: "gift", Srv: srv, Iat: time.Now().UnixMilli(), Exp: time.Now().Add(30 * 24 * time.Hour).UnixMilli(), Slots: &slots})
-		body := base64.RawURLEncoding.EncodeToString(c)
-		return body + "." + base64.RawURLEncoding.EncodeToString(signRaw(vk, []byte(body)))
-	}
-	ls := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]string
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		slots := map[string]int{"SVD-GOOD": 150, "SVD-ALL-1": 0}
-		n, ok := slots[req["code"]]
-		if r.URL.Path != "/v1/gift" || !ok {
-			w.WriteHeader(403)
-			_, _ = io.WriteString(w, `{"error":"unknown code"}`)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": issue(req["server"], n)})
-	}))
-	t.Cleanup(ls.Close)
-	return ls, base64.StdEncoding.EncodeToString(pub)
-}
-
-// Everything is free; a donation adds places for a month, and they add up.
-func TestDonationSlots(t *testing.T) {
-	ls, vendor := fakeLicenseService(t)
-	s, hs := newTestServer(t, func(c *config) { c.licenseURL = ls.URL; c.vendorKey = vendor; c.owners = "" })
-	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
-	lim := ana.wel["tier"].(map[string]any)["limits"].(map[string]any)
-	if lim["maxUsers"].(float64) != 30 || lim["audioMax"].(float64) != 6 || lim["videoMax"].(float64) != 8 || lim["cosmetics"] != true {
-		t.Fatal(lim)
-	}
-	if s.maxUsers() != 30 {
-		t.Fatal(s.maxUsers())
-	}
-	// Only the server's admins redeem
-	ana.send(map[string]any{"t": "slots-redeem", "code": "SVD-GOOD"})
-	if e := ana.wait(isT("error")); e["why"] != "role" {
-		t.Fatal(e)
-	}
-	_ = s.store.setRole(ana.uid, roleOwner)
-	ana.send(map[string]any{"t": "slots-redeem", "code": "SVD-BAD1"})
-	if e := ana.wait(isT("error")); e["why"] != "slots" {
-		t.Fatal(e)
-	}
-	ana.send(map[string]any{"t": "slots-redeem", "code": "SVD-GOOD"})
-	tier := ana.wait(isT("tier"))
-	if l := tier["limits"].(map[string]any); l["maxUsers"].(float64) != 180 || l["supporter"] != true {
-		t.Fatal(tier)
-	}
-	ana.wait(func(m map[string]any) bool { return m["t"] == "slots" && len(m["donations"].([]any)) == 1 })
-	// Kept across a restart (the tokens are on disk), for this server only
-	s2, err := newLicensing(s)
-	if err != nil || s2.limits().MaxUsers != 180 {
-		t.Fatal(err, s2.limits())
-	}
-	// No limit
-	ana.send(map[string]any{"t": "slots-redeem", "code": "SVD-ALL-1"})
-	ana.wait(func(m map[string]any) bool { return m["t"] == "tier" && m["limits"].(map[string]any)["maxUsers"].(float64) == 0 })
-	if s.limits().MaxUsers != 0 || s.maxUsers() != s.cfg.maxUsers { // only the owner's own cap is left
-		t.Fatal(s.limits(), s.maxUsers())
-	}
-	// Ended donations go
-	s.lic.mu.Lock()
-	for _, c := range s.lic.tokens {
-		c.Exp = time.Now().Add(-time.Minute).UnixMilli()
-	}
-	s.lic.mu.Unlock()
-	if s.maxUsers() != 30 || s.limits().Supporter {
-		t.Fatal(s.limits())
-	}
-}
 
 func TestChannelFeatures(t *testing.T) {
 	s, hs := newTestServer(t, nil)

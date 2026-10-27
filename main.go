@@ -189,6 +189,7 @@ func main() {
 		log.Fatalf("unknown command %q", flag.Arg(0))
 	}
 
+	runPlusIfPresent(cfg)
 	s, err := newServer(cfg)
 	if err != nil {
 		log.Fatal(err)

@@ -1,2 +1,6 @@
 spectrevoice-server
 dist/
+
+# The private Plus part (kept in the private repo; never here)
+edition_plus.go
+plus_test.go

@@ -1,18 +1,23 @@
 package main
 
 // Everything is free on every server. The one thing donations change is how many may be connected at once: a
-// server has 30 places (or fewer, SV_MAX_USERS), and each donation made for it adds places for 30 days
-// (+20 to no limit, by the donation's size). Donations add up while they last.
+// server has 30 places (or fewer, SV_MAX_USERS), and a donation made for it adds places for 30 days (+20 to no
+// limit, by the donation's size). Donations add up while they last.
 //
-// A donation is checked by the donation service (SV_LICENSE_URL), which signs a "slots" token naming this server's
-// own key (data/server.key) and how many places it gives until when. The tokens are kept in data/slots/.
+// The places are under the donation service's control (SV_LICENSE_URL, run by Spectre Voice):
+//   - every server has its own key (data/server.key) and its machine's hashed parts (hwid.go);
+//   - a donation is redeemed by the server itself: it sends its key, its machine and the donation, signed with its
+//     key; the service checks the donation and signs a token for that key and that machine (data/slots/);
+//   - this public build ("Free") keeps 30 places whatever the tokens say. With an active donation it fetches the
+//     official "Plus" build from the service (signed by it, checked here) and runs that instead (upgrade.go);
+//   - the Plus build applies the tokens, checks in with the service (new donations, revoked ones, its clock) and
+//     stops counting them when it can't for a week.
 //
-//	<- {"t":"slots"}                                       (staff) -> {"t":"slots", limits, donations:[…]}
+// The licence (LICENSE.md, Elastic License 2.0) forbids changing, disabling or getting around this.
+//
+//	<- {"t":"slots"}                                       (staff) -> {"t":"slots", limits, donations:[…], edition}
 //	<- {"t":"slots-redeem","product":…,"purchase":…}     (staff) a Google Play donation made in the app
 //	<- {"t":"slots-redeem","code":"SVD-…"}               (staff) a code from a donation on the website
-//
-// Since the server's source is open, its owner could take the limit out; the places are a thank-you that keeps
-// the lights on, not a lock.
 
 import (
 	"bytes"
@@ -40,12 +45,11 @@ import (
 	"time"
 )
 
-// The donation service's public key: only tokens it signs give places.
+// The donation service's public key: only what it signs counts.
 const vendorKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPvZ/XYRaeTZGQc9FvvU/yosAKgcqe1/cYJVSDrUncVf9+hPl32D5MW243ErADXL14t3uLaubaHljbDxzix/c1w=="
 
 const (
 	baseUsers     = 30 // places every server has
-	oldGiftUsers  = 50 // a gift token from before sizes (no "slots" in it)
 	maxSlotTokens = 200
 )
 
@@ -70,20 +74,22 @@ type limits struct {
 var allLimits = limits{Tier: "free", MaxUsers: baseUsers, AudioMax: 6, VideoMax: 8, OwnCommunities: 50, FileMB: 500, ChannelFilesMB: 20480,
 	RecordMin: 0, Soundboard: 120, Cosmetics: true, MusicQueue: 500}
 
-// slotClaims: what the donation service signs.
+// slotClaims: what the donation service signs. Tier "gift" is a donation's places; "time" is the service's clock
+// (given at each check-in).
 type slotClaims struct {
-	V     int    `json:"v"`
-	Lic   string `json:"lic"`  // the donation's id
-	Tier  string `json:"tier"` // "gift"
-	Srv   string `json:"srv"`  // the server's key fingerprint
-	Iat   int64  `json:"iat"`
-	Exp   int64  `json:"exp"`
-	Slots *int   `json:"slots,omitempty"` // places added; 0 = no limit; absent (old gifts) = 50
+	V     int      `json:"v"`
+	Lic   string   `json:"lic"`  // the donation's id
+	Tier  string   `json:"tier"` // "gift" or "time"
+	Srv   string   `json:"srv"`  // the server's key fingerprint
+	Hw    []string `json:"hw"`   // the machine's hashed parts
+	Iat   int64    `json:"iat"`
+	Exp   int64    `json:"exp"`
+	Slots *int     `json:"slots,omitempty"` // places added; 0 = no limit
 }
 
 func (c *slotClaims) places() int {
 	if c.Slots == nil {
-		return oldGiftUsers
+		return 0
 	}
 	return *c.Slots
 }
@@ -94,19 +100,37 @@ type donation struct {
 	Until int64 `json:"until"`
 }
 
+// edition: what this build does with the donations' tokens (edition_free.go here; the Plus build has its own).
+type edition interface {
+	name() string
+	start(l *licensing)                         // once the kept tokens are loaded
+	background(l *licensing)                    // its own work, once the server is up
+	apply(l *licensing, lim *limits, now int64) // the active donations' places (l.mu held)
+	accepted(l *licensing)                      // a donation was just redeemed
+	note(l *licensing) (kind, text string)      // for the admins, when something is under way
+}
+
 type licensing struct {
 	s      *server
 	key    *ecdsa.PrivateKey
 	spki   []byte
 	fp     string
+	hw     []string
 	dir    string // data/slots
+	data   string
 	vendor *ecdsa.PublicKey
 	url    string
 	http   *http.Client
+	ed     edition
 
 	mu     sync.Mutex
 	tokens map[string]*slotClaims // file name → claims
 	last   error
+	state  any // the edition's own (Plus: its clock and check-ins)
+
+	upMu      sync.Mutex // one upgrade at a time
+	upgrading bool
+	upLast    error
 }
 
 func fingerprint(spki []byte) string {
@@ -169,30 +193,42 @@ func newLicensing(s *server) (*licensing, error) {
 	if err != nil {
 		return nil, fmt.Errorf("vendor key: %w", err)
 	}
-	l := &licensing{s: s, key: k, spki: spki, fp: fingerprint(spki), dir: filepath.Join(s.cfg.data, "slots"), vendor: vendor,
-		url: strings.TrimRight(s.cfg.licenseURL, "/"), http: &http.Client{Timeout: 20 * time.Second}, tokens: map[string]*slotClaims{}}
+	l := &licensing{s: s, key: k, spki: spki, fp: fingerprint(spki), hw: hardwareID(), dir: filepath.Join(s.cfg.data, "slots"), data: s.cfg.data,
+		vendor: vendor, url: strings.TrimRight(s.cfg.licenseURL, "/"), http: &http.Client{Timeout: 60 * time.Second},
+		tokens: map[string]*slotClaims{}, ed: newEdition()}
 	if err := os.MkdirAll(l.dir, 0o750); err != nil {
 		return nil, err
 	}
-	// The gift kept by older versions comes along; the Pro licence of older versions is no longer needed
-	if b, err := os.ReadFile(filepath.Join(s.cfg.data, "gift.tok")); err == nil {
-		if l.add(strings.TrimSpace(string(b))) == nil {
-			_ = os.Remove(filepath.Join(s.cfg.data, "gift.tok"))
+	if len(l.hw) == 0 {
+		// A machine that shows none of its parts (some containers): an id of its own, kept with the data
+		f := filepath.Join(s.cfg.data, "machine.id")
+		b, err := os.ReadFile(f)
+		if err != nil || len(b) < 16 {
+			r := make([]byte, 16)
+			_, _ = rand.Read(r)
+			b = []byte(hex.EncodeToString(r))
+			_ = writeFileAtomic(f, b, 0o600)
 		}
+		l.hw = []string{hwPart("data", string(b))}
+		log.Printf("places: this machine shows none of its parts; using an id kept in %s", f)
 	}
-	_ = os.Remove(filepath.Join(s.cfg.data, "license.tok"))
+	// Older versions' files: their tokens weren't tied to the machine
+	for _, f := range []string{"gift.tok", "license.tok"} {
+		_ = os.Remove(filepath.Join(s.cfg.data, f))
+	}
 	entries, _ := os.ReadDir(l.dir)
+	now := time.Now().UnixMilli()
 	for _, e := range entries {
 		if b, err := os.ReadFile(filepath.Join(l.dir, e.Name())); err == nil {
-			if c, err := l.parse(strings.TrimSpace(string(b))); err == nil && c.Srv == l.fp && c.Exp > time.Now().UnixMilli() {
+			if c, err := l.parse(strings.TrimSpace(string(b))); err == nil && l.ours(c) == nil && c.Tier == "gift" && c.Exp > now {
 				l.tokens[e.Name()] = c
 				continue
 			}
 		}
-		_ = os.Remove(filepath.Join(l.dir, e.Name())) // ended, or not for this server
+		_ = os.Remove(filepath.Join(l.dir, e.Name())) // ended, or not for this server or machine
 	}
-	lim := l.limits()
-	log.Printf("places: %s (server %s)", placesText(lim.MaxUsers), l.fp)
+	l.ed.start(l)
+	log.Printf("places: %s (server %s, %s edition, %d machine parts)", placesText(l.limits().MaxUsers), l.fp, l.ed.name(), len(l.hw))
 	return l, nil
 }
 
@@ -236,29 +272,43 @@ func (l *licensing) parse(tok string) (*slotClaims, error) {
 		return nil, errors.New("the donation token isn't genuine")
 	}
 	var c slotClaims
-	if json.Unmarshal(raw, &c) != nil || c.V != 1 || c.Tier != "gift" {
+	if json.Unmarshal(raw, &c) != nil || c.V != 2 || (c.Tier != "gift" && c.Tier != "time") {
 		return nil, errors.New("unknown token")
 	}
 	return &c, nil
 }
 
-// add keeps a token for this server.
+// ours: is the token for this server, on this machine?
+func (l *licensing) ours(c *slotClaims) error {
+	if c.Srv != l.fp {
+		return errors.New("that donation is for another server")
+	}
+	if !hwMatch(c.Hw, l.hw) {
+		return errors.New("that donation is for another machine")
+	}
+	return nil
+}
+
+// add keeps a donation's token for this server.
 func (l *licensing) add(tok string) error {
 	c, err := l.parse(tok)
 	if err != nil {
 		return err
 	}
-	if c.Srv != l.fp {
-		return errors.New("that donation is for another server")
+	if err := l.ours(c); err != nil {
+		return err
+	}
+	if c.Tier != "gift" {
+		return errors.New("not a donation")
 	}
 	if c.Exp <= time.Now().UnixMilli() {
 		return errors.New("that donation's places have ended")
 	}
-	h := sha256.Sum256([]byte(tok))
-	name := hex.EncodeToString(h[:12]) + ".tok"
+	h := sha256.Sum256([]byte(c.Lic))
+	name := hex.EncodeToString(h[:12]) + ".tok" // one file per donation: a renewed token replaces it
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if len(l.tokens) >= maxSlotTokens {
+	if _, had := l.tokens[name]; !had && len(l.tokens) >= maxSlotTokens {
 		return errors.New("too many donations at once")
 	}
 	if err := writeFileAtomic(filepath.Join(l.dir, name), []byte(tok+"\n"), 0o600); err != nil {
@@ -266,6 +316,40 @@ func (l *licensing) add(tok string) error {
 	}
 	l.tokens[name] = c
 	return nil
+}
+
+// keepClock keeps the service's signed time, given for the request with this nonce (an old answer replayed
+// doesn't count). The Plus build won't let the machine's clock run backwards past it.
+func (l *licensing) keepClock(tok, nonce string) *slotClaims {
+	c, err := l.parse(tok)
+	if err != nil || c.Tier != "time" || l.ours(c) != nil || c.Lic != "clock:"+nonce {
+		return nil
+	}
+	_ = writeFileAtomic(filepath.Join(l.data, "clock.tok"), []byte(tok+"\n"), 0o600)
+	return c
+}
+
+// keptClock: the last signed time kept, if any.
+func (l *licensing) keptClock() *slotClaims {
+	b, err := os.ReadFile(filepath.Join(l.data, "clock.tok"))
+	if err != nil {
+		return nil
+	}
+	c, err := l.parse(strings.TrimSpace(string(b)))
+	if err != nil || c.Tier != "time" || l.ours(c) != nil {
+		return nil
+	}
+	return c
+}
+
+// drop forgets a donation (revoked by the service).
+func (l *licensing) dropLocked(lic string) {
+	for name, c := range l.tokens {
+		if c.Lic == lic {
+			delete(l.tokens, name)
+			_ = os.Remove(filepath.Join(l.dir, name))
+		}
+	}
 }
 
 func (l *licensing) limits() limits {
@@ -277,7 +361,7 @@ func (l *licensing) limits() limits {
 	return l.limitsLocked()
 }
 
-// limitsLocked: 30 places, plus every active donation's; ended ones go.
+// limitsLocked: 30 places, plus what the edition gives for the active donations; ended ones go.
 func (l *licensing) limitsLocked() limits {
 	lim := allLimits
 	now := time.Now().UnixMilli()
@@ -285,33 +369,31 @@ func (l *licensing) limitsLocked() limits {
 		if c.Exp <= now {
 			delete(l.tokens, name)
 			_ = os.Remove(filepath.Join(l.dir, name))
-			continue
 		}
-		lim.Supporter, lim.Tier = true, "supporter"
-		if lim.BonusUntil == 0 || c.Exp < lim.BonusUntil {
-			lim.BonusUntil = c.Exp
-		}
-		if lim.MaxUsers == 0 || c.places() == 0 {
-			lim.MaxUsers, lim.BonusUsers = 0, 0
-			continue
-		}
-		lim.MaxUsers += c.places()
-		lim.BonusUsers += c.places()
 	}
+	l.ed.apply(l, &lim, now)
 	return lim
+}
+
+// active: the donations whose places last, soonest end first (l.mu held).
+func (l *licensing) activeLocked(now int64) []*slotClaims {
+	out := []*slotClaims{}
+	for _, c := range l.tokens {
+		if c.Exp > now {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Exp < out[j].Exp })
+	return out
 }
 
 func (l *licensing) donations() []donation {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	out := []donation{}
-	now := time.Now().UnixMilli()
-	for _, c := range l.tokens {
-		if c.Exp > now {
-			out = append(out, donation{Slots: c.places(), Until: c.Exp})
-		}
+	for _, c := range l.activeLocked(time.Now().UnixMilli()) {
+		out = append(out, donation{Slots: c.places(), Until: c.Exp})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Until < out[j].Until })
 	return out
 }
 
@@ -322,7 +404,10 @@ func (l *licensing) welcome() map[string]any {
 
 func (l *licensing) statusMsg() map[string]any {
 	lim := l.limits()
-	out := map[string]any{"t": "slots", "server": l.fp, "limits": lim, "donations": l.donations(), "base": baseUsers}
+	out := map[string]any{"t": "slots", "server": l.fp, "limits": lim, "donations": l.donations(), "base": baseUsers, "edition": l.ed.name()}
+	if kind, n := l.ed.note(l); n != "" {
+		out["note"], out["noteKind"] = n, kind
+	}
 	l.mu.Lock()
 	if l.last != nil {
 		out["error"] = l.last.Error()
@@ -331,40 +416,80 @@ func (l *licensing) statusMsg() map[string]any {
 	return out
 }
 
+// signed: a request to the donation service, signed with the server's key: who it is (key and machine), what it
+// runs, and the request's own fields.
+func (l *licensing) signed(kind string, fields map[string]any) []byte {
+	p := map[string]any{"kind": kind, "server": l.fp, "pub": base64.StdEncoding.EncodeToString(l.spki), "hw": l.hw,
+		"ts": time.Now().UnixMilli(), "version": version, "edition": l.ed.name(), "nonce": newNonce()}
+	for k, v := range fields {
+		p[k] = v
+	}
+	pj, _ := json.Marshal(p)
+	pb := base64.RawURLEncoding.EncodeToString(pj)
+	b, _ := json.Marshal(map[string]string{"p": pb, "sig": base64.RawURLEncoding.EncodeToString(signRaw(l.key, []byte(pb)))})
+	return b
+}
+
+func newNonce() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// call posts a signed request (with a fresh nonce, given back) and decodes the JSON answer.
+func (l *licensing) call(path, kind string, fields map[string]any, out any) (nonce string, err error) {
+	if l.url == "" {
+		return "", errors.New("no donation service set (SV_LICENSE_URL)")
+	}
+	nonce = newNonce()
+	f := map[string]any{"nonce": nonce}
+	for k, v := range fields {
+		f[k] = v
+	}
+	resp, err := l.http.Post(l.url+path, "application/json", bytes.NewReader(l.signed(kind, f)))
+	if err != nil {
+		return "", fmt.Errorf("donation service: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != 200 {
+		var e struct{ Error string }
+		_ = json.Unmarshal(b, &e)
+		if e.Error == "" {
+			e.Error = resp.Status
+		}
+		return "", errors.New(e.Error)
+	}
+	return nonce, json.Unmarshal(b, out)
+}
+
 var codeRe = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
 
 // redeem asks the donation service for a donation's places: a Google Play purchase, or a code from the website.
 func (l *licensing) redeem(product, purchase, code string) error {
-	if l.url == "" {
-		return errors.New("no donation service set (SV_LICENSE_URL)")
-	}
-	body := map[string]any{"server": l.fp, "pub": base64.StdEncoding.EncodeToString(l.spki)}
+	f := map[string]any{}
 	switch {
 	case code != "":
 		if !codeRe.MatchString(code) {
 			return errors.New("that isn't a donation code")
 		}
-		body["code"] = code
+		f["code"] = code
 	case product != "":
-		body["product"], body["purchase"] = product, purchase
+		f["product"], f["purchase"] = product, purchase
 	default:
 		return errors.New("nothing to redeem")
 	}
-	b, _ := json.Marshal(body)
-	resp, err := l.http.Post(l.url+"/v1/gift", "application/json", bytes.NewReader(b))
+	var r struct{ Token, Clock string }
+	nonce, err := l.call("/v1/gift", "gift", f, &r)
 	if err != nil {
-		return fmt.Errorf("donation service: %w", err)
+		return err
 	}
-	defer resp.Body.Close()
-	var r struct{ Token, Error string }
-	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&r)
-	if resp.StatusCode != 200 || r.Token == "" {
-		if r.Error == "" {
-			r.Error = resp.Status
-		}
-		return errors.New(r.Error)
+	if err := l.add(r.Token); err != nil {
+		return err
 	}
-	return l.add(r.Token)
+	l.keepClock(r.Clock, nonce)
+	l.ed.accepted(l)
+	return nil
 }
 
 func (s *server) limits() limits { return s.lic.limits() }
@@ -378,10 +503,11 @@ func (h *hub) licenseChanged() {
 	h.broadcast(w, nil)
 }
 
-// slotsWatch tells everyone when a donation's places end (checked hourly).
+// slotsWatch tells everyone when the places change (a donation ends, one comes in at a check-in).
 func (l *licensing) slotsWatch() {
+	go l.ed.background(l)
 	last := l.limits().MaxUsers
-	for range time.Tick(time.Hour) {
+	for range time.Tick(time.Minute) {
 		if n := l.limits().MaxUsers; n != last {
 			last = n
 			l.s.hub.licenseChanged()
