@@ -87,6 +87,8 @@ type session struct {
 	dev        string      // the device it came from (optional; the app's own random id)
 	vTokens    float64     // voice changes it may still make now (its read loop only)
 	vRefill    time.Time
+	sTokens    float64 // chat searches it may still make now (search.go; its read loop only)
+	sRefill    time.Time
 	drops      int
 }
 
@@ -547,6 +549,8 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 		h.say(ss, t, str(m, "to"), m)
 	case "history":
 		h.history(ss, str(m, "to"), i64(m, "before"), i64(m, "after"), i64(m, "around"))
+	case "search":
+		h.search(ss, m)
 	case "dms":
 		list, err := h.s.store.dms(ss.uid, 100)
 		if err != nil {

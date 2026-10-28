@@ -38,7 +38,7 @@ func TestResumeChannelAndHistoryAfter(t *testing.T) {
 	if b2 == nil {
 		t.Fatal("no welcome")
 	}
-	me := memberOf(b2.wel, b2.uid)
+	me := memberOf(b2.wel, b2.sid)
 	if me == nil || int64(me["ch"].(float64)) != second {
 		t.Fatalf("not back in Second: %v", me)
 	}
@@ -64,25 +64,27 @@ func TestResumeChannelAndHistoryAfter(t *testing.T) {
 
 	// A locked channel can't be resumed without its password: the default one instead
 	b3, _ := dialVWith(t, hs, bKey, "Bogdan", map[string]any{"dev": "dev-b", "ch": secret})
-	if me = memberOf(b3.wel, b3.uid); me == nil || int64(me["ch"].(float64)) != lobby {
+	if me = memberOf(b3.wel, b3.sid); me == nil || int64(me["ch"].(float64)) != lobby {
 		t.Fatalf("resumed into a locked channel: %v", me)
 	}
 	// Nor a text channel, nor one of another community
 	a.send(map[string]any{"t": "ch-save", "name": "news", "kind": "text"})
 	text := int64(a.wait(isT("channel"))["c"].(map[string]any)["id"].(float64))
 	b4, _ := dialVWith(t, hs, bKey, "Bogdan", map[string]any{"dev": "dev-b", "ch": text})
-	if me = memberOf(b4.wel, b4.uid); me == nil || int64(me["ch"].(float64)) != lobby {
+	if me = memberOf(b4.wel, b4.sid); me == nil || int64(me["ch"].(float64)) != lobby {
 		t.Fatalf("resumed into a text channel: %v", me)
 	}
 	b5, _ := dialVWith(t, hs, bKey, "Bogdan", map[string]any{"dev": "dev-b", "ch": 99999})
-	if me = memberOf(b5.wel, b5.uid); me == nil || int64(me["ch"].(float64)) != lobby {
+	if me = memberOf(b5.wel, b5.sid); me == nil || int64(me["ch"].(float64)) != lobby {
 		t.Fatalf("resumed into no channel: %v", me)
 	}
 }
 
-func memberOf(wel map[string]any, uid string) map[string]any {
+// memberOf: the welcome's entry for this very connection (by sid: the replaced one of the same uid may still be
+// in the list for a moment).
+func memberOf(wel map[string]any, sid int) map[string]any {
 	for _, m := range wel["members"].([]any) {
-		if mm := m.(map[string]any); mm["uid"] == uid {
+		if mm := m.(map[string]any); int(mm["sid"].(float64)) == sid {
 			return mm
 		}
 	}
