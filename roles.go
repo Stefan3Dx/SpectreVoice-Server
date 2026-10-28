@@ -268,7 +268,8 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 		ok = ok && c != nil && c.Comm == comm
 	}
 	if staffOnly {
-		ok = !h.staff(uid) || h.s.store.role(ss.uid) == roleOwner
+		// Never on oneself (an owner banning themselves would be locked out of their own server)
+		ok = uid != ss.uid && (!h.staff(uid) || h.s.store.role(ss.uid) == roleOwner)
 	}
 	h.mu.Unlock()
 	// Every action on someone (lifting one included): only on people ranked lower, never on oneself (a muted

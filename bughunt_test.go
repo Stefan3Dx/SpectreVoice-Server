@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -158,5 +159,83 @@ func TestPushTokensPerPerson(t *testing.T) {
 	toks := s.store.pushTokens(a.uid)
 	if !slices.Contains(toks, fmt.Sprintf("tok-%030d", 39)) {
 		t.Fatalf("the newest token went: %v", toks)
+	}
+}
+
+// Every message, with fields of every JSON type (and odd values), from an owner (who passes the permission
+// checks): no panic takes the server down, and it still answers.
+func TestMessagesOfAnyShape(t *testing.T) {
+	ownerKey := newKey(t)
+	spki, _ := x509.MarshalPKIXPublicKey(&ownerKey.PublicKey)
+	_, hs := newTestServer(t, func(c *config) { c.owners = uidOf(spki) })
+	a, _ := dialV(t, hs, ownerKey, "Owner", "")
+	b, _ := dialV(t, hs, newKey(t), "B", "")
+	ops := []string{"ban", "bans", "bot-add", "bot-del", "bots", "cf-del", "cf-list", "cf-mkdir", "cf-rename", "ch-ban", "ch-del",
+		"ch-kick", "ch-save", "ch-unban", "claim", "community-join", "community-save", "dms", "edit", "history", "ice", "invite-create",
+		"invite-del", "invite-use", "invites", "join", "kick", "member-roles", "move", "mute", "name", "p2p-answer", "p2p-bye", "p2p-ice",
+		"p2p-join", "p2p-live", "p2p-offer", "ping", "poke", "push-off", "push-token", "relay", "role", "role-del", "role-save", "rtc",
+		"say", "search", "server-ban", "server-save", "server-unban", "slots", "state", "talker", "unban", "unmute", "unsay",
+		"voice-mute", "voice-unmute", "whisper", "music", "admin-link", "tv", "enter", "nothing-like-this"}
+	fields := []string{"ch", "to", "text", "id", "uid", "sid", "sids", "chs", "on", "name", "password", "room", "sdp", "type", "c",
+		"mid", "mline", "q", "before", "after", "around", "perms", "roles", "minutes", "folder", "code", "pass", "hours", "uses",
+		"data", "parent", "pos", "max", "kind", "icon", "pic", "quality", "default", "moderated", "cmd", "candidate", "mic", "snd",
+		"away", "awayMsg", "rtt", "loss", "token", "platform", "invite", "about", "color", "why", "title", "url"}
+	values := []any{nil, true, false, 0, -1, 1e300, -1e300, 3.5, "", "x", "c:1", "u:" + b.uid, "g:1", "*", b.uid, strings.Repeat("é", 5000),
+		[]any{}, []any{1, "a", nil, []any{}}, map[string]any{}, map[string]any{"a": []any{1}}, float64(b.sid)}
+	makes := map[string]bool{"invite-create": true, "ch-save": true, "role-save": true, "cf-mkdir": true, "bot-add": true, "say": true, "server-save": true, "community-save": true}
+	n := 0
+	for _, op := range ops {
+		for fi, f := range fields {
+			if raceOn && fi%4 != len(op)%4 {
+				continue // under the race detector a quarter of the fields, a different quarter for each message
+			}
+			for _, v := range values {
+				if makes[op] && f != "name" && f != "ch" && f != "uid" { // each one adds a row: a few are enough
+					continue
+				}
+				a.send(map[string]any{"t": op, f: v})
+				n++
+				if n%60 == 0 {
+					a.send(map[string]any{"t": "ping", "n": n})
+					a.wait(func(m map[string]any) bool { return m["t"] == "pong" && m["n"] == float64(n) })
+					a.seen = nil
+				}
+			}
+		}
+		// A few with everything at once
+		m := map[string]any{"t": op}
+		for i, f := range fields {
+			if v, ok := values[(i*5+len(op))%len(values)].(string); !ok || len(v) < 1000 { // under the 64 KB a message may be
+				m[f] = values[(i*5+len(op))%len(values)]
+			}
+		}
+		a.send(m)
+	}
+	time.Sleep(500 * time.Millisecond)
+	// Both still connected and served (A may have banned or kicked B: then B reconnects)
+	a.send(map[string]any{"t": "ping", "n": -7})
+	a.wait(func(m map[string]any) bool { return m["t"] == "pong" && m["n"] == float64(-7) })
+	a.send(map[string]any{"t": "server-save", "password": ""}) // the run above set one
+	a.wait(func(m map[string]any) bool { return m["t"] == "done" && m["op"] == "server-save" })
+	c, e := dialV(t, hs, newKey(t), "C", "")
+	if c == nil {
+		t.Fatal(e)
+	}
+	c.send(map[string]any{"t": "ping", "n": 1})
+	c.wait(isT("pong"))
+}
+
+// An owner can't server-ban themselves (they'd be locked out of their own server until the command line).
+func TestServerBanNotOneself(t *testing.T) {
+	ownerKey := newKey(t)
+	spki, _ := x509.MarshalPKIXPublicKey(&ownerKey.PublicKey)
+	s, hs := newTestServer(t, func(c *config) { c.owners = uidOf(spki) })
+	a, _ := dialV(t, hs, ownerKey, "Owner", "")
+	a.send(map[string]any{"t": "server-ban", "uid": a.uid})
+	if e := a.wait(isT("error")); e["why"] != "role" {
+		t.Fatal(e)
+	}
+	if s.mods.banned(a.uid, 0) {
+		t.Fatal("the owner banned themselves")
 	}
 }
