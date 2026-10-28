@@ -98,6 +98,14 @@ func TestSpaceRolesInvites(t *testing.T) {
 	if got, _ := s.store.invite(code); got.Uses != 1 {
 		t.Fatal(got)
 	}
+	// Opened while on the server: counted, into its channel
+	ana.send(map[string]any{"t": "invite-create", "ch": lobby})
+	again := ana.wait(isT("invite"))["code"].(string)
+	bob.send(map[string]any{"t": "invite-use", "invite": again})
+	pinged(bob)
+	if got, _ := s.store.invite(again); got.Uses != 1 {
+		t.Fatal("invite-use not counted", got)
+	}
 	// Used up: Dan still gets onto the open server, the invite just doesn't count
 	if dan, e := dialVWith(t, hs, newKey(t), "Dan", map[string]any{"invite": code}); dan == nil {
 		t.Fatal(e)

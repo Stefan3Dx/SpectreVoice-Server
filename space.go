@@ -10,8 +10,9 @@ package main
 //	<- {"t":"role-del","id"}                               (manage_roles)
 //	<- {"t":"member-roles","uid","roles":[ids]}            (manage_roles) roles below yours, on people below you
 //	<- {"t":"community-save",…}                            older apps: as server-save
-//	<- {"t":"community-join","invite":CODE}                older apps: uses the invite (its channel); new apps
-//	                                                       give the invite in the hello
+//	<- {"t":"invite-use","invite":CODE}                    an invite opened while on its server: counted, its
+//	                                                       channel joined (older apps: community-join; a new
+//	                                                       connection gives the invite in the hello)
 //	<- enter, communities, discover, community-*           older apps: ignored
 //
 // The welcome carries: server, community (the space, for older apps), roles, perms, channels, members.
@@ -109,8 +110,8 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 	switch t {
 	case "server-save", "community-save":
 		h.serverSave(ss, t, m)
-	case "community-join":
-		// Older apps used an invite after connecting: it's counted and brings them into its channel
+	case "invite-use", "community-join":
+		// An invite opened while already on its server (older apps: community-join): counted, into its channel
 		code := str(m, "invite")
 		if code == "" {
 			return true

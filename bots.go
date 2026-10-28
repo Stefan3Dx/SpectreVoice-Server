@@ -226,7 +226,7 @@ func (h *hub) botOp(ss *session, t string, m map[string]any) bool {
 // botDenied: what a bot may never ask, whatever its permissions: moving between communities, changing who may
 // what, its own name (the manager named it), the server's own things, and the apps' notifications.
 var botDenied = map[string]bool{
-	"name": true, "community-join": true, "community-save": true, "server-save": true,
+	"name": true, "community-join": true, "invite-use": true, "community-save": true, "server-save": true,
 	"role-save": true, "role-del": true, "member-roles": true, "role": true, "bot-add": true, "bot-del": true, "bots": true,
 	"claim": true, "push-token": true, "push-off": true, "server-ban": true, "server-unban": true, "admin-link": true,
 	"slots": true, "slots-redeem": true, "invite-create": true, "invite-del": true, "invites": true, "whisper": true,

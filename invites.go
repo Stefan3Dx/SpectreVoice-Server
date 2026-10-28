@@ -8,6 +8,7 @@ package main
 //	<- {"t":"invites"}                                    (manage_community) -> {"t":"invites","items":[…]}
 //	<- {"t":"invite-del","code"}                          (manage_community, or who made it)
 //	hello {"invite":CODE}                                 (hub.go) uses one: its channel, and the password skipped
+//	<- {"t":"invite-use","invite":CODE}                   (space.go) one opened while already on the server: its channel
 //
 //	GET /i/<code>           a page: the server, "open in the app", "open in the browser" (/app/), the downloads
 //	GET /api/invite/<code>  the same for the apps, as JSON
