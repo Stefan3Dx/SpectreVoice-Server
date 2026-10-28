@@ -464,6 +464,10 @@ func (l *licensing) call(path, kind string, fields map[string]any, out any) (non
 
 var codeRe = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
 
+// partnerRetry: the first wait before a hosting plan's code that couldn't be redeemed is tried again (doubling up
+// to 30 minutes; a var for the tests).
+var partnerRetry = time.Minute
+
 // redeem asks the donation service for a donation's places: a Google Play purchase, or a code from the website.
 func (l *licensing) redeem(product, purchase, code string) error {
 	f := map[string]any{}
@@ -509,17 +513,24 @@ func (h *hub) licenseChanged() {
 func (l *licensing) slotsWatch() {
 	go l.ed.background(l)
 	if code := strings.ToUpper(strings.TrimSpace(l.s.cfg.partnerCode)); code != "" {
-		// A hosting plan's places: redeemed at every start (the host may have changed the plan)
+		// A hosting plan's places: redeemed at every start (the host may have changed the plan), and again until it
+		// works: a node starting many servers at once, or before its network is up, mustn't leave one on 30 places
+		// (and on the public build) until its next restart
 		go func() {
-			err := l.redeem("", "", code)
-			l.mu.Lock()
-			l.last = err
-			l.mu.Unlock()
-			if err != nil {
-				log.Printf("places: the hosting plan's code: %v", err)
-			} else {
-				log.Printf("places: the hosting plan gives %s", placesText(l.limits().MaxUsers))
-				l.s.hub.licenseChanged()
+			wait := partnerRetry
+			for {
+				err := l.redeem("", "", code)
+				l.mu.Lock()
+				l.last = err
+				l.mu.Unlock()
+				if err == nil {
+					log.Printf("places: the hosting plan gives %s", placesText(l.limits().MaxUsers))
+					l.s.hub.licenseChanged()
+					return
+				}
+				log.Printf("places: the hosting plan's code: %v (again in %s)", err, wait)
+				time.Sleep(wait)
+				wait = min(2*wait, 30*time.Minute)
 			}
 		}()
 	}

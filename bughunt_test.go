@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"slices"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"

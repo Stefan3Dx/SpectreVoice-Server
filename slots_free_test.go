@@ -3,8 +3,14 @@
 package main
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -121,5 +127,34 @@ func TestCmpVersion(t *testing.T) {
 		if got := cmpVersion(c.a, c.b); got != c.want {
 			t.Fatal(c, got)
 		}
+	}
+}
+
+// A hosting plan's code that can't be redeemed at start (the service busy, the network not up yet) is tried again.
+func TestPartnerCodeRetried(t *testing.T) {
+	ls := newFakeLS(t)
+	execPlus = func(string) error { return nil }
+	upgradeRetry = 50 * time.Millisecond
+	partnerRetry = 50 * time.Millisecond
+	defer func() { partnerRetry = time.Minute }()
+	var calls atomic.Int32
+	target, _ := url.Parse(ls.URL)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/gift" && calls.Add(1) <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":"try again later"}`)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer busy.Close()
+	s, _ := newTestServer(t, func(c *config) { c.licenseURL = busy.URL; c.vendorKey = ls.vendor; c.partnerCode = "SVD-GOOD" })
+	deadline := time.Now().Add(5 * time.Second)
+	for len(s.lic.donations()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(s.lic.donations()) != 1 || calls.Load() < 3 {
+		t.Fatalf("plan not redeemed after the service came back (%d calls, %v)", calls.Load(), s.lic.donations())
 	}
 }
