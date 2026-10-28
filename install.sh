@@ -3,13 +3,13 @@
 # Spectre Voice Server — install or update, step by step (Debian 12/13, Ubuntu 22.04+; LXC, VM or VPS).
 #
 #   curl -fsSL https://raw.githubusercontent.com/Stefan3Dx/SpectreVoice-Server/main/install.sh | sudo bash
-#   sudo bash install.sh                 step by step: language, name, network, port, extras, firewall
+#   sudo bash install.sh                 step by step: language, name and password, network, port, extras, firewall
 #   sudo bash install.sh --yes           no questions: LAN server, defaults
 #   sudo bash install.sh --update        newest version, settings kept
 #   sudo bash install.sh --domain voice.example.com --email you@example.com --yes   public, HTTPS + TURN
 #   sudo bash install.sh --source        build from this folder's source instead of downloading
 #
-# Options: --lang en|ro|es|de|pl|fr|it|pt|hu|tr  --name NAME  --domain NAME  --email ADDR  --contact ADDR
+# Options: --lang en|ro|es|de|pl|fr|it|pt|hu|tr  --name NAME  --password PASS  --domain NAME  --email ADDR  --contact ADDR
 #          --public-ip IP|DDNS  --port N  --no-music  --no-turn  --no-firewall  --no-auto-update
 #          --udp 50000-50200 (a range instead of one port)
 set -euo pipefail
@@ -22,7 +22,7 @@ DATA=/var/lib/spectrevoice
 ENVF=$ETC/server.env
 
 YES=0 UPDATE=0 SOURCE=0 MUSIC=1 TURN=1 FIREWALL=1 AUTOUPD=1
-NAME="" DOMAIN="" EMAIL="" CONTACT="" PUBLIC="" UDP="" PORT="" LANGSEL="" MODE=""
+NAME="" DOMAIN="" EMAIL="" CONTACT="" PUBLIC="" UDP="" PORT="" LANGSEL="" MODE="" SVPASS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --yes|-y) YES=1 ;;
@@ -34,6 +34,7 @@ while [[ $# -gt 0 ]]; do
     --no-auto-update) AUTOUPD=0 ;;
     --lang) LANGSEL="$2"; shift ;;
     --name) NAME="$2"; shift ;;
+    --password) SVPASS="$2"; shift ;;
     --domain) DOMAIN="$2"; shift ;;
     --email) EMAIL="$2"; shift ;;
     --contact) CONTACT="$2"; shift ;;
@@ -53,9 +54,10 @@ declare -A L_en=(
   [q_auto]="Automatic server updates (daily, around 4 AM)" [autodone]="Automatic updates: on"
   [title]="Spectre Voice Server — installer"
   [step]="Step %s of %s · %s"
-  [s_lang]="Language" [s_name]="Name and contact" [s_net]="Network" [s_port]="Port" [s_extra]="Extras" [s_fw]="Firewall" [s_inst]="Installing"
+  [s_lang]="Language" [s_name]="Name, password and contact" [s_net]="Network" [s_port]="Port" [s_extra]="Extras" [s_fw]="Firewall" [s_inst]="Installing"
   [q_name]="Server name"
   [q_contact]="Your e-mail for people's data requests (shown at /privacy)"
+  [q_pass]="Server password (empty: anyone with the address gets in; admins can change it later in the app)"
   [net_q]="How will people reach this server?"
   [net_1]="My own domain, with HTTPS (e.g. voice.example.com)"
   [net_2]="A free automatic name, with HTTPS: %s"
@@ -81,6 +83,7 @@ declare -A L_en=(
   [r_addr]="Server address" [r_port]="Port" [r_key]="Admin key"
   [r_how]="In the app: Server › Claim, then type the admin key. It makes you the server's owner (it works once)."
   [r_owned]="(the server already has an owner)"
+  [r_pass]="Server password" [r_open]="none (open server)"
   [r_ports]="Ports to open" [r_set]="Settings" [r_logs]="Logs" [r_upd]="Update"
   [r_plain]="Without HTTPS the sign-in travels unencrypted (the voice itself stays encrypted). A domain is safer."
   [r_dns]="If HTTPS doesn't come up within a minute, check that the name points to this server and that TCP 80/443 are open."
@@ -92,9 +95,10 @@ declare -A L_ro=(
   [q_auto]="Actualizări automate ale serverului (zilnic, pe la 4 dimineața)" [autodone]="Actualizări automate: pornite"
   [title]="Spectre Voice Server — instalare"
   [step]="Pasul %s din %s · %s"
-  [s_lang]="Limba" [s_name]="Nume și contact" [s_net]="Rețea" [s_port]="Port" [s_extra]="Extra" [s_fw]="Firewall" [s_inst]="Instalare"
+  [s_lang]="Limba" [s_name]="Nume, parolă și contact" [s_net]="Rețea" [s_port]="Port" [s_extra]="Extra" [s_fw]="Firewall" [s_inst]="Instalare"
   [q_name]="Numele serverului"
   [q_contact]="E-mailul tău pentru cererile oamenilor despre date (apare la /privacy)"
+  [q_pass]="Parola serverului (gol: intră oricine are adresa; adminii o pot schimba apoi din aplicație)"
   [net_q]="Cum ajung oamenii la acest server?"
   [net_1]="Domeniul meu, cu HTTPS (ex. voice.exemplu.ro)"
   [net_2]="Un nume automat gratuit, cu HTTPS: %s"
@@ -120,6 +124,7 @@ declare -A L_ro=(
   [r_addr]="Adresa serverului" [r_port]="Portul" [r_key]="Cheia de admin"
   [r_how]="În aplicație: Server › Revendică, apoi scrie cheia de admin. Te face proprietarul serverului (merge o singură dată)."
   [r_owned]="(serverul are deja proprietar)"
+  [r_pass]="Parola serverului" [r_open]="niciuna (server deschis)"
   [r_ports]="Porturi de deschis" [r_set]="Setări" [r_logs]="Jurnal" [r_upd]="Actualizare"
   [r_plain]="Fără HTTPS, conectarea circulă necriptat (vocea rămâne criptată). Cu un domeniu e mai sigur."
   [r_dns]="Dacă HTTPS nu merge într-un minut, verifică dacă numele arată spre acest server și dacă TCP 80/443 sunt deschise."
@@ -131,9 +136,10 @@ declare -A L_es=(
   [q_auto]="Actualizaciones automáticas del servidor (a diario, hacia las 4 de la mañana)" [autodone]="Actualizaciones automáticas: activadas"
   [title]="Spectre Voice Server — instalación"
   [step]="Paso %s de %s · %s"
-  [s_lang]="Idioma" [s_name]="Nombre y contacto" [s_net]="Red" [s_port]="Puerto" [s_extra]="Extras" [s_fw]="Cortafuegos" [s_inst]="Instalación"
+  [s_lang]="Idioma" [s_name]="Nombre, contraseña y contacto" [s_net]="Red" [s_port]="Puerto" [s_extra]="Extras" [s_fw]="Cortafuegos" [s_inst]="Instalación"
   [q_name]="Nombre del servidor"
   [q_contact]="Tu e-mail para las solicitudes de datos (se muestra en /privacy)"
+  [q_pass]="Contraseña del servidor (vacía: entra cualquiera con la dirección; los admins pueden cambiarla luego en la app)"
   [net_q]="¿Cómo llegará la gente a este servidor?"
   [net_1]="Mi propio dominio, con HTTPS (p. ej. voice.example.com)"
   [net_2]="Un nombre automático gratuito, con HTTPS: %s"
@@ -159,6 +165,7 @@ declare -A L_es=(
   [r_addr]="Dirección del servidor" [r_port]="Puerto" [r_key]="Clave de administrador"
   [r_how]="En la app: Servidor › Reclamar y escribe la clave. Te convierte en el dueño del servidor (sirve una vez)."
   [r_owned]="(el servidor ya tiene dueño)"
+  [r_pass]="Contraseña del servidor" [r_open]="ninguna (servidor abierto)"
   [r_ports]="Puertos a abrir" [r_set]="Ajustes" [r_logs]="Registro" [r_upd]="Actualizar"
   [r_plain]="Sin HTTPS el inicio de sesión viaja sin cifrar (la voz sigue cifrada). Un dominio es más seguro."
   [r_dns]="Si HTTPS no funciona en un minuto, comprueba que el nombre apunta a este servidor y que TCP 80/443 están abiertos."
@@ -170,9 +177,10 @@ declare -A L_de=(
   [q_auto]="Automatische Server-Updates (täglich, gegen 4 Uhr morgens)" [autodone]="Automatische Updates: an"
   [title]="Spectre Voice Server — Installation"
   [step]="Schritt %s von %s · %s"
-  [s_lang]="Sprache" [s_name]="Name und Kontakt" [s_net]="Netzwerk" [s_port]="Port" [s_extra]="Extras" [s_fw]="Firewall" [s_inst]="Installation"
+  [s_lang]="Sprache" [s_name]="Name, Passwort und Kontakt" [s_net]="Netzwerk" [s_port]="Port" [s_extra]="Extras" [s_fw]="Firewall" [s_inst]="Installation"
   [q_name]="Name des Servers"
   [q_contact]="Deine E-Mail für Datenanfragen (wird unter /privacy angezeigt)"
+  [q_pass]="Server-Passwort (leer: jeder mit der Adresse kommt rein; Admins können es später in der App ändern)"
   [net_q]="Wie erreichen die Leute diesen Server?"
   [net_1]="Meine eigene Domain, mit HTTPS (z. B. voice.example.com)"
   [net_2]="Ein kostenloser automatischer Name, mit HTTPS: %s"
@@ -198,6 +206,7 @@ declare -A L_de=(
   [r_addr]="Serveradresse" [r_port]="Port" [r_key]="Admin-Schlüssel"
   [r_how]="In der App: Server › Beanspruchen, dann den Admin-Schlüssel eingeben. Er macht dich zum Besitzer (einmalig)."
   [r_owned]="(der Server hat schon einen Besitzer)"
+  [r_pass]="Server-Passwort" [r_open]="keins (offener Server)"
   [r_ports]="Zu öffnende Ports" [r_set]="Einstellungen" [r_logs]="Protokoll" [r_upd]="Aktualisieren"
   [r_plain]="Ohne HTTPS wird die Anmeldung unverschlüsselt übertragen (die Sprache bleibt verschlüsselt). Eine Domain ist sicherer."
   [r_dns]="Kommt HTTPS nicht binnen einer Minute, prüfe, ob der Name auf diesen Server zeigt und TCP 80/443 offen sind."
@@ -209,9 +218,10 @@ declare -A L_pl=(
   [q_auto]="Automatyczne aktualizacje serwera (codziennie, około 4 rano)" [autodone]="Automatyczne aktualizacje: włączone"
   [title]="Spectre Voice Server — instalacja"
   [step]="Krok %s z %s · %s"
-  [s_lang]="Język" [s_name]="Nazwa i kontakt" [s_net]="Sieć" [s_port]="Port" [s_extra]="Dodatki" [s_fw]="Zapora" [s_inst]="Instalacja"
+  [s_lang]="Język" [s_name]="Nazwa, hasło i kontakt" [s_net]="Sieć" [s_port]="Port" [s_extra]="Dodatki" [s_fw]="Zapora" [s_inst]="Instalacja"
   [q_name]="Nazwa serwera"
   [q_contact]="Twój e-mail do wniosków o dane (widoczny pod /privacy)"
+  [q_pass]="Hasło serwera (puste: wejdzie każdy z adresem; admini mogą je później zmienić w aplikacji)"
   [net_q]="Jak ludzie dotrą do tego serwera?"
   [net_1]="Moja własna domena, z HTTPS (np. voice.example.com)"
   [net_2]="Darmowa automatyczna nazwa, z HTTPS: %s"
@@ -237,6 +247,7 @@ declare -A L_pl=(
   [r_addr]="Adres serwera" [r_port]="Port" [r_key]="Klucz administratora"
   [r_how]="W aplikacji: Serwer › Przejmij, potem wpisz klucz. Zostaniesz właścicielem serwera (działa raz)."
   [r_owned]="(serwer ma już właściciela)"
+  [r_pass]="Hasło serwera" [r_open]="brak (serwer otwarty)"
   [r_ports]="Porty do otwarcia" [r_set]="Ustawienia" [r_logs]="Logi" [r_upd]="Aktualizacja"
   [r_plain]="Bez HTTPS logowanie idzie niezaszyfrowane (głos pozostaje szyfrowany). Domena jest bezpieczniejsza."
   [r_dns]="Jeśli HTTPS nie zadziała w minutę, sprawdź, czy nazwa wskazuje na ten serwer i czy TCP 80/443 są otwarte."
@@ -248,9 +259,10 @@ declare -A L_fr=(
   [q_auto]="Mises à jour automatiques du serveur (chaque jour, vers 4 h du matin)" [autodone]="Mises à jour automatiques : activées"
   [title]="Spectre Voice Server — installation"
   [step]="Étape %s sur %s · %s"
-  [s_lang]="Langue" [s_name]="Nom et contact" [s_net]="Réseau" [s_port]="Port" [s_extra]="Options" [s_fw]="Pare-feu" [s_inst]="Installation"
+  [s_lang]="Langue" [s_name]="Nom, mot de passe et contact" [s_net]="Réseau" [s_port]="Port" [s_extra]="Options" [s_fw]="Pare-feu" [s_inst]="Installation"
   [q_name]="Nom du serveur"
   [q_contact]="Ton e-mail pour les demandes sur les données (affiché sur /privacy)"
+  [q_pass]="Mot de passe du serveur (vide : quiconque a l'adresse entre ; les admins peuvent le changer ensuite dans l'appli)"
   [net_q]="Comment les gens rejoindront-ils ce serveur ?"
   [net_1]="Mon propre domaine, avec HTTPS (ex. voice.example.com)"
   [net_2]="Un nom automatique gratuit, avec HTTPS : %s"
@@ -276,6 +288,7 @@ declare -A L_fr=(
   [r_addr]="Adresse du serveur" [r_port]="Port" [r_key]="Clé d'administration"
   [r_how]="Dans l'app : Serveur › Revendiquer, puis tape la clé. Elle fait de toi le propriétaire (une seule fois)."
   [r_owned]="(le serveur a déjà un propriétaire)"
+  [r_pass]="Mot de passe du serveur" [r_open]="aucun (serveur ouvert)"
   [r_ports]="Ports à ouvrir" [r_set]="Réglages" [r_logs]="Journal" [r_upd]="Mise à jour"
   [r_plain]="Sans HTTPS, la connexion passe en clair (la voix reste chiffrée). Un domaine est plus sûr."
   [r_dns]="Si HTTPS ne marche pas d'ici une minute, vérifie que le nom pointe vers ce serveur et que TCP 80/443 sont ouverts."
@@ -287,9 +300,10 @@ declare -A L_it=(
   [q_auto]="Aggiornamenti automatici del server (ogni giorno, verso le 4 del mattino)" [autodone]="Aggiornamenti automatici: attivi"
   [title]="Spectre Voice Server — installazione"
   [step]="Passo %s di %s · %s"
-  [s_lang]="Lingua" [s_name]="Nome e contatto" [s_net]="Rete" [s_port]="Porta" [s_extra]="Extra" [s_fw]="Firewall" [s_inst]="Installazione"
+  [s_lang]="Lingua" [s_name]="Nome, password e contatto" [s_net]="Rete" [s_port]="Porta" [s_extra]="Extra" [s_fw]="Firewall" [s_inst]="Installazione"
   [q_name]="Nome del server"
   [q_contact]="La tua e-mail per le richieste sui dati (mostrata su /privacy)"
+  [q_pass]="Password del server (vuota: entra chiunque abbia l'indirizzo; gli admin possono cambiarla poi nell'app)"
   [net_q]="Come raggiungeranno questo server le persone?"
   [net_1]="Il mio dominio, con HTTPS (es. voice.example.com)"
   [net_2]="Un nome automatico gratuito, con HTTPS: %s"
@@ -315,6 +329,7 @@ declare -A L_it=(
   [r_addr]="Indirizzo del server" [r_port]="Porta" [r_key]="Chiave di amministrazione"
   [r_how]="Nell'app: Server › Rivendica, poi scrivi la chiave. Ti rende proprietario del server (vale una volta)."
   [r_owned]="(il server ha già un proprietario)"
+  [r_pass]="Password del server" [r_open]="nessuna (server aperto)"
   [r_ports]="Porte da aprire" [r_set]="Impostazioni" [r_logs]="Log" [r_upd]="Aggiornamento"
   [r_plain]="Senza HTTPS l'accesso viaggia in chiaro (la voce resta cifrata). Un dominio è più sicuro."
   [r_dns]="Se HTTPS non funziona entro un minuto, controlla che il nome punti a questo server e che TCP 80/443 siano aperte."
@@ -326,9 +341,10 @@ declare -A L_pt=(
   [q_auto]="Atualizações automáticas do servidor (diariamente, por volta das 4 da manhã)" [autodone]="Atualizações automáticas: ativadas"
   [title]="Spectre Voice Server — instalação"
   [step]="Passo %s de %s · %s"
-  [s_lang]="Idioma" [s_name]="Nome e contacto" [s_net]="Rede" [s_port]="Porta" [s_extra]="Extras" [s_fw]="Firewall" [s_inst]="Instalação"
+  [s_lang]="Idioma" [s_name]="Nome, palavra-passe e contacto" [s_net]="Rede" [s_port]="Porta" [s_extra]="Extras" [s_fw]="Firewall" [s_inst]="Instalação"
   [q_name]="Nome do servidor"
   [q_contact]="O teu e-mail para pedidos sobre dados (aparece em /privacy)"
+  [q_pass]="Palavra-passe do servidor (vazia: entra quem tiver o endereço; os admins podem mudá-la depois na app)"
   [net_q]="Como é que as pessoas chegam a este servidor?"
   [net_1]="O meu próprio domínio, com HTTPS (ex. voice.example.com)"
   [net_2]="Um nome automático gratuito, com HTTPS: %s"
@@ -354,6 +370,7 @@ declare -A L_pt=(
   [r_addr]="Endereço do servidor" [r_port]="Porta" [r_key]="Chave de administrador"
   [r_how]="Na app: Servidor › Reclamar e escreve a chave. Torna-te o dono do servidor (só uma vez)."
   [r_owned]="(o servidor já tem dono)"
+  [r_pass]="Palavra-passe do servidor" [r_open]="nenhuma (servidor aberto)"
   [r_ports]="Portas a abrir" [r_set]="Definições" [r_logs]="Registos" [r_upd]="Atualizar"
   [r_plain]="Sem HTTPS a autenticação viaja sem cifra (a voz continua cifrada). Um domínio é mais seguro."
   [r_dns]="Se o HTTPS não funcionar num minuto, confirma que o nome aponta para este servidor e que TCP 80/443 estão abertas."
@@ -365,9 +382,10 @@ declare -A L_hu=(
   [q_auto]="Automatikus szerverfrissítések (naponta, hajnali 4 körül)" [autodone]="Automatikus frissítések: bekapcsolva"
   [title]="Spectre Voice Server — telepítés"
   [step]="%s. lépés / %s · %s"
-  [s_lang]="Nyelv" [s_name]="Név és kapcsolat" [s_net]="Hálózat" [s_port]="Port" [s_extra]="Extrák" [s_fw]="Tűzfal" [s_inst]="Telepítés"
+  [s_lang]="Nyelv" [s_name]="Név, jelszó és kapcsolat" [s_net]="Hálózat" [s_port]="Port" [s_extra]="Extrák" [s_fw]="Tűzfal" [s_inst]="Telepítés"
   [q_name]="A szerver neve"
   [q_contact]="E-mail címed az adatkérésekhez (a /privacy oldalon látszik)"
+  [q_pass]="Szerverjelszó (üres: bárki beléphet, akinek megvan a cím; az adminok később az appban módosíthatják)"
   [net_q]="Hogyan érik el az emberek ezt a szervert?"
   [net_1]="Saját domain, HTTPS-sel (pl. voice.example.com)"
   [net_2]="Ingyenes automatikus név, HTTPS-sel: %s"
@@ -393,6 +411,7 @@ declare -A L_hu=(
   [r_addr]="Szervercím" [r_port]="Port" [r_key]="Admin kulcs"
   [r_how]="Az appban: Szerver › Igénylés, majd írd be a kulcsot. Ezzel te leszel a tulajdonos (egyszer működik)."
   [r_owned]="(a szervernek már van tulajdonosa)"
+  [r_pass]="Szerverjelszó" [r_open]="nincs (nyitott szerver)"
   [r_ports]="Megnyitandó portok" [r_set]="Beállítások" [r_logs]="Napló" [r_upd]="Frissítés"
   [r_plain]="HTTPS nélkül a bejelentkezés titkosítatlanul megy (a hang titkosított marad). Egy domain biztonságosabb."
   [r_dns]="Ha a HTTPS egy percen belül nem működik, ellenőrizd, hogy a név erre a szerverre mutat, és a TCP 80/443 nyitva van."
@@ -404,9 +423,10 @@ declare -A L_tr=(
   [q_auto]="Otomatik sunucu güncellemeleri (her gün, sabah 4 civarı)" [autodone]="Otomatik güncellemeler: açık"
   [title]="Spectre Voice Server — kurulum"
   [step]="Adım %s / %s · %s"
-  [s_lang]="Dil" [s_name]="Ad ve iletişim" [s_net]="Ağ" [s_port]="Port" [s_extra]="Ekstralar" [s_fw]="Güvenlik duvarı" [s_inst]="Kurulum"
+  [s_lang]="Dil" [s_name]="Ad, şifre ve iletişim" [s_net]="Ağ" [s_port]="Port" [s_extra]="Ekstralar" [s_fw]="Güvenlik duvarı" [s_inst]="Kurulum"
   [q_name]="Sunucunun adı"
   [q_contact]="Veri talepleri için e-postan (/privacy sayfasında görünür)"
+  [q_pass]="Sunucu şifresi (boş: adresi bilen herkes girer; yöneticiler sonra uygulamadan değiştirebilir)"
   [net_q]="İnsanlar bu sunucuya nasıl ulaşacak?"
   [net_1]="Kendi alan adım, HTTPS ile (örn. voice.example.com)"
   [net_2]="Ücretsiz otomatik bir ad, HTTPS ile: %s"
@@ -432,6 +452,7 @@ declare -A L_tr=(
   [r_addr]="Sunucu adresi" [r_port]="Port" [r_key]="Yönetici anahtarı"
   [r_how]="Uygulamada: Sunucu › Sahiplen, sonra anahtarı yaz. Seni sunucunun sahibi yapar (bir kez çalışır)."
   [r_owned]="(sunucunun zaten bir sahibi var)"
+  [r_pass]="Sunucu şifresi" [r_open]="yok (açık sunucu)"
   [r_ports]="Açılacak portlar" [r_set]="Ayarlar" [r_logs]="Kayıtlar" [r_upd]="Güncelleme"
   [r_plain]="HTTPS olmadan oturum açma şifresiz gider (ses şifreli kalır). Alan adı daha güvenlidir."
   [r_dns]="HTTPS bir dakika içinde çalışmazsa, adın bu sunucuyu gösterdiğini ve TCP 80/443'ün açık olduğunu kontrol et."
@@ -530,6 +551,8 @@ if [[ $FIRST -eq 1 ]]; then
   # ---- Step 2: name and contact ----
   stepn 2 "$(t s_name)"
   ask NAME "$(t q_name)" "Spectre Voice"
+  # One server is one space (as on TeamSpeak): the address, a name, and this password if there is one
+  ask SVPASS "$(t q_pass)" ""
   # You hold the people's data on your server (GDPR): your privacy page (/privacy) gives this address for their requests
   ask CONTACT "$(t q_contact)" "${EMAIL:-}"
 
@@ -649,6 +672,7 @@ if [[ $FIRST -eq 1 ]]; then
   else curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/deploy/server.env.example" -o "$ENVF"; fi
   chown root:spectrevoice "$ENVF" && chmod 640 "$ENVF"
   setenv SV_NAME "$NAME"
+  setenv SV_PASSWORD "$SVPASS"
   [[ -n "$CONTACT" ]] && setenv SV_CONTACT_EMAIL "$CONTACT"
   setenv SV_PUBLIC_IP "$PUBLIC"
   setenv SV_MUSIC "$([[ $MUSIC -eq 1 ]] && echo true || echo false)"
@@ -835,6 +859,9 @@ printf '\033[1;32m  %s\033[0m\n' "$(printf "$(t ready)" "$($BIN version 2>/dev/n
 printf '\033[1;32m%s\033[0m\n' "════════════════════════════════════════════════════════════════════"
 row "$(t r_addr):" "$ADDR" '\033[1m'
 row "$(t r_port):" "$SHOWPORT" '\033[1m'
+if [[ $FIRST -eq 1 ]]; then
+  if [[ -n $SVPASS ]]; then row "$(t r_pass):" "$SVPASS" '\033[1m'; else row "$(t r_pass):" "$(t r_open)"; fi
+fi
 if [[ -n "$claim" ]]; then
   row "$(t r_key):" "$claim" '\033[1;33m'
   echo "  $(t r_how)"

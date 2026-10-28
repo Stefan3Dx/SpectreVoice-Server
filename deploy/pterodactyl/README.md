@@ -24,7 +24,7 @@ official Plus build (signed, kept in `data/bin`) and restarts into it by itself.
 hours, so a changed or cancelled plan applies within 6 hours.
 
 The customer owns their server: at the first start the console prints a claim code (also in `data/claim.code`); in
-the app, *Server › Claim* makes them its owner. The customer is the data controller for their community (see the
+the app, *Server › Claim* makes them its owner. The customer is the data controller for their server (see the
 operator guide); you are their host.
 
 ## 2. The partner API

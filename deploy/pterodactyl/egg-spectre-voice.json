@@ -7,7 +7,7 @@
     "exported_at": "2026-10-27T12:00:00+02:00",
     "name": "Spectre Voice",
     "author": "support@spectrevoice.com",
-    "description": "Spectre Voice Server: voice, chat, games and streams for a community. One port (TCP for the apps, UDP for the voice, the same number). The plan's places are set by the host (SV_MAX_USERS, 10 to 1000) and unlocked by the host's plan code (SV_PARTNER_CODE).",
+    "description": "Spectre Voice Server: voice, chat, games and streams on one server (address, name, optional password). One port (TCP for the apps, UDP for the voice, the same number). The plan's places are set by the host (SV_MAX_USERS, 10 to 1000) and unlocked by the host's plan code (SV_PARTNER_CODE).",
     "features": null,
     "docker_images": {
         "Debian": "ghcr.io/parkervcp/yolks:debian"

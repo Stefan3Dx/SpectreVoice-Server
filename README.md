@@ -1,8 +1,13 @@
 # Spectre Voice Server
 
 Your own server for [Spectre Voice](https://spectrevoice.com): voice channels, chat with history, screen streams,
-communities with roles, invite links, a music bot, channel files, games and push notifications. One program, no
-database to set up, runs on a small LXC or VPS.
+roles, invite links, a music bot, channel files, games and push notifications. One program, no database to set up,
+runs on a small LXC or VPS.
+
+One server is one space, as on TeamSpeak: people join with the server's **address**, a **display name** and, if you
+set one, the **server password**. Their identity is a key made on their device (no account). Everything on the
+server is shared by everyone on it: channels, roles and permissions, the server chat, bots, invites, the music bot,
+moderation and the places.
 
 ## Install
 
@@ -12,12 +17,19 @@ On Debian 12/13 or Ubuntu 22.04+ (amd64 or arm64), as root:
 curl -fsSL https://raw.githubusercontent.com/Stefan3Dx/SpectreVoice-Server/main/install.sh | sudo bash
 ```
 
-It asks the server's name and, for a public server, the domain: then it sets up HTTPS (Caddy), a TURN relay
-(coturn) and the music bot (ffmpeg, yt-dlp). At the end it prints the address for the apps and a **claim code**:
-in the app, *Server › Claim*, type it and the server is yours.
+It asks the server's name, a server password (empty: anyone with the address gets in) and, for a public server, the
+domain: then it sets up HTTPS (Caddy), a TURN relay (coturn) and the music bot (ffmpeg, yt-dlp). At the end it prints
+the address for the apps, the password and a **claim code**: in the app, *Server › Claim*, type it and the server
+is yours.
+
+Name and password can be changed later in the app (*Server settings*, by the server's admins): that wins over
+`SV_NAME` / `SV_PASSWORD` and is kept in the server's database (the password as a bcrypt hash). The server's owners
+and admins never need the password. An invite link can carry the right to skip it (made by admins: *Invite › Let
+them in without the password*); who came in that way comes back without it, until banned.
 
 Without questions: `sudo bash install.sh --yes` (LAN) or
-`sudo bash install.sh --domain voice.example.com --email you@example.com --yes` (public).
+`sudo bash install.sh --domain voice.example.com --email you@example.com --yes` (public); `--password PASS` sets the
+server password.
 Update: `sudo bash install.sh --update`.
 
 ### Ports
@@ -34,11 +46,12 @@ At home behind a router: forward these to the server and set `SV_PUBLIC_IP` to y
 
 The server also serves a small client at **`/app/`** (`https://voice.example.com/app/`): voice and chat in the browser,
 nothing to install. An invite page (`/i/<code>`) offers *Open in the browser*, which lands on `/app/?invite=<code>`
-and joins the community after signing in; `?ch=<id>` joins a channel. The identity is a P-256 key made in the browser
+and uses the invite in its sign-in (its channel, and the password skipped when the invite says so); `?ch=<id>`
+joins a channel. A server with a password asks for it. The identity is a P-256 key made in the browser
 (WebCrypto, kept in IndexedDB, never leaves it) and signs the same v2 challenge as the apps, for the page's own host;
 the nickname is remembered. Channels with who's where and who talks, join (locked channels ask the password), listen
 and talk through WebRTC (push-to-talk with Space or the big button, open mic, mute, deafen, a volume per person),
-channel and community chat with history, RO/EN. Needs HTTPS (or `localhost`) for the microphone and WebCrypto.
+channel and server chat with history, RO/EN. Needs HTTPS (or `localhost`) for the microphone and WebCrypto.
 Not in the web client, by design: streams, games, files, private messages, moderation — the apps have them.
 
 Files: `web/index.html`, `web/app.js`, `web/app.css`, embedded in the binary (`webapp.go`); no frameworks, no build
@@ -83,9 +96,9 @@ code from the website (*Server › Donation code*). `SV_MAX_USERS` sets your own
 
 ## Bots
 
-Anyone can write a bot for a server: a program with its own key that a community manager registers (`bot-add`),
-limited to that community and to the permissions it was given, shown with the robot icon, outside the places
-count. The protocol and a complete example (Go, ~150 lines) are in [docs/BOTS.md](docs/BOTS.md).
+Anyone can write a bot for a server: a program with its own key that a server manager registers (`bot-add`),
+limited to the permissions it was given, shown with the robot icon, outside the places count, never asked for the
+server password. The protocol and a complete example (Go, ~150 lines) are in [docs/BOTS.md](docs/BOTS.md).
 
 ## Build
 

@@ -1,6 +1,6 @@
 // A minimal Spectre Voice bot (docs/BOTS.md): it answers "!ping" with "pong" in the chat it was asked in, and
 // greets whoever comes into its voice channel. Its key lives in bot.key (made on the first run); print the uid
-// with -uid and have a community manager register it (bot-add) before it connects.
+// with -uid and have a server manager register it (bot-add) before it connects.
 //
 //	go run . -uid
 //	go run . -server wss://voice.example.com/v1/ws
