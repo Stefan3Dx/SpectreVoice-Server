@@ -337,7 +337,7 @@ func (s *server) handlePrivacy(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
-	page := strings.NewReplacer("CONTACT_EMAIL", html.EscapeString(contact), "SERVER_NAME", html.EscapeString(s.cfg.name),
+	page := strings.NewReplacer("CONTACT_EMAIL", html.EscapeString(contact), "SERVER_NAME", html.EscapeString(s.serverName()),
 		"SV_FILE_DAYS", fmt.Sprint(s.cfg.fileDays)).Replace(privacyPage)
 	_, _ = io.WriteString(w, page)
 }

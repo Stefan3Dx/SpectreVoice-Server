@@ -57,7 +57,7 @@ type session struct {
 	role      role    // the simple role in its community (for the apps that show only that)
 	roles     []int64 // its roles in its community
 	client    string
-	comm      int64  // the community it's in now (0: none yet)
+	comm      int64  // the space it's in (spaceID once past the hello; 0 before)
 	base      string // how the app reached the server (https://sfu.example.com), for links
 	ch        int64
 	mic       bool // muted microphone
@@ -223,7 +223,10 @@ func newHub(s *server) (*hub, error) {
 		return nil, err
 	}
 	for _, c := range cs {
-		h.chans[c.ID] = c
+		// Only the space's own: the channels of communities from before stay in the database, hidden (space.go)
+		if c.Comm == spaceID {
+			h.chans[c.ID] = c
+		}
 	}
 	return h, nil
 }
@@ -355,7 +358,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		Name     string `json:"name"`
 		Client   string `json:"client"`
 		Password string `json:"password"`
-		Comm     int64  `json:"comm"`
+		Invite   string `json:"invite"` // an invite's code (optional): its channel, and the password skipped if it says so
 		Nonce    string `json:"nonce"`
 		V        int    `json:"v"`
 		Dev      string `json:"dev"` // this device (optional): a new connection from it replaces its old one
@@ -382,15 +385,11 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := cleanName(hello.Name)
-	// A registered bot (bots.go): the name its manager gave it, its community and no other
+	// A registered bot (bots.go): the name its manager gave it
 	bot := h.s.store.botOf(uid)
 	if bot != nil {
-		if hello.Comm != 0 && hello.Comm != bot.Comm {
-			fail("bot", "this bot belongs to another community")
-			return
-		}
-		if h.s.mods.banned(uid, bot.Comm) {
-			fail("banned", "this bot is banned from its community")
+		if bot.Comm != spaceID {
+			fail("bot", "this bot was registered in a community this server no longer has")
 			return
 		}
 		name = bot.Name
@@ -399,28 +398,46 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		fail("name", "choose a name")
 		return
 	}
-	// Nothing is written for a visitor until the password and bans let them in
+	// Nothing is written for a visitor until the password and bans let them in. The password: the server's, or an
+	// invite that skips it (invites.go), or let in that way before; the server's owners and admins never need it
 	rl := h.s.store.role(uid)
-	if h.s.cfg.joinPass != "" && !rl.atLeast(roleAdmin) && !constEq(hello.Password, h.s.cfg.joinPass) {
+	var inv *invite
+	if hello.Invite != "" && bot == nil {
+		if in, err := h.s.store.invite(hello.Invite); err == nil && in.Comm == spaceID && in.valid() {
+			inv = in
+		}
+	}
+	needPass := bot == nil && h.s.hasPassword() && !rl.atLeast(roleAdmin) && !h.s.store.admitted(uid)
+	passOK := !needPass || h.s.passwordOK(hello.Password)
+	if !passOK && (inv == nil || !inv.Bypass) {
 		fail("password", "wrong server password")
 		return
 	}
-	if h.s.mods.banned(uid, 0) {
+	if h.s.mods.banned(uid, 0) || h.s.mods.banned(uid, spaceID) {
 		fail("banned", "you are banned from this server")
 		return
 	}
+	if inv != nil {
+		// Counted once it lets someone in; one that skipped the password lets them back without it later
+		used, err := h.s.useInvite(inv.Code)
+		if err != nil && !passOK {
+			fail("password", "wrong server password")
+			return
+		}
+		inv = used
+		if inv != nil && inv.Bypass && !passOK {
+			h.s.store.admit(uid, inv.Code)
+		}
+	}
 	rl = h.s.store.seen(uid, hello.Pub, name)
+	_ = h.s.store.join(spaceID, uid)
 	ss := &session{uid: uid, name: name, client: clip(hello.Client, 40), base: requestBase(r), ws: ws, out: make(chan []byte, sessQueue), done: make(chan struct{}),
 		nonce: clip(hello.Nonce, 100), since: time.Now().UnixMilli(), dev: clip(hello.Dev, 64)}
-	var comm int64
 	if bot != nil {
 		ss.bot, ss.api = true, true
-		_ = h.s.store.join(bot.Comm, uid) // a member again if it was taken out (the registration is what counts)
-		comm = bot.Comm
-	} else {
-		comm = h.pickCommunity(uid, hello.Comm)
 	}
-	pre := h.preEnter(uid, comm)
+	pre := h.preEnter()
+	info := h.s.serverInfo()
 	pre.wantCh = hello.Ch
 	h.mu.Lock()
 	// The same device again (a dropped Wi-Fi, before the old socket timed out): the old one goes, and doesn't count
@@ -454,20 +471,25 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	h.next++
 	ss.sid = h.next
 	h.sessions[ss.sid] = ss
+	srv := map[string]any{"motd": h.s.cfg.motd, "version": version, "ice": h.s.publicICE(),
+		"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil}
+	for k, v := range info {
+		srv[k] = v
+	}
 	welcome := map[string]any{
-		"t": "welcome", "sid": ss.sid, "uid": uid, "token": h.s.makeToken(uid),
-		"server": map[string]any{"name": h.s.cfg.name, "motd": h.s.cfg.motd, "version": version, "ice": h.s.publicICE(), "create": h.s.cfg.createCommunities,
-			"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil},
-		"tier": h.s.lic.welcome(),
+		"t": "welcome", "sid": ss.sid, "uid": uid, "token": h.s.makeToken(uid), "server": srv, "tier": h.s.lic.welcome(),
 	}
 	if bot != nil {
 		welcome["bot"] = true
 	}
-	for k, v := range h.enterWith(ss, comm, pre) {
+	for k, v := range h.enterWith(ss, pre) {
 		welcome[k] = v
 	}
 	ss.send(welcome)
 	h.mu.Unlock()
+	if inv != nil && inv.Channel != 0 {
+		h.join(ss, inv.Channel, "")
+	}
 	statJoins.Add(1)
 	log.Printf("in: %s %q (%s) sid %d", uid, name, ss.client, ss.sid)
 	go ss.writer()
@@ -610,7 +632,7 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 	case "rtc", "ice":
 		h.s.voice.signal(ss, t, m)
 	default:
-		if !h.communityOp(ss, t, m) && !h.codeOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
+		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
 			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {
 			ss.refuse(t, "bad", "unknown message")
 		}
@@ -714,10 +736,10 @@ func (h *hub) target(ss *session, to string) (conv string, ch int64, other strin
 		}
 		return chanConv(ch), ch, "", nil
 	case strings.HasPrefix(to, "g:"):
-		// The community's own chat, everyone in it
+		// The server chat, everyone on the server
 		comm, _ := strconv.ParseInt(to[2:], 10, 64)
 		if comm == 0 || comm != h.commOf(ss) {
-			return "", 0, "", fmt.Errorf("not in that community")
+			return "", 0, "", fmt.Errorf("not this server's chat")
 		}
 		return to, -comm, "", nil
 	case strings.HasPrefix(to, "u:"):
@@ -753,9 +775,9 @@ func (h *hub) say(ss *session, t, to string, m map[string]any) {
 		ss.refuse(t, "muted", "you can't write here for now")
 		return
 	}
-	// Private messages only to people one shares a community with (not to any uid on the server)
-	if other != "" && !h.s.store.sharesCommunity(ss.uid, other) {
-		ss.refuse(t, "bad", "you don't share a community with them")
+	// Private messages only to people of this server (not to any uid)
+	if other != "" && !h.s.store.isMember(spaceID, other) {
+		ss.refuse(t, "bad", "they aren't on this server")
 		return
 	}
 	if t == "relay" {
@@ -936,7 +958,7 @@ func (h *hub) edit(ss *session, t string, id int64, text string) {
 
 func (h *hub) poke(ss *session, uid, text string) {
 	text = clip(strings.TrimSpace(text), 200)
-	if !uidRe.MatchString(uid) || !h.s.store.sharesCommunity(ss.uid, uid) {
+	if !uidRe.MatchString(uid) || !h.s.store.isMember(spaceID, uid) {
 		ss.refuse("poke", "gone", "they aren't here")
 		return
 	}
@@ -1415,7 +1437,7 @@ func (g *ipGate) recent(ip string) []time.Time {
 // uidRe: a person's uid (base64url of 15 bytes).
 var uidRe = regexp.MustCompile(`^[A-Za-z0-9_-]{20}$`)
 
-// commOf: the session's community now (another goroutine may move it: a ban, a deleted community).
+// commOf: the session's space (set once at the hello; read under the lock as other goroutines do).
 func (h *hub) commOf(ss *session) int64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1423,7 +1445,7 @@ func (h *hub) commOf(ss *session) int64 {
 }
 
 // voiceOps: the messages that make the server re-offer voice to others.
-var voiceOps = map[string]bool{"join": true, "whisper": true, "enter": true, "move": true, "community-join": true}
+var voiceOps = map[string]bool{"join": true, "whisper": true, "move": true, "community-join": true}
 
 // voiceOp: may this session change voice now? Three a second, bursts of ten.
 func (ss *session) voiceOp() bool {

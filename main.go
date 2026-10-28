@@ -31,7 +31,7 @@ import (
 
 var version = "dev"
 
-// mainSpace is the community every app on this server is in (more communities per server: later).
+// mainSpace is the bus space of the server's one space (space.go).
 const mainSpace = "main"
 
 type config struct {
@@ -57,7 +57,7 @@ type config struct {
 	fileMB      int64
 	fileDays    int
 	fileQuota   int64
-	cfQuota     int64 // MB all channel files may take, every community together
+	cfQuota     int64 // MB all channel files may take
 	cfUserMB    int64 // MB one person's channel files may take on the server
 	fileSpaceMB int64
 	maxSpaces   int
@@ -66,19 +66,17 @@ type config struct {
 	playRate    float64
 	playTest    bool
 	contact     string
-	// Who makes communities: "anyone" (each up to a few) or "staff" (the server's owners and admins)
-	createCommunities string
-	pushCreds         string // Firebase service account (JSON) for push notifications ("": none)
-	inviteBase        string // what invite links start with (https://sfu.example.com/i/)
-	licenseURL        string // the donation service (places for donations)
-	partnerCode       string // a hosting partner's plan code (SVP-…): its places, redeemed at start
-	udpPort           int    // one UDP port for all the voice and streams (hosting panels), instead of the range
-	vendorKey         string // its public key (tests use their own)
-	audioLevel        int    // the voice's level where a channel doesn't set one (quality.go)
-	music             bool   // the music bot (needs yt-dlp and ffmpeg)
-	pushContent       bool   // push notifications carry who and what (through Google); off: only that there's something
-	ytdlp             string
-	ffmpeg            string
+	pushCreds   string // Firebase service account (JSON) for push notifications ("": none)
+	inviteBase  string // what invite links start with (https://sfu.example.com/i/)
+	licenseURL  string // the donation service (places for donations)
+	partnerCode string // a hosting partner's plan code (SVP-…): its places, redeemed at start
+	udpPort     int    // one UDP port for all the voice and streams (hosting panels), instead of the range
+	vendorKey   string // its public key (tests use their own)
+	audioLevel  int    // the voice's level where a channel doesn't set one (quality.go)
+	music       bool   // the music bot (needs yt-dlp and ffmpeg)
+	pushContent bool   // push notifications carry who and what (through Google); off: only that there's something
+	ytdlp       string
+	ffmpeg      string
 }
 
 type server struct {
@@ -103,7 +101,8 @@ type server struct {
 	metrics *metrics
 	admin   *adminAuth
 	logs    *logRing
-	// testSpaces lets tests open communities besides mainSpace (nil in production)
+	conf    serverConf // name and password, as the admins set them (settings.go)
+	// testSpaces lets tests open bus spaces besides mainSpace (nil in production)
 	testSpaces func(name string) bool
 }
 
@@ -132,9 +131,9 @@ func main() {
 	var cfg config
 	flag.StringVar(&cfg.listen, "listen", env("SV_LISTEN", ":7880"), "HTTP address (behind Caddy for HTTPS) [SV_LISTEN]")
 	flag.StringVar(&cfg.data, "data", env("SV_DATA", "/var/lib/spectrevoice"), "folder for everything the server keeps [SV_DATA]")
-	flag.StringVar(&cfg.name, "name", env("SV_NAME", "Spectre Voice"), "the server's name in the apps [SV_NAME]")
+	flag.StringVar(&cfg.name, "name", env("SV_NAME", "Spectre Voice"), "the server's name in the apps, until an admin renames it there [SV_NAME]")
 	flag.StringVar(&cfg.motd, "motd", env("SV_MOTD", ""), "message shown on joining [SV_MOTD]")
-	flag.StringVar(&cfg.joinPass, "password", env("SV_PASSWORD", ""), "server password ('' for an open server) [SV_PASSWORD]")
+	flag.StringVar(&cfg.joinPass, "password", env("SV_PASSWORD", ""), "server password ('' for an open server), until an admin changes it in the apps [SV_PASSWORD]")
 	flag.IntVar(&cfg.maxUsers, "max-users", envInt("SV_MAX_USERS", 0), "your own cap on people connected at once (0: only the places: 30, plus donations) [SV_MAX_USERS]")
 	flag.StringVar(&cfg.owners, "owners", env("SV_OWNERS", ""), "uids made owners at start, comma separated [SV_OWNERS]")
 	flag.StringVar(&cfg.publicIP, "public-ip", env("SV_PUBLIC_IP", ""), "address announced for voice: the LAN IP, or the public IP / DDNS name when ports are forwarded (the LAN keeps working) [SV_PUBLIC_IP]")
@@ -153,17 +152,16 @@ func main() {
 	flag.BoolVar(&cfg.files, "files", envBool("SV_FILES", true), "files shared in the chat [SV_FILES]")
 	flag.Int64Var(&cfg.fileMB, "file-max-mb", int64(envInt("SV_FILE_MAX_MB", 100)), "largest shared file, MB [SV_FILE_MAX_MB]")
 	flag.IntVar(&cfg.fileDays, "file-days", envInt("SV_FILE_DAYS", 30), "days a shared file is kept [SV_FILE_DAYS]")
-	flag.Int64Var(&cfg.cfQuota, "cf-quota-mb", int64(envInt("SV_CF_QUOTA_MB", 10240)), "MB all channel files may take, all communities together [SV_CF_QUOTA_MB]")
+	flag.Int64Var(&cfg.cfQuota, "cf-quota-mb", int64(envInt("SV_CF_QUOTA_MB", 10240)), "MB all channel files may take [SV_CF_QUOTA_MB]")
 	flag.Int64Var(&cfg.cfUserMB, "cf-user-mb", int64(envInt("SV_CF_USER_MB", 2048)), "MB one person's channel files may take [SV_CF_USER_MB]")
 	flag.Int64Var(&cfg.fileQuota, "file-quota-mb", int64(envInt("SV_FILE_QUOTA_MB", 5120)), "MB all shared files may take [SV_FILE_QUOTA_MB]")
-	flag.Int64Var(&cfg.fileSpaceMB, "file-space-mb", int64(envInt("SV_FILE_SPACE_MB", 1024)), "MB one community's chat files may take (0: no limit but the total) [SV_FILE_SPACE_MB]")
-	flag.IntVar(&cfg.maxSpaces, "max-spaces", envInt("SV_MAX_SPACES", 16), "communities kept open at once [SV_MAX_SPACES]")
+	flag.Int64Var(&cfg.fileSpaceMB, "file-space-mb", int64(envInt("SV_FILE_SPACE_MB", 1024)), "MB the chat files of one space may take (0: no limit but the total) [SV_FILE_SPACE_MB]")
+	flag.IntVar(&cfg.maxSpaces, "max-spaces", envInt("SV_MAX_SPACES", 16), "bus spaces kept open at once [SV_MAX_SPACES]")
 	flag.StringVar(&cfg.playCreds, "play-credentials", env("SV_PLAY_CREDENTIALS", ""), "Google Play service account key file (JSON) for donations [SV_PLAY_CREDENTIALS]")
 	flag.StringVar(&cfg.playPkg, "play-package", env("SV_PLAY_PACKAGE", "io.github.stefan3dx.spectrevoice"), "the Play app's package [SV_PLAY_PACKAGE]")
 	flag.Float64Var(&cfg.playRate, "play-eur-ron", 5.0, "RON one euro donated through Google Play counts as")
 	flag.BoolVar(&cfg.playTest, "play-allow-test", envBool("SV_PLAY_ALLOW_TEST", false), "count license testers' purchases [SV_PLAY_ALLOW_TEST]")
 	flag.StringVar(&cfg.contact, "contact-email", env("SV_CONTACT_EMAIL", ""), "the owner's contact for data requests, shown at /privacy [SV_CONTACT_EMAIL]")
-	flag.StringVar(&cfg.createCommunities, "create-communities", env("SV_CREATE_COMMUNITIES", "anyone"), "who makes communities: anyone or staff [SV_CREATE_COMMUNITIES]")
 	flag.StringVar(&cfg.pushCreds, "push-credentials", env("SV_PUSH_CREDENTIALS", ""), "Firebase service account (JSON) for push notifications [SV_PUSH_CREDENTIALS]")
 	flag.StringVar(&cfg.licenseURL, "license-url", env("SV_LICENSE_URL", "https://license.spectrevoice.com"), "the donation service: donations add places for a month [SV_LICENSE_URL]")
 	flag.IntVar(&cfg.audioLevel, "audio-quality", envInt("SV_AUDIO_QUALITY", defaultAudioLevel), "voice quality where a channel sets none: 1 low … 6 max [SV_AUDIO_QUALITY]")
@@ -230,6 +228,9 @@ func newServer(cfg config) (*server, error) {
 	}
 	if err := s.store.migrateCommunities(cfg.name); err != nil {
 		return nil, fmt.Errorf("communities: %w", err)
+	}
+	if err := s.loadSettings(); err != nil {
+		return nil, fmt.Errorf("settings: %w", err)
 	}
 	if err := s.store.migrateInvites(); err != nil {
 		return nil, fmt.Errorf("invites: %w", err)
@@ -324,15 +325,10 @@ func (s *server) knownSpace(name string) bool {
 	if s.testSpaces != nil && s.testSpaces(name) {
 		return true
 	}
-	c := commOfSpace(name)
-	if c == 0 {
-		return false
-	}
-	_, err := s.store.community(c)
-	return err == nil
+	return commOfSpace(name) == spaceID
 }
 
-// mayUseSpace: uid is a member of the space's community (tests' extra spaces: anyone).
+// mayUseSpace: uid is on this server and not banned (tests' extra spaces: anyone).
 func (s *server) mayUseSpace(name, uid string) bool {
 	if s.testSpaces != nil && s.testSpaces(name) {
 		return true
@@ -372,7 +368,7 @@ func (s *server) handler() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = fmt.Fprintf(w, "%s: Spectre Voice Server %s\n", s.cfg.name, version)
+		_, _ = fmt.Fprintf(w, "%s: Spectre Voice Server %s\n", s.serverName(), version)
 	})
 	return mux
 }

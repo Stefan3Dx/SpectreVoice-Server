@@ -151,8 +151,6 @@ func (s *server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			hours = 24
 		}
 		out = s.metrics.since(time.Now().Add(-time.Duration(hours) * time.Hour))
-	case "communities":
-		out = s.adminCommunities()
 	case "sessions":
 		out = s.adminSessions()
 	case "top":
@@ -202,11 +200,10 @@ func dirSize(dir string) int64 {
 }
 
 func (s *server) adminOverview() map[string]any {
-	var users, msgs, comms int64
+	var users, msgs int64
 	db := s.store.db
 	_ = db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&users)
 	_ = db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&msgs)
-	_ = db.QueryRow(`SELECT COUNT(*) FROM communities`).Scan(&comms)
 	var active7 int64
 	_ = db.QueryRow(`SELECT COUNT(*) FROM users WHERE seen > ?`, time.Now().Add(-7*24*time.Hour).UnixMilli()).Scan(&active7)
 	s.metrics.mu.Lock()
@@ -216,45 +213,10 @@ func (s *server) adminOverview() map[string]any {
 		now = s.metrics.take()
 	}
 	return map[string]any{
-		"name": s.cfg.name, "version": version, "uptime": int64(time.Since(started).Seconds()), "license": s.lic.statusMsg(),
-		"now": now, "users": users, "active7d": active7, "messages": msgs, "communities": comms,
+		"name": s.serverName(), "version": version, "uptime": int64(time.Since(started).Seconds()), "license": s.lic.statusMsg(),
+		"now": now, "users": users, "active7d": active7, "messages": msgs,
 		"disk": dirSize(s.cfg.data), "maxUsers": s.maxUsers(), "music": s.music.enabled(),
 	}
-}
-
-func (s *server) adminCommunities() []map[string]any {
-	// Count under h.mu before the query: rows hold the only DB connection, and h.mu holders query the DB
-	online := map[int64]int{}
-	s.hub.mu.Lock()
-	for _, ss := range s.hub.sessions {
-		if !ss.bot {
-			online[ss.comm]++
-		}
-	}
-	s.hub.mu.Unlock()
-	rows, err := s.store.db.Query(`SELECT c.id, c.name, c.owner, c.open, c.created,
- (SELECT COUNT(*) FROM memberships m WHERE m.comm=c.id), (SELECT COUNT(*) FROM channels ch WHERE ch.comm=c.id) FROM communities c ORDER BY c.id`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	out := []map[string]any{}
-	for rows.Next() {
-		var id, created, members, chans int64
-		var name, owner string
-		var open int
-		if rows.Scan(&id, &name, &owner, &open, &created, &members, &chans) != nil {
-			continue
-		}
-		out = append(out, map[string]any{"id": id, "name": name, "owner": owner, "open": open == 1,
-			"created": created, "members": members, "channels": chans, "online": online[id]})
-	}
-	// The store has one connection: other queries only after these rows are closed
-	rows.Close()
-	for _, c := range out {
-		c["ownerName"] = s.store.userName(c["owner"].(string))
-	}
-	return out
 }
 
 func (s *server) adminSessions() []map[string]any {
@@ -267,7 +229,7 @@ func (s *server) adminSessions() []map[string]any {
 		if c := h.chans[ss.ch]; c != nil {
 			ch = c.Name
 		}
-		out = append(out, map[string]any{"sid": ss.sid, "uid": ss.uid, "name": ss.name, "client": ss.client, "comm": ss.comm,
+		out = append(out, map[string]any{"sid": ss.sid, "uid": ss.uid, "name": ss.name, "client": ss.client,
 			"channel": ch, "rtt": ss.rtt, "loss": ss.loss, "since": ss.since, "bot": ss.bot, "away": ss.away})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i]["since"].(int64) < out[j]["since"].(int64) })

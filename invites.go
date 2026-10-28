@@ -1,13 +1,15 @@
 package main
 
-// Invites: a link that brings someone into a community (and a channel of it).
+// Invites: a link to this server (and a channel of it). One made with "pass" also lets its people in without the
+// server password (only who may change the password makes those); they're remembered as admitted (settings.go).
 //
-//	<- {"t":"invite-create","ch":0,"hours":24,"uses":0}  (invite)  -> {"t":"invite","code","url","expires","uses"}
+//	<- {"t":"invite-create","ch":0,"hours":24,"uses":0,"pass":false}  (invite; pass: administrator)
+//	                                                      -> {"t":"invite","code","url","expires","uses","pass"}
 //	<- {"t":"invites"}                                    (manage_community) -> {"t":"invites","items":[…]}
 //	<- {"t":"invite-del","code"}                          (manage_community, or who made it)
-//	<- {"t":"community-join","invite":CODE}               (communities_hub.go) uses one
+//	hello {"invite":CODE}                                 (hub.go) uses one: its channel, and the password skipped
 //
-//	GET /i/<code>           a page: the community, "open in the app", "open in the browser" (/app/), the downloads
+//	GET /i/<code>           a page: the server, "open in the app", "open in the browser" (/app/), the downloads
 //	GET /api/invite/<code>  the same for the apps, as JSON
 //	GET /download/<android|windows>   the newest installer the server keeps (updates.go), for anyone
 
@@ -39,6 +41,7 @@ type invite struct {
 	Expires int64  `json:"expires,omitempty"` // ms; 0: never
 	MaxUses int    `json:"maxUses,omitempty"` // 0: no limit
 	Uses    int    `json:"uses"`
+	Bypass  bool   `json:"pass,omitempty"` // lets its people in without the server password
 	URL     string `json:"url,omitempty"`
 }
 
@@ -47,6 +50,9 @@ var inviteCodeRe = regexp.MustCompile(`^[A-Za-z0-9]{6,16}$`)
 func (st *store) migrateInvites() error {
 	_, err := st.db.Exec(`CREATE TABLE IF NOT EXISTS invites(code TEXT PRIMARY KEY, comm INTEGER NOT NULL, channel INTEGER NOT NULL DEFAULT 0, by TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL DEFAULT 0, max_uses INTEGER NOT NULL DEFAULT 0, uses INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS invites_comm ON invites(comm);`)
+	if err == nil && !st.hasColumn("invites", "bypass") {
+		_, err = st.db.Exec(`ALTER TABLE invites ADD COLUMN bypass INTEGER NOT NULL DEFAULT 0`)
+	}
 	return err
 }
 
@@ -63,7 +69,7 @@ func newInviteCode() string {
 func (st *store) addInvite(in *invite) error {
 	for range 5 {
 		in.Code = newInviteCode()
-		_, err := st.db.Exec(`INSERT INTO invites(code,comm,channel,by,created,expires,max_uses) VALUES(?,?,?,?,?,?,?)`, in.Code, in.Comm, in.Channel, in.By, in.Created, in.Expires, in.MaxUses)
+		_, err := st.db.Exec(`INSERT INTO invites(code,comm,channel,by,created,expires,max_uses,bypass) VALUES(?,?,?,?,?,?,?,?)`, in.Code, in.Comm, in.Channel, in.By, in.Created, in.Expires, in.MaxUses, b2i(in.Bypass))
 		if err == nil {
 			return nil
 		}
@@ -76,13 +82,15 @@ func (st *store) addInvite(in *invite) error {
 
 func (st *store) invite(code string) (*invite, error) {
 	in := &invite{}
-	err := st.db.QueryRow(`SELECT code,comm,channel,by,created,expires,max_uses,uses FROM invites WHERE code=?`, code).
-		Scan(&in.Code, &in.Comm, &in.Channel, &in.By, &in.Created, &in.Expires, &in.MaxUses, &in.Uses)
+	var bypass int
+	err := st.db.QueryRow(`SELECT code,comm,channel,by,created,expires,max_uses,uses,bypass FROM invites WHERE code=?`, code).
+		Scan(&in.Code, &in.Comm, &in.Channel, &in.By, &in.Created, &in.Expires, &in.MaxUses, &in.Uses, &bypass)
+	in.Bypass = bypass == 1
 	return in, err
 }
 
 func (st *store) invitesOf(comm int64) ([]invite, error) {
-	rows, err := st.db.Query(`SELECT code,comm,channel,by,created,expires,max_uses,uses FROM invites WHERE comm=? ORDER BY created DESC`, comm)
+	rows, err := st.db.Query(`SELECT code,comm,channel,by,created,expires,max_uses,uses,bypass FROM invites WHERE comm=? ORDER BY created DESC`, comm)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +98,9 @@ func (st *store) invitesOf(comm int64) ([]invite, error) {
 	out := []invite{}
 	for rows.Next() {
 		var in invite
-		if rows.Scan(&in.Code, &in.Comm, &in.Channel, &in.By, &in.Created, &in.Expires, &in.MaxUses, &in.Uses) == nil {
+		var bypass int
+		if rows.Scan(&in.Code, &in.Comm, &in.Channel, &in.By, &in.Created, &in.Expires, &in.MaxUses, &in.Uses, &bypass) == nil {
+			in.Bypass = bypass == 1
 			out = append(out, in)
 		}
 	}
@@ -107,7 +117,7 @@ func (s *server) useInvite(code string) (*invite, error) {
 		return nil, errors.New("not an invite")
 	}
 	in, err := s.store.invite(code)
-	if err != nil {
+	if err != nil || in.Comm != spaceID {
 		return nil, errors.New("this invite doesn't exist (any more)")
 	}
 	if !in.valid() {
@@ -160,8 +170,9 @@ func (s *server) inviteOp(ss *session, t string, m map[string]any) bool {
 	h := s.hub
 	switch t {
 	case "invite-create":
+		bypass, _ := boolOf(m, "pass")
 		h.mu.Lock()
-		ok := ss.comm != 0 && h.may(ss, pInvite)
+		ok := ss.comm != 0 && h.may(ss, pInvite) && (!bypass || h.may(ss, pAdministrator))
 		ch := i64(m, "ch")
 		if c := h.chans[ch]; ch != 0 && (c == nil || c.Comm != ss.comm) {
 			ch = 0
@@ -171,7 +182,7 @@ func (s *server) inviteOp(ss *session, t string, m map[string]any) bool {
 			ss.refuse(t, "role", "not allowed")
 			return true
 		}
-		in := &invite{Comm: ss.comm, Channel: ch, By: ss.uid, Created: time.Now().UnixMilli(), MaxUses: int(max(0, min(i64(m, "uses"), 10000)))}
+		in := &invite{Comm: ss.comm, Channel: ch, By: ss.uid, Created: time.Now().UnixMilli(), MaxUses: int(max(0, min(i64(m, "uses"), 10000))), Bypass: bypass}
 		if hrs := i64(m, "hours"); hrs > 0 {
 			in.Expires = time.Now().Add(time.Duration(min(hrs, 24*365)) * time.Hour).UnixMilli()
 		}
@@ -180,7 +191,7 @@ func (s *server) inviteOp(ss *session, t string, m map[string]any) bool {
 			return true
 		}
 		in.URL = s.inviteURL(ss.base, in.Code)
-		ss.send(map[string]any{"t": "invite", "code": in.Code, "url": in.URL, "expires": in.Expires, "uses": in.MaxUses, "ch": in.Channel})
+		ss.send(map[string]any{"t": "invite", "code": in.Code, "url": in.URL, "expires": in.Expires, "uses": in.MaxUses, "ch": in.Channel, "pass": in.Bypass})
 	case "invites":
 		h.mu.Lock()
 		ok := ss.comm != 0 && h.may(ss, pManageCommunity)
@@ -221,20 +232,24 @@ type inviteInfo struct {
 	Valid     bool       `json:"valid"`
 	Server    string     `json:"server"`
 	Address   string     `json:"address"`
-	Community *community `json:"community,omitempty"`
+	Community *community `json:"community,omitempty"` // the server's space (name, about, icon, members): older apps
 	Channel   string     `json:"channel,omitempty"`
 	By        string     `json:"by,omitempty"`
+	Password  bool       `json:"password"`       // the server asks for its password (this invite doesn't skip it)
+	Bypass    bool       `json:"pass,omitempty"` // this invite skips the password
 }
 
 func (s *server) inviteInfo(r *http.Request, code string) (*inviteInfo, int) {
-	info := &inviteInfo{Code: code, Server: s.cfg.name, Address: requestBase(r)}
+	info := &inviteInfo{Code: code, Server: s.serverName(), Address: requestBase(r), Password: s.hasPassword()}
 	if !inviteCodeRe.MatchString(code) {
 		return info, http.StatusNotFound
 	}
 	in, err := s.store.invite(code)
-	if err != nil {
+	if err != nil || in.Comm != spaceID {
 		return info, http.StatusNotFound
 	}
+	info.Bypass = in.Bypass
+	info.Password = info.Password && !in.Bypass
 	c, err := s.store.community(in.Comm)
 	if err != nil {
 		return info, http.StatusNotFound
@@ -275,7 +290,7 @@ func (s *server) handleInvitePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	title, about, meta := "Invitația nu mai e valabilă", "Cere-i celui care ți-a trimis-o una nouă.", ""
 	if info.Community != nil && info.Valid {
-		title = "Ai fost invitat în " + html.EscapeString(info.Community.Name)
+		title = "Ai fost invitat pe " + html.EscapeString(info.Community.Name)
 		about = html.EscapeString(info.Community.About)
 		meta = fmt.Sprintf("%d membri", info.Community.Members)
 		if info.Channel != "" {
@@ -284,11 +299,14 @@ func (s *server) handleInvitePage(w http.ResponseWriter, r *http.Request) {
 		if info.By != "" {
 			meta += " · de la " + html.EscapeString(info.By)
 		}
+		if info.Password {
+			meta += " · cere parola serverului"
+		}
 	}
 	host := strings.TrimPrefix(strings.TrimPrefix(info.Address, "https://"), "http://")
 	open := "spectrevoice://" + host + "/i/" + code
 	page := strings.NewReplacer(
-		"{{TITLE}}", title, "{{ABOUT}}", about, "{{META}}", meta, "{{SERVER}}", html.EscapeString(s.cfg.name),
+		"{{TITLE}}", title, "{{ABOUT}}", about, "{{META}}", meta, "{{SERVER}}", html.EscapeString(s.serverName()),
 		"{{OPEN}}", html.EscapeString(open), "{{CODE}}", html.EscapeString(code), "{{ADDRESS}}", html.EscapeString(host),
 		"{{PLAY}}", "https://play.google.com/store/apps/details?id="+s.cfg.playPkg,
 		"{{SHOW}}", map[bool]string{true: "", false: "hidden"}[info.Community != nil && info.Valid],

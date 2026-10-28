@@ -1,17 +1,19 @@
 package main
 
-// Communities: one server holds several, each with its own channels, roles, members, chat and bus space (games,
-// Lei, profiles). A person is a member of the communities they joined (an open one, or through an invite) and is
-// in one of them at a time on a connection.
+// The server's space and its roles. One server is one space (space.go); in the store it is community 1, the row
+// servers from before had as their main community. A person who gets onto the server becomes its member.
 //
-// Roles are per community, Discord-like: a name, a colour, a place in the order and a set of permissions. Everyone
-// has the community's "@everyone" role; the owner can do everything; the server's own owners and admins (users.role,
-// SV_OWNERS) can do everything everywhere.
+// Roles are Discord-like: a name, a colour, a place in the order and a set of permissions. Everyone has the
+// "@everyone" role; the space's owner can do everything; the server's own owners and admins (users.role,
+// SV_OWNERS) can do everything.
+//
+// Servers from before that had more communities keep them in the database as they were (channels, chat, roles,
+// members, bots, invites), hidden: nothing of them is loaded or shown, nothing is deleted (migrateOneSpace).
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -22,7 +24,7 @@ type perm uint64
 
 const (
 	pAdministrator   perm = 1 << 0  // everything in the community
-	pManageCommunity perm = 1 << 1  // name, description, open or not, invites list
+	pManageCommunity perm = 1 << 1  // the server's name, description, icon; invites list; bots
 	pManageChannels  perm = 1 << 2  // create, edit, delete channels
 	pManageRoles     perm = 1 << 3  // create, edit roles; give roles below one's own
 	pMove            perm = 1 << 4  // move people between channels
@@ -91,7 +93,6 @@ type community struct {
 	Icon    string `json:"icon,omitempty"`
 	Owner   string `json:"owner"`
 	Open    bool   `json:"open"`
-	Code    string `json:"code,omitempty"` // to find it (community_codes.go)
 	Created int64  `json:"created"`
 	Members int    `json:"members,omitempty"`
 }
@@ -121,9 +122,6 @@ func (st *store) migrateCommunities(name string) error {
 	if _, err := st.db.Exec(communitySchema); err != nil {
 		return err
 	}
-	if err := st.migrateCodes(); err != nil {
-		return err
-	}
 	if !st.hasColumn("channels", "comm") {
 		if _, err := st.db.Exec(`ALTER TABLE channels ADD COLUMN comm INTEGER NOT NULL DEFAULT 1`); err != nil {
 			return err
@@ -134,17 +132,22 @@ func (st *store) migrateCommunities(name string) error {
 		_, _ = st.db.Exec(`UPDATE roles SET perms = perms | ? WHERE perms & ? != 0`, int64(pMuteVoice|pFiles|pMusic), int64(pMuteChat))
 	}
 	var n int
-	_ = st.db.QueryRow(`SELECT COUNT(*) FROM communities`).Scan(&n)
+	_ = st.db.QueryRow(`SELECT COUNT(*) FROM communities WHERE id=1`).Scan(&n)
 	if n > 0 {
+		st.migrateOneSpace()
 		return nil
 	}
 	now := time.Now().UnixMilli()
 	owner := ""
 	_ = st.db.QueryRow(`SELECT uid FROM users WHERE role='owner' ORDER BY created LIMIT 1`).Scan(&owner)
-	if _, err := st.db.Exec(`INSERT INTO communities(id,slug,name,owner,open,code,created) VALUES(1,'main',?,?,1,?,?)`, name, owner, st.freeCode(), now); err != nil {
+	if _, err := st.db.Exec(`INSERT INTO communities(id,slug,name,owner,open,created) VALUES(1,'main',?,?,1,?)`, name, owner, now); err != nil {
 		return err
 	}
-	_, _ = st.db.Exec(`UPDATE channels SET comm=1`)
+	var others int
+	_ = st.db.QueryRow(`SELECT COUNT(*) FROM communities WHERE id != 1`).Scan(&others)
+	if others == 0 {
+		_, _ = st.db.Exec(`UPDATE channels SET comm=1`)
+	}
 	_, _ = st.db.Exec(`INSERT OR IGNORE INTO memberships(comm,uid,joined) SELECT 1, uid, created FROM users WHERE pub != ''`)
 	if err := st.defaultRoles(1); err != nil {
 		return err
@@ -156,7 +159,29 @@ func (st *store) migrateCommunities(name string) error {
 	_, _ = st.db.Exec(`INSERT OR IGNORE INTO member_roles(comm,uid,role) SELECT 1, uid, ? FROM users WHERE role='admin'`, admin)
 	_, _ = st.db.Exec(`INSERT OR IGNORE INTO member_roles(comm,uid,role) SELECT 1, uid, ? FROM users WHERE role='mod'`, mod)
 	_, _ = st.db.Exec(`UPDATE users SET role='' WHERE role='mod'`)
+	st.migrateOneSpace()
 	return nil
+}
+
+// migrateOneSpace: from several communities per server to one space. Community 1 is the space and stays open to
+// whoever gets onto the server; any other community is left in the database exactly as it was (its channels, chat,
+// roles, members, bots, invites, bans), but hidden: the hub loads only community 1's channels, its bots and invites
+// stop working, nothing is shown. Nothing is deleted: the operator can still read or move it with sqlite3 (a
+// person's wipe still reaches it).
+func (st *store) migrateOneSpace() {
+	_, _ = st.db.Exec(`UPDATE communities SET open=1 WHERE id=1`)
+	rows, err := st.db.Query(`SELECT id, name, (SELECT COUNT(*) FROM channels WHERE comm=communities.id), (SELECT COUNT(*) FROM memberships WHERE comm=communities.id) FROM communities WHERE id != 1 ORDER BY id`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, chans, members int64
+		var name string
+		if rows.Scan(&id, &name, &chans, &members) == nil {
+			log.Printf("one space per server: community %d %q (%d channels, %d members) is kept in the database, hidden", id, name, chans, members)
+		}
+	}
 }
 
 func (st *store) hasColumn(table, col string) bool {
@@ -200,105 +225,17 @@ func slugify(name string) string {
 func scanCommunity(row interface{ Scan(...any) error }) (*community, error) {
 	c := &community{}
 	var open int
-	if err := row.Scan(&c.ID, &c.Slug, &c.Name, &c.About, &c.Icon, &c.Owner, &open, &c.Code, &c.Created); err != nil {
+	if err := row.Scan(&c.ID, &c.Slug, &c.Name, &c.About, &c.Icon, &c.Owner, &open, &c.Created); err != nil {
 		return nil, err
 	}
 	c.Open = open == 1
 	return c, nil
 }
 
-const commCols = `id,slug,name,about,icon,owner,open,code,created`
+const commCols = `id,slug,name,about,icon,owner,open,created`
 
 func (st *store) community(id int64) (*community, error) {
 	return scanCommunity(st.db.QueryRow(`SELECT `+commCols+` FROM communities WHERE id=?`, id))
-}
-
-func (st *store) communityBySlug(slug string) (*community, error) {
-	return scanCommunity(st.db.QueryRow(`SELECT `+commCols+` FROM communities WHERE slug=?`, slug))
-}
-
-func (st *store) queryCommunities(q string, args ...any) ([]community, error) {
-	rows, err := st.db.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []community
-	for rows.Next() {
-		c, err := scanCommunity(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for i := range out {
-		_ = st.db.QueryRow(`SELECT COUNT(*) FROM memberships WHERE comm=?`, out[i].ID).Scan(&out[i].Members)
-	}
-	return out, nil
-}
-
-// communitiesOf: those uid is a member of, in the order joined.
-func (st *store) communitiesOf(uid string) ([]community, error) {
-	return st.queryCommunities(`SELECT c.id,c.slug,c.name,c.about,c.icon,c.owner,c.open,c.code,c.created FROM communities c JOIN memberships m ON m.comm=c.id WHERE m.uid=? ORDER BY m.joined`, uid)
-}
-
-// openCommunities: those anyone may join, the biggest first.
-func (st *store) openCommunities(limit int) ([]community, error) {
-	list, err := st.queryCommunities(`SELECT ` + commCols + ` FROM communities WHERE open=1`)
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(list, func(i, j int) bool { return list[i].Members > list[j].Members })
-	if len(list) > limit {
-		list = list[:limit]
-	}
-	return list, nil
-}
-
-func (st *store) ownedBy(uid string) int {
-	var n int
-	_ = st.db.QueryRow(`SELECT COUNT(*) FROM communities WHERE owner=?`, uid).Scan(&n)
-	return n
-}
-
-// createCommunity makes a community with its roles, two channels and its owner as the first member.
-func (st *store) createCommunity(name, owner string, open bool) (*community, error) {
-	base := slugify(name)
-	slug := base
-	for i := 2; ; i++ {
-		var n int
-		_ = st.db.QueryRow(`SELECT COUNT(*) FROM communities WHERE slug=?`, slug).Scan(&n)
-		if n == 0 {
-			break
-		}
-		slug = fmt.Sprintf("%s-%d", base, i)
-		if i > 500 {
-			return nil, errors.New("no free name")
-		}
-	}
-	now := time.Now().UnixMilli()
-	o := 0
-	if open {
-		o = 1
-	}
-	res, err := st.db.Exec(`INSERT INTO communities(slug,name,owner,open,code,created) VALUES(?,?,?,?,?,?)`, slug, name, owner, o, st.freeCode(), now)
-	if err != nil {
-		return nil, err
-	}
-	id, _ := res.LastInsertId()
-	if err := st.defaultRoles(id); err != nil {
-		return nil, err
-	}
-	if _, err := st.db.Exec(`INSERT INTO channels(parent,name,pos,is_default,comm,kind) VALUES(0,'general',-10,0,?,'text'),(0,'Lobby',0,1,?,''),(0,'AFK',100,0,?,'')`, id, id, id); err != nil {
-		return nil, err
-	}
-	if err := st.join(id, owner); err != nil {
-		return nil, err
-	}
-	return st.community(id)
 }
 
 func (st *store) saveCommunity(c *community) error {
@@ -308,30 +245,6 @@ func (st *store) saveCommunity(c *community) error {
 	}
 	_, err := st.db.Exec(`UPDATE communities SET name=?, about=?, icon=?, open=?, owner=? WHERE id=?`, c.Name, c.About, c.Icon, o, c.Owner, c.ID)
 	return err
-}
-
-func (st *store) deleteCommunity(id int64) error {
-	for _, q := range []string{
-		`DELETE FROM messages WHERE conv IN (SELECT 'c:' || id FROM channels WHERE comm=?)`,
-		`DELETE FROM mods WHERE kind='ch-ban' AND ch IN (SELECT id FROM channels WHERE comm=?)`,
-		`DELETE FROM channels WHERE comm=?`,
-		`DELETE FROM messages WHERE conv='g:' || ?`,
-		`DELETE FROM mods WHERE kind IN ('ban','mute','vmute') AND ch=?`,
-		`UPDATE user_state SET last_comm=0 WHERE last_comm=?`, `DELETE FROM member_roles WHERE comm=?`, `DELETE FROM roles WHERE comm=?`,
-		`DELETE FROM memberships WHERE comm=?`, `DELETE FROM bots WHERE comm=?`, `DELETE FROM invites WHERE comm=?`, `DELETE FROM comm_requests WHERE comm=?`, `DELETE FROM communities WHERE id=?`,
-	} {
-		if _, err := st.db.Exec(q, id); err != nil && !strings.Contains(err.Error(), "no such table") {
-			return err
-		}
-	}
-	return nil
-}
-
-// sharesCommunity: a and b are members of at least one community together.
-func (st *store) sharesCommunity(a, b string) bool {
-	var n int
-	_ = st.db.QueryRow(`SELECT COUNT(*) FROM memberships x JOIN memberships y ON x.comm=y.comm WHERE x.uid=? AND y.uid=?`, a, b).Scan(&n)
-	return n > 0
 }
 
 func (st *store) isMember(comm int64, uid string) bool {
@@ -534,20 +447,18 @@ func (h *hub) outranks(actor *session, uid string) bool {
 	return actor.uid != uid && h.rank(actor.comm, actor.uid) > h.rank(actor.comm, uid)
 }
 
+// spaceOf: the bus space of comm (only the server's own is open; "c<id>" were the other communities' spaces).
 func spaceOf(comm int64) string {
-	if comm == 1 {
+	if comm == spaceID {
 		return mainSpace
 	}
 	return fmt.Sprintf("c%d", comm)
 }
 
+// commOfSpace: the community whose bus space this is; 0 for anything but the server's own.
 func commOfSpace(space string) int64 {
 	if space == mainSpace {
-		return 1
+		return spaceID
 	}
-	var id int64
-	if _, err := fmt.Sscanf(space, "c%d", &id); err != nil {
-		return 0
-	}
-	return id
+	return 0
 }

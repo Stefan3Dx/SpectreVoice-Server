@@ -63,7 +63,6 @@
   <span class="badge">PRO</span>
   <nav id="nav">
     <button data-tab="dash" class="on">Panou</button>
-    <button data-tab="comms">Comunități</button>
     <button data-tab="people">Online</button>
     <button data-tab="tools">Anunțuri și banuri</button>
     <button data-tab="logs">Jurnal</button>
@@ -85,7 +84,6 @@
       <div class="card"><h3>Cei mai activi (7 zile)</h3><div class="bars" id="toppl"></div></div>
     </div>
   </section>
-  <section id="comms" class="hide"><div class="card"><table id="commt"></table></div></section>
   <section id="people" class="hide"><div class="card"><table id="sesst"></table></div></section>
   <section id="tools" class="hide">
     <div class="card">
@@ -152,7 +150,7 @@ async function dash() {
   const lic = o.license || {};
   $("kpis").innerHTML = [
     kpi(n.online ?? 0, "conectați acum (max " + o.maxUsers + ")"), kpi(n.voice ?? 0, "pe voce"), kpi(n.streams ?? 0, "stream-uri live · " + (n.viewers ?? 0) + " privitori"),
-    kpi(o.communities, "comunități"), kpi(o.users, "oameni · " + o.active7d + " activi în 7 zile"), kpi(o.messages, "mesaje păstrate"),
+    kpi(o.users, "oameni · " + o.active7d + " activi în 7 zile"), kpi(o.messages, "mesaje păstrate"),
     kpi(fmtDur(o.uptime), "pornit de"), kpi(fmtBytes(o.disk), "pe disc"), kpi((n.cpu ?? 0).toFixed(1) + "%", "CPU"), kpi((n.rssMB ?? 0).toFixed(0) + " MB", "RAM"),
     kpi(lic.lic || "—", "licența" + (lic.exp ? " până la " + new Date(lic.exp).toLocaleDateString() : "")),
   ].join("");
@@ -174,16 +172,10 @@ async function dash() {
   $("updated").textContent = "actualizat " + new Date().toLocaleTimeString();
 }
 
-async function comms() {
-  const l = await api("communities");
-  $("commt").innerHTML = "<tr><th>#</th><th>Nume</th><th>Proprietar</th><th>Membri</th><th>Online</th><th>Canale</th><th>Tip</th><th>Creată</th></tr>" +
-    l.map((c) => `<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${esc(c.ownerName || c.owner)}</td><td>${c.members}</td><td>${c.online}</td><td>${c.channels}</td><td>${c.open ? "deschisă" : "invitație"}</td><td>${new Date(c.created).toLocaleDateString()}</td></tr>`).join("");
-}
-
 async function people() {
   const l = await api("sessions");
-  $("sesst").innerHTML = "<tr><th>Nume</th><th>Aplicație</th><th>Comunitate</th><th>Canal</th><th>Ping</th><th>Conectat de</th><th></th></tr>" +
-    l.map((s) => `<tr><td>${s.bot ? "🤖 " : ""}${esc(s.name)}${s.away ? " 🌙" : ""}</td><td>${esc(s.client)}</td><td>${s.comm}</td><td>${esc(s.channel)}</td><td>${s.rtt ? s.rtt + " ms" + (s.loss ? " · " + s.loss + "%" : "") : "—"}</td><td>${ago(s.since)}</td>` +
+  $("sesst").innerHTML = "<tr><th>Nume</th><th>Aplicație</th><th>Canal</th><th>Ping</th><th>Conectat de</th><th></th></tr>" +
+    l.map((s) => `<tr><td>${s.bot ? "🤖 " : ""}${esc(s.name)}${s.away ? " 🌙" : ""}</td><td>${esc(s.client)}</td><td>${esc(s.channel)}</td><td>${s.rtt ? s.rtt + " ms" + (s.loss ? " · " + s.loss + "%" : "") : "—"}</td><td>${ago(s.since)}</td>` +
       `<td>${s.bot ? "" : `<button class="btn danger" data-kick="${s.sid}">Kick</button>`}</td></tr>`).join("");
 }
 
@@ -195,7 +187,7 @@ async function tools() {
 
 async function logs() { $("logp").textContent = (await api("logs")).join("\n"); $("logp").scrollTop = 1e9; }
 
-const TABS = { dash, comms, people, tools, logs };
+const TABS = { dash, people, tools, logs };
 let tab = "dash";
 async function show(t) {
   tab = t;

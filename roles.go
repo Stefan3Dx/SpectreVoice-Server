@@ -272,7 +272,7 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 	}
 	h.mu.Unlock()
 	// Every action on someone (lifting one included): only on people ranked lower, never on oneself (a muted
-	// moderator can't unmute themselves), and channel bans only in this community's channels
+	// moderator can't unmute themselves), and channel bans only in this server's channels
 	if !ok {
 		ss.refuse(t, "role", "they rank as high as you")
 		return true
@@ -281,9 +281,10 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 	case "ban":
 		m.put(ban{UID: uid, Kind: "ban", Ch: comm, Until: until(i64(msg, "minutes")), Why: why, By: ss.uid})
 		_ = m.s.store.leave(comm, uid)
+		m.s.store.unadmit(uid)
 		for _, o := range h.sessionsOf(uid) {
 			if o.comm == comm {
-				o.send(map[string]any{"t": "kicked", "by": ss.name, "why": why, "ban": true, "community": comm})
+				o.send(map[string]any{"t": "kicked", "by": ss.name, "why": why, "ban": true})
 			}
 		}
 		h.afterRemoval(comm, uid, "banned")
@@ -296,6 +297,7 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 			o.send(map[string]any{"t": "kicked", "by": ss.name, "why": why, "ban": true})
 			time.AfterFunc(300*time.Millisecond, o.close)
 		}
+		m.s.store.unadmit(uid)
 		m.s.bus.kick("", uid)
 	case "server-unban":
 		m.remove(uid, "sban", 0)

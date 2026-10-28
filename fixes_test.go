@@ -14,11 +14,10 @@ import (
 
 // A new subchannel (no id yet) under a top-level channel is allowed (it was refused as "bad parent").
 func TestNewSubchannel(t *testing.T) {
-	_, hs := newTestServer(t, anyone)
-	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
-	ana.send(map[string]any{"t": "community-create", "name": "Sub", "open": false})
-	cm := ana.wait(isT("community"))
-	lobby := chanID(t, cm, "Lobby")
+	anaKey, own := ownerKeyCfg(t)
+	_, hs := newTestServer(t, own)
+	ana, _ := dialV(t, hs, anaKey, "Ana", "")
+	lobby := chanID(t, ana.wel, "Lobby")
 	ana.send(map[string]any{"t": "ch-save", "name": "Sub", "parent": lobby})
 	c := ana.wait(func(m map[string]any) bool { return m["t"] == "channel" || m["t"] == "error" })
 	if c["t"] != "channel" || int64(c["c"].(map[string]any)["parent"].(float64)) != lobby {
@@ -26,14 +25,16 @@ func TestNewSubchannel(t *testing.T) {
 	}
 }
 
-// A community's owner (all its permissions) is no server admin: no wiping people server-wide, no reports.
+// The space's owner (all its permissions) is no server admin: no wiping people server-wide, no reports.
 func TestCommunityOwnerCantWipe(t *testing.T) {
-	s, hs := newTestServer(t, anyone)
+	s, hs := newTestServer(t, nil)
 	t.Cleanup(s.bus.conns.Wait)
 	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
-	ana.send(map[string]any{"t": "community-create", "name": "A", "open": false})
-	comm := commID(ana.wait(isT("community")))
-	u := "ws" + strings.TrimPrefix(hs.URL, "http") + "/bus?space=" + spaceOf(comm) + "&token=" + url.QueryEscape(s.makeToken(ana.uid))
+	_, _ = s.store.db.Exec(`UPDATE communities SET owner=? WHERE id=1`, ana.uid)
+	s.hub.mu.Lock()
+	s.hub.forget(spaceID)
+	s.hub.mu.Unlock()
+	u := "ws" + strings.TrimPrefix(hs.URL, "http") + "/bus?space=" + mainSpace + "&token=" + url.QueryEscape(s.makeToken(ana.uid))
 	c, _, err := websocket.DefaultDialer.Dial(u, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -81,52 +82,20 @@ func TestBotGoesToVoice(t *testing.T) {
 	s.music.stopIn(1)
 }
 
-// A deleted community leaves no chat, bans or last-community marks behind (its id may come back).
-func TestDeleteCommunityLeavesNothing(t *testing.T) {
-	s, hs := newTestServer(t, anyone)
-	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
-	ana.send(map[string]any{"t": "community-create", "name": "Gone", "open": false})
-	comm := commID(ana.wait(isT("community")))
-	ana.send(map[string]any{"t": "say", "to": "g:" + itoa(int(comm)), "text": "salut"})
-	ana.wait(isT("msg"))
-	s.mods.put(ban{UID: "someonesomeone000001", Kind: "ban", Ch: comm, By: ana.uid})
-	ana.send(map[string]any{"t": "community-delete", "c": comm})
-	ana.wait(isT("community"))
-	var n int
-	_ = s.store.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE conv=?`, "g:"+itoa(int(comm))).Scan(&n)
-	if n != 0 {
-		t.Fatalf("%d community messages left", n)
-	}
-	_ = s.store.db.QueryRow(`SELECT COUNT(*) FROM mods WHERE ch=?`, comm).Scan(&n)
-	if n != 0 || s.mods.banned("someonesomeone000001", comm) {
-		t.Fatal("the ban stayed")
-	}
-	if s.store.lastCommunity(ana.uid) == comm {
-		t.Fatal("last community still the deleted one")
-	}
-}
-
 // A text channel is never where people land, nor where they're moved.
 func TestNobodyLandsInText(t *testing.T) {
-	s, hs := newTestServer(t, anyone)
-	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
-	ana.send(map[string]any{"t": "community-create", "name": "T", "open": false})
-	cm := ana.wait(isT("community"))
+	s, _ := newTestServer(t, nil)
 	s.hub.mu.Lock()
 	for _, c := range s.hub.chans {
-		if c.Comm == commID(cm) {
-			c.Default = false
-		}
+		c.Default = false
 	}
-	def := s.hub.defaultChannel(commID(cm))
+	def := s.hub.defaultChannel(spaceID)
 	kind := s.hub.chans[def].Kind
 	s.hub.mu.Unlock()
 	if def == 0 || kind != "" {
 		t.Fatalf("default channel %d is %q", def, kind)
 	}
 }
-
-func anyone(c *config) { c.createCommunities = "anyone" }
 
 // Wiping someone takes them out of everyone's records too: daily counters, weekly winners.
 func TestWipeScrubsCounters(t *testing.T) {

@@ -59,7 +59,7 @@ func TestAdminPanel(t *testing.T) {
 		return v
 	}
 	o := get("overview").(map[string]any)
-	if o["users"].(float64) < 1 || o["communities"].(float64) != 1 {
+	if o["users"].(float64) < 1 || o["name"] != "Test" {
 		t.Fatal(o)
 	}
 	if m := get("metrics?h=24").([]any); len(m) == 0 {
@@ -72,7 +72,6 @@ func TestAdminPanel(t *testing.T) {
 	if len(top["people"].([]any)) != 1 {
 		t.Fatal(top)
 	}
-	_ = get("communities")
 	_ = get("logs")
 	// Posting needs the panel's header (no cross-site posts)
 	req, _ := http.NewRequest("POST", hs.URL+"/admin/api/announce", strings.NewReader(`{"text":"repornesc"}`))

@@ -1,18 +1,18 @@
 package main
 
 // Bots: programs other people write against this server (docs/BOTS.md), each with its own key like an app's. A
-// community's manager registers the key's uid, and from then on a connection with that key is a bot: in that
-// community only, with the permissions it was given (never more than the manager's own, never the ones that
-// decide who may what), shown with the robot icon, outside the places count, on a slower message budget, heard
-// in voice only when it may speak, and never the cause of a push notification.
+// server manager registers the key's uid, and from then on a connection with that key is a bot, with the
+// permissions it was given (never more than the manager's own, never the ones that decide who may what), shown
+// with the robot icon, outside the places count, on a slower message budget, heard in voice only when it may
+// speak, never asked for the server password, and never the cause of a push notification.
 //
-//	<- {"t":"bot-add","uid":…,"name":…,"perms":[…]}   (manage_community) -> {"t":"bot-added","bot":{…}} to the community
-//	<- {"t":"bot-del","uid":…}                          (manage_community) -> {"t":"bot-deleted","uid":…} to the community
+//	<- {"t":"bot-add","uid":…,"name":…,"perms":[…]}   (manage_community) -> {"t":"bot-added","bot":{…}} to everyone
+//	<- {"t":"bot-del","uid":…}                          (manage_community) -> {"t":"bot-deleted","uid":…} to everyone
 //	<- {"t":"bots"}                                     (manage_community) -> {"t":"bots","items":[{uid,name,perms,kind,by,created}]}
 //
-// Kept in the store's "bots" table (comm, uid, name, perms, added_by, created); a bot is a member of its community
-// like anyone, so the chat, the bus and the files see it as one. Its bus kind is "bot:<slug of its name>", which
-// only it (and the community's managers) may write and everyone may read.
+// Kept in the store's "bots" table (comm, uid, name, perms, added_by, created; comm is the space, 1); a bot is a
+// member of the server like anyone, so the chat, the bus and the files see it as one. Its bus kind is
+// "bot:<slug of its name>", which only it (and the server's managers) may write and everyone may read.
 
 import (
 	"log"
@@ -25,7 +25,7 @@ import (
 var (
 	botRatePerSec  float64 = 10 // messages a second a bot may send (people: sessRatePerSec)
 	botRateBurst   float64 = 30
-	maxBotsPerComm         = 10 // registered in one community
+	maxBotsPerComm         = 10 // registered on the server
 	maxBotSessions         = 64 // bot connections on the whole server at once
 )
 
@@ -95,7 +95,7 @@ func (st *store) botsIn(comm int64) ([]botRec, error) {
 }
 
 func (st *store) saveBot(b *botRec) error {
-	_, err := st.db.Exec(`INSERT INTO bots(uid,comm,name,perms,added_by,created) VALUES(?,?,?,?,?,?) ON CONFLICT(uid) DO UPDATE SET name=excluded.name, perms=excluded.perms, added_by=excluded.added_by`,
+	_, err := st.db.Exec(`INSERT INTO bots(uid,comm,name,perms,added_by,created) VALUES(?,?,?,?,?,?) ON CONFLICT(uid) DO UPDATE SET comm=excluded.comm, name=excluded.name, perms=excluded.perms, added_by=excluded.added_by`,
 		b.UID, b.Comm, b.Name, int64(b.p), b.By, b.Created)
 	return err
 }
@@ -152,11 +152,8 @@ func (h *hub) botOp(ss *session, t string, m map[string]any) bool {
 			ss.refuse(t, "bad", "a bot needs a name (letters or digits in it)")
 			return true
 		}
+		// A bot of a community this server no longer has (hidden, space.go) is registered here anew
 		old := st.botOf(uid)
-		if old != nil && old.Comm != comm {
-			ss.refuse(t, "taken", "that key is a bot of another community")
-			return true
-		}
 		if old == nil && st.isPerson(uid) {
 			ss.refuse(t, "taken", "that key belongs to someone on this server")
 			return true
@@ -168,7 +165,7 @@ func (h *hub) botOp(ss *session, t string, m map[string]any) bool {
 				return true
 			}
 		}
-		if old == nil && len(others) >= maxBotsPerComm {
+		if (old == nil || old.Comm != comm) && len(others) >= maxBotsPerComm {
 			ss.refuse(t, "full", "too many bots here")
 			return true
 		}
@@ -190,7 +187,7 @@ func (h *hub) botOp(ss *session, t string, m map[string]any) bool {
 			ss.refuse(t, "server", "not saved")
 			return true
 		}
-		log.Printf("community %d: bot %s %q (%v) by %s", comm, uid, name, b.Perms, ss.uid)
+		log.Printf("bot %s %q (%v) by %s", uid, name, b.Perms, ss.uid)
 		h.mu.Lock()
 		// Its sessions, if it's connected already, get the new name and permissions
 		for _, o := range h.sessions {
@@ -217,7 +214,7 @@ func (h *hub) botOp(ss *session, t string, m map[string]any) bool {
 			o.send(map[string]any{"t": "kicked", "by": ss.name, "why": "bot removed"})
 			time.AfterFunc(300*time.Millisecond, o.close)
 		}
-		log.Printf("community %d: bot %s removed by %s", comm, uid, ss.uid)
+		log.Printf("bot %s removed by %s", uid, ss.uid)
 		h.mu.Lock()
 		h.refreshRoles(comm)
 		h.toComm(comm, map[string]any{"t": "bot-deleted", "uid": uid})
@@ -229,8 +226,7 @@ func (h *hub) botOp(ss *session, t string, m map[string]any) bool {
 // botDenied: what a bot may never ask, whatever its permissions: moving between communities, changing who may
 // what, its own name (the manager named it), the server's own things, and the apps' notifications.
 var botDenied = map[string]bool{
-	"name": true, "enter": true, "community-join": true, "community-create": true, "community-leave": true, "community-delete": true,
-	"community-save": true, "community-find": true, "community-requests": true, "community-answer": true, "community-new-code": true,
+	"name": true, "community-join": true, "community-save": true, "server-save": true,
 	"role-save": true, "role-del": true, "member-roles": true, "role": true, "bot-add": true, "bot-del": true, "bots": true,
 	"claim": true, "push-token": true, "push-off": true, "server-ban": true, "server-unban": true, "admin-link": true,
 	"slots": true, "slots-redeem": true, "invite-create": true, "invite-del": true, "invites": true, "whisper": true,

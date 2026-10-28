@@ -434,6 +434,7 @@ func (st *store) wipeUser(uid string) (int, error) {
 		`DELETE FROM memberships WHERE uid=? AND comm NOT IN (SELECT id FROM communities WHERE owner=?1)`,
 		`DELETE FROM user_state WHERE uid=?`,
 		`DELETE FROM comm_requests WHERE uid=?`,
+		`DELETE FROM admitted WHERE uid=?`,
 		`DELETE FROM users WHERE uid=? AND role=''`,
 	} {
 		if _, err := st.db.Exec(q, uid); err != nil && !strings.Contains(err.Error(), "no such table") {
@@ -441,16 +442,6 @@ func (st *store) wipeUser(uid string) (int, error) {
 		}
 	}
 	return int(n), nil
-}
-
-func (st *store) lastCommunity(uid string) int64 {
-	var c int64
-	_ = st.db.QueryRow(`SELECT last_comm FROM user_state WHERE uid=?`, uid).Scan(&c)
-	return c
-}
-
-func (st *store) setLastCommunity(uid string, comm int64) {
-	_, _ = st.db.Exec(`INSERT INTO user_state(uid,last_comm) VALUES(?,?) ON CONFLICT(uid) DO UPDATE SET last_comm=excluded.last_comm`, uid, comm)
 }
 
 // namesIn: the members of comm by the names they go by (lower case), for mentions.

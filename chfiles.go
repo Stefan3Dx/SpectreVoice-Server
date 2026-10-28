@@ -303,7 +303,7 @@ func (cf *channelFiles) handleUpload(w http.ResponseWriter, r *http.Request) {
 	_ = cf.db.QueryRow(`SELECT COUNT(*) FROM chfiles WHERE ch=?`, ch).Scan(&items)
 	if left <= 0 || r.ContentLength > left || items >= 5000 {
 		cf.upMu.Unlock()
-		http.Error(w, "the community's space for files is full", http.StatusInsufficientStorage)
+		http.Error(w, "the server's space for channel files is full", http.StatusInsufficientStorage)
 		return
 	}
 	// The whole server's disk (all communities together) and each person's share: making communities can't fill it

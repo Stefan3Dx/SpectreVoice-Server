@@ -62,16 +62,15 @@ type limits struct {
 	BonusUntil     int64  `json:"bonusUntil,omitempty"` // when the first active donation ends
 	AudioMax       int    `json:"audioMax"`
 	VideoMax       int    `json:"videoMax"`
-	OwnCommunities int    `json:"ownCommunities"` // per person
 	FileMB         int64  `json:"fileMB"`         // one file in the chat
-	ChannelFilesMB int64  `json:"channelFilesMB"` // all of a community's channel files
+	ChannelFilesMB int64  `json:"channelFilesMB"` // all the channel files
 	RecordMin      int    `json:"recordMin"`      // 0: no limit
 	Soundboard     int    `json:"soundboard"`
 	Cosmetics      bool   `json:"cosmetics"`
 	MusicQueue     int    `json:"musicQueue"`
 }
 
-var allLimits = limits{Tier: "free", MaxUsers: baseUsers, AudioMax: 6, VideoMax: 8, OwnCommunities: 50, FileMB: 500, ChannelFilesMB: 20480,
+var allLimits = limits{Tier: "free", MaxUsers: baseUsers, AudioMax: 6, VideoMax: 8, FileMB: 500, ChannelFilesMB: 20480,
 	RecordMin: 0, Soundboard: 120, Cosmetics: true, MusicQueue: 500}
 
 // slotClaims: what the donation service signs. Tier "gift" is a donation's places; "time" is the service's clock

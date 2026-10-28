@@ -68,22 +68,21 @@ func uidOfKey(k *ecdsa.PrivateKey) string {
 }
 
 // A manager registers a bot's key; the bot connects as the echo example does, is marked a bot, answers in the
-// chat, holds only the permissions it was given, and stays in its community.
+// chat, holds only the permissions it was given, and never needs the server password.
 func TestBotsAPI(t *testing.T) {
-	s, hs := newTestServer(t, anyone)
+	anaKey, own := ownerKeyCfg(t)
+	s, hs := newTestServer(t, func(c *config) { own(c); c.joinPass = "pw" })
 	t.Cleanup(s.bus.conns.Wait)
-	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
-	bob, _ := dialV(t, hs, newKey(t), "Bob", "")
-	ana.send(map[string]any{"t": "community-create", "name": "Club", "open": false})
-	club := ana.wait(isT("community"))
-	clubID := commID(club)
-	general := chanID(t, club, "general")
-	lobby := chanID(t, club, "Lobby")
+	ana, _ := dialV(t, hs, anaKey, "Ana", "")
+	bob, _ := dialV(t, hs, newKey(t), "Bob", "pw")
+	clubID := spaceID
+	general := chanID(t, ana.wel, "general")
+	lobby := chanID(t, ana.wel, "Lobby")
 	botKey := newKey(t)
 	botUID := uidOfKey(botKey)
 
-	// Not registered yet: it's just a visitor in the first community, not a bot
-	if v, _ := dialBot(t, hs, botKey, nil); v == nil || v.wel["bot"] == true {
+	// Not registered yet: it's just a visitor, not a bot
+	if v, _ := dialBot(t, hs, botKey, map[string]any{"password": "pw"}); v == nil || v.wel["bot"] == true {
 		t.Fatal("an unregistered key was taken for a bot")
 	}
 	// Bob (no manage_community) can't register bots
@@ -114,18 +113,15 @@ func TestBotsAPI(t *testing.T) {
 		t.Fatal(l)
 	}
 
-	// It can't ask for another community; without asking it lands in its own
-	if _, e := dialBot(t, hs, botKey, map[string]any{"comm": 1}); e == nil || e["why"] != "bot" {
-		t.Fatal(e)
-	}
+	// In without the server password
 	bot, e := dialBot(t, hs, botKey, nil)
 	if bot == nil {
 		t.Fatal(e)
 	}
-	if bot.wel["bot"] != true || commID(bot.wel) != clubID || fmt.Sprint(bot.wel["perms"]) != "[kick move]" {
-		t.Fatal(bot.wel["bot"], commID(bot.wel), bot.wel["perms"])
+	if bot.wel["bot"] != true || fmt.Sprint(bot.wel["perms"]) != "[kick move]" {
+		t.Fatal(bot.wel["bot"], bot.wel["perms"])
 	}
-	// Ana sees it come, marked as a bot, with the name its manager gave it; Bob (elsewhere) doesn't
+	// Ana sees it come, marked as a bot, with the name its manager gave it
 	m := ana.wait(func(m map[string]any) bool { return m["t"] == "member" && m["m"].(map[string]any)["uid"] == botUID })["m"].(map[string]any)
 	if m["bot"] != true || m["name"] != "Echo Bot" {
 		t.Fatal(m)
@@ -160,10 +156,6 @@ func TestBotsAPI(t *testing.T) {
 		t.Fatal(pong)
 	}
 	// It may move people without a role (move), not the owner
-	ana.send(map[string]any{"t": "invite-create", "hours": 1, "uses": 1})
-	code := ana.wait(isT("invite"))["code"].(string)
-	bob.send(map[string]any{"t": "community-join", "invite": code})
-	bob.wait(func(m map[string]any) bool { return m["t"] == "community" && commID(m) == clubID })
 	ana.send(map[string]any{"t": "ch-save", "name": "Games"})
 	games := int64(ana.wait(isT("channel"))["c"].(map[string]any)["id"].(float64))
 	bot.send(map[string]any{"t": "move", "sid": ana.sid, "ch": games})
@@ -184,9 +176,9 @@ func TestBotsAPI(t *testing.T) {
 	}
 	for _, msg := range []map[string]any{
 		{"t": "rtc", "type": "offer", "sdp": "v=0"}, // no speak permission: no voice
-		{"t": "enter", "c": 1},
-		{"t": "community-join", "c": 1},
-		{"t": "community-create", "name": "Mine"},
+		{"t": "server-save", "name": "Bots' server"},
+		{"t": "community-join", "invite": "abcdefgh"},
+		{"t": "invite-create"},
 		{"t": "name", "name": "Admin"},
 		{"t": "bot-add", "uid": uidOfKey(newKey(t)), "name": "Friend"},
 		{"t": "role-save", "name": "Boss", "perms": []string{"administrator"}},
@@ -196,7 +188,7 @@ func TestBotsAPI(t *testing.T) {
 			t.Fatalf("%v: %v", msg["t"], e)
 		}
 	}
-	// Still in its community, still itself
+	// Still itself
 	s.hub.mu.Lock()
 	for _, o := range s.hub.sessions {
 		if o.uid == botUID && (o.comm != clubID || o.name != "Echo Bot" || !o.bot || !o.api) {
@@ -270,15 +262,14 @@ func TestBotRateLimit(t *testing.T) {
 	oldR, oldB := botRatePerSec, botRateBurst
 	botRatePerSec, botRateBurst = 0.001, 5
 	t.Cleanup(func() { botRatePerSec, botRateBurst = oldR, oldB })
-	s, hs := newTestServer(t, anyone)
-	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
-	ana.send(map[string]any{"t": "community-create", "name": "Club", "open": false})
-	club := commID(ana.wait(isT("community")))
+	anaKey, own := ownerKeyCfg(t)
+	s, hs := newTestServer(t, own)
+	ana, _ := dialV(t, hs, anaKey, "Ana", "")
 	botKey := newKey(t)
 	ana.send(map[string]any{"t": "bot-add", "uid": uidOfKey(botKey), "name": "Fast", "perms": []string{}})
 	ana.wait(isT("bot-added"))
 	bot, e := dialBot(t, hs, botKey, nil)
-	if bot == nil || commID(bot.wel) != club {
+	if bot == nil || bot.wel["bot"] != true {
 		t.Fatal(e)
 	}
 	for i := 0; i < 8; i++ {

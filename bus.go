@@ -511,7 +511,7 @@ func (s *server) handleBus(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.URL.Query().Get("space")
 	if !s.knownSpace(name) {
-		http.Error(w, "no such community", http.StatusNotFound)
+		http.Error(w, "no such space", http.StatusNotFound)
 		return
 	}
 	ws, err := upgrader.Upgrade(w, r, nil)
@@ -523,7 +523,7 @@ func (s *server) handleBus(w http.ResponseWriter, r *http.Request) {
 	c.authed = true
 	if !s.mayUseSpace(name, uid) {
 		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		_ = ws.WriteJSON(map[string]any{"t": "error", "op": "join", "why": "member", "message": "not a member of this community"})
+		_ = ws.WriteJSON(map[string]any{"t": "error", "op": "join", "why": "member", "message": "not on this server"})
 		_ = ws.Close()
 		return
 	}
@@ -550,7 +550,7 @@ func (s *server) handleBus(w http.ResponseWriter, r *http.Request) {
 	}
 	sp, err := (*busSpace)(nil), error(nil)
 	if held >= busSpacesPerUID && !c.staff {
-		err = errors.New("you're connected to too many communities at once")
+		err = errors.New("you're connected to too many spaces at once")
 	} else {
 		sp, err = b.load(name)
 	}

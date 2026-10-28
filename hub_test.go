@@ -261,14 +261,9 @@ func TestSignInChannelsAndChat(t *testing.T) {
 	if k := b.wait(isT("kicked")); k["ban"] != true {
 		t.Fatal(k)
 	}
-	// Banned from the community: they can come to the server, but not into it
-	back, e := dialV(t, hs, b.key, "Bogdan", "")
-	if back == nil || back.wel["community"] != nil {
-		t.Fatal("banned person came back into the community", e, back.wel["community"])
-	}
-	back.send(map[string]any{"t": "community-join", "c": 1})
-	if e := back.wait(isT("error")); e["why"] != "banned" {
-		t.Fatal(e)
+	// Banned: they can't come back
+	if back, e := dialV(t, hs, b.key, "Bogdan", ""); back != nil || e["why"] != "banned" {
+		t.Fatal("banned person came back", e)
 	}
 }
 

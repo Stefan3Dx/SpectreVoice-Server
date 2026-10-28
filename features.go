@@ -6,7 +6,7 @@ package main
 //	<- {"t":"talker","sid":…,"on":bool}         (mute_voice) may talk in a moderated channel (until they leave it)
 //	<- {"t":"voice-mute","uid":…,"minutes":…}   (mute_voice) roles.go: nobody hears them in the community
 //	<- {"t":"state","awayMsg":…,"rtt":…,"loss":…}  hub.go: an away message, the app's connection quality
-//	"g:<community>" as a chat's "to": the community's own chat (everyone in it), hub.go
+//	"g:1" as a chat's "to": the server chat (everyone on the server), hub.go
 
 import (
 	"crypto/rand"
