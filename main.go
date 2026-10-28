@@ -393,6 +393,11 @@ func (s *server) setup() error {
 	ir.Add(pli)
 	se := webrtc.SettingEngine{}
 	se.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
+	// Candidates an app may give us: no link-local, multicast or unspecified addresses (no STUN sent to odd
+	// places; loopback stays, for an app on this same machine)
+	se.SetRemoteIPFilter(func(ip net.IP) bool {
+		return !(ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified())
+	})
 	if s.cfg.udpPort > 0 {
 		// Everything on one UDP port (a hosting panel gives one port per server)
 		mux, err := ice.NewMultiUDPMuxFromPort(s.cfg.udpPort)

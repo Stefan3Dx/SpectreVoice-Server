@@ -57,6 +57,7 @@ func (c *conn) send(m message) {
 }
 
 type subscriber struct {
+	uid     string
 	pc      *webrtc.PeerConnection
 	c       *conn
 	mu      sync.Mutex
@@ -73,6 +74,7 @@ type room struct {
 	ssrcs     []webrtc.SSRC // the publisher's video SSRCs, for key frame requests
 	subs      map[*subscriber]bool
 	lastKey   time.Time // the last key frame asked of the streamer (asked at most twice a second)
+	ended     bool      // endRoom ran: no new viewers
 }
 
 func (s *server) handleStreamStatus(w http.ResponseWriter, r *http.Request) {
@@ -101,12 +103,19 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign in first", http.StatusUnauthorized)
 		return
 	}
+	// A few stream connections per person (each one a connection of ours, with its UDP ports)
+	if !streamConns.take(uid) {
+		http.Error(w, "too many stream connections", http.StatusTooManyRequests)
+		return
+	}
+	defer streamConns.give(uid)
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	ws.SetReadLimit(1 << 20)
 	c := &conn{ws: ws}
+	tokens, refill, cands := float64(streamBurst), time.Now(), 0
 	var pc *webrtc.PeerConnection
 	var sub *subscriber
 	var rm *room
@@ -148,6 +157,14 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = ws.SetReadDeadline(time.Now().Add(busReadTimeout))
+		// Signalling is a handful of messages: a flood closes the connection
+		now := time.Now()
+		tokens = min(streamBurst, tokens+now.Sub(refill).Seconds()*streamRate)
+		refill = now
+		if tokens < 1 {
+			return
+		}
+		tokens--
 		switch m.Type {
 		case "publish":
 			if pc != nil {
@@ -166,7 +183,11 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			rm, err = s.openRoom(m.Room, c)
+			if n := mlines(m.SDP); n == 0 || n > maxStreamTracks {
+				c.send(message{Type: "error", Message: "a stream has a picture and its sound"})
+				return
+			}
+			rm, err = s.openRoom(m.Room, uid, c)
 			if err != nil {
 				rm = nil
 				c.send(message{Type: "error", Message: err.Error()})
@@ -195,7 +216,7 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				c.send(message{Type: "ended"})
 				return
 			}
-			sub, err = s.subscribe(rm, c)
+			sub, err = s.subscribe(rm, c, uid)
 			if err != nil {
 				c.send(message{Type: "error", Message: err.Error()})
 				return
@@ -218,7 +239,10 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				rm.offerTo(sub)
 			}
 		case "candidate":
-			if pc == nil || m.Candidate == "" {
+			if pc == nil || m.Candidate == "" || len(m.Candidate) > maxCandLen {
+				continue
+			}
+			if cands++; cands > maxCands {
 				continue
 			}
 			_ = pc.AddICECandidate(webrtc.ICECandidateInit{Candidate: m.Candidate, SDPMid: m.Mid, SDPMLineIndex: m.MLine})
@@ -227,12 +251,22 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 }
 
 // openRoom makes the room c will stream to.
-func (s *server) openRoom(name string, c *conn) (*room, error) {
+func (s *server) openRoom(name, uid string, c *conn) (*room, error) {
 	if name == "" || len(name) > 200 {
 		return nil, errors.New("bad room name")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Two streams per person at most (a screen and a camera): the server's few aren't one person's
+	mine := 0
+	for k := range s.rooms {
+		if k != name && (k == uid || strings.HasPrefix(k, uid+":")) {
+			mine++
+		}
+	}
+	if mine >= 2 {
+		return nil, errors.New("you already have two streams live")
+	}
 	if old := s.rooms[name]; old != nil {
 		// Every app has the key, so a room name is no proof of who streams: while the streamer is still
 		// connected, nobody else takes the room over. Once its connection is gone (a restart), it's let go.
@@ -260,6 +294,7 @@ func (s *server) endRoom(rm *room, only *webrtc.PeerConnection) {
 	}
 	subs := rm.subs
 	rm.subs = map[*subscriber]bool{}
+	rm.ended = true
 	pub := rm.publisher
 	rm.publisher = nil
 	rm.tracks = nil
@@ -274,8 +309,11 @@ func (s *server) endRoom(rm *room, only *webrtc.PeerConnection) {
 		s.hub.setLive(rm.name, "", "", 0, false)
 	}
 	for sub := range subs {
-		sub.c.send(message{Type: "ended"})
-		_ = sub.pc.Close()
+		// Each viewer on its own: a stuck one can't hold up the rest
+		go func(sub *subscriber) {
+			sub.c.send(message{Type: "ended"})
+			_ = sub.pc.Close()
+		}(sub)
 	}
 	if pub != nil && pub != only {
 		_ = pub.Close()
@@ -310,6 +348,10 @@ func (s *server) publish(rm *room, c *conn, offer string) (*webrtc.PeerConnectio
 			return
 		}
 		rm.mu.Lock()
+		if len(rm.tracks) >= maxStreamTracks {
+			rm.mu.Unlock()
+			return
+		}
 		rm.tracks = append(rm.tracks, local)
 		if remote.Kind() == webrtc.RTPCodecTypeVideo {
 			rm.ssrcs = append(rm.ssrcs, remote.SSRC())
@@ -324,17 +366,20 @@ func (s *server) publish(rm *room, c *conn, offer string) (*webrtc.PeerConnectio
 			// Like the tracks a viewer gets when joining: its key frame requests go on to the streamer
 			if sender, err := sub.pc.AddTrack(local); err == nil {
 				go rm.forwardRTCP(sender)
-				rm.offerTo(sub)
+				go rm.offerTo(sub) // a viewer that's slow to take it doesn't hold up the stream
 			}
 		}
 		buf := make([]byte, 1500)
+		var lastErr time.Time
 		for {
 			n, _, err := remote.Read(buf)
 			if err != nil {
 				return
 			}
-			if _, err := local.Write(buf[:n]); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-				return
+			// One viewer's error isn't everyone's: keep forwarding
+			if _, err := local.Write(buf[:n]); err != nil && !errors.Is(err, io.ErrClosedPipe) && time.Since(lastErr) > 10*time.Second {
+				lastErr = time.Now()
+				log.Printf("[%s] forward: %v", rm.name, err)
 			}
 		}
 	})
@@ -365,11 +410,17 @@ func (s *server) publish(rm *room, c *conn, offer string) (*webrtc.PeerConnectio
 	return pc, nil
 }
 
-func (s *server) subscribe(rm *room, c *conn) (*subscriber, error) {
+func (s *server) subscribe(rm *room, c *conn, uid string) (*subscriber, error) {
 	rm.mu.Lock()
 	if len(rm.subs) >= s.cfg.maxSubs {
 		rm.mu.Unlock()
 		return nil, errors.New("this stream has as many viewers as it may")
+	}
+	for o := range rm.subs {
+		if o.uid == uid && uid != "" {
+			rm.mu.Unlock()
+			return nil, errors.New("you're already watching this stream")
+		}
 	}
 	tracks := append([]*webrtc.TrackLocalStaticRTP(nil), rm.tracks...)
 	rm.mu.Unlock()
@@ -377,7 +428,7 @@ func (s *server) subscribe(rm *room, c *conn) (*subscriber, error) {
 	if err != nil {
 		return nil, err
 	}
-	sub := &subscriber{pc: pc, c: c}
+	sub := &subscriber{pc: pc, c: c, uid: uid}
 	for _, t := range tracks {
 		sender, err := pc.AddTrack(t)
 		if err != nil {
@@ -394,11 +445,24 @@ func (s *server) subscribe(rm *room, c *conn) (*subscriber, error) {
 			rm.removeSub(sub)
 		}
 	})
+	// The room may have ended meanwhile (its streamer left): not joined to a dead room
 	rm.mu.Lock()
+	if rm.ended {
+		rm.mu.Unlock()
+		_ = pc.Close()
+		return nil, errors.New("the stream ended")
+	}
 	rm.subs[sub] = true
 	n := len(rm.subs)
 	rm.mu.Unlock()
 	log.Printf("[%s] viewer in (%d)", rm.name, n)
+	// A viewer that never connects doesn't keep its connection (and ports) for ever
+	time.AfterFunc(30*time.Second, func() {
+		if pc.ConnectionState() != webrtc.PeerConnectionStateConnected {
+			rm.removeSub(sub)
+			_ = pc.Close()
+		}
+	})
 	rm.offerTo(sub)
 	return sub, nil
 }
@@ -419,6 +483,10 @@ func (rm *room) offerTo(sub *subscriber) {
 	}
 	if err != nil {
 		log.Printf("[%s] offer: %v", rm.name, err)
+		// Not stuck waiting for an answer that will never come
+		sub.mu.Lock()
+		sub.pending = false
+		sub.mu.Unlock()
 		return
 	}
 	sub.c.send(message{Type: "offer", SDP: sub.pc.LocalDescription().SDP})
@@ -468,5 +536,44 @@ func (rm *room) removeSub(sub *subscriber) {
 	if was {
 		_ = sub.pc.Close()
 		log.Printf("[%s] viewer out (%d)", rm.name, n)
+	}
+}
+
+// Limits on the streams' signalling: messages a second (and a burst), tracks a stream may have.
+const (
+	streamRate      = 20
+	streamBurst     = 60
+	maxStreamTracks = 4
+)
+
+// streamConns: /streams connections per person.
+var streamConns = &connCount{max: 8}
+
+type connCount struct {
+	mu  sync.Mutex
+	max int
+	n   map[string]int
+}
+
+func (c *connCount) take(uid string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == nil {
+		c.n = map[string]int{}
+	}
+	if c.n[uid] >= c.max {
+		return false
+	}
+	c.n[uid]++
+	return true
+}
+
+func (c *connCount) give(uid string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n[uid] <= 1 {
+		delete(c.n, uid)
+	} else {
+		c.n[uid]--
 	}
 }

@@ -96,3 +96,38 @@ func TestDirectMessageTargets(t *testing.T) {
 	a.send(map[string]any{"t": "say", "to": "u:" + b.uid, "text": "salut"})
 	b.wait(func(m map[string]any) bool { return m["t"] == "msg" })
 }
+
+// A bad offer doesn't leave a half-made voice connection behind to pile candidates on.
+func TestVoiceBadOfferDropped(t *testing.T) {
+	s, hs := newTestServer(t, nil)
+	a, _ := dialV(t, hs, newKey(t), "Ana", "")
+	a.send(map[string]any{"t": "rtc", "type": "offer", "sdp": "x"})
+	if e := a.wait(isT("error")); e["why"] != "bad" {
+		t.Fatal(e)
+	}
+	sid := int(a.wel["sid"].(float64))
+	big := strings.Repeat("a", 4000)
+	for i := 0; i < 50; i++ {
+		a.send(map[string]any{"t": "ice", "c": big})
+	}
+	if p := s.voice.peer(sid); p != nil {
+		p.mu.Lock()
+		n := len(p.early)
+		p.mu.Unlock()
+		t.Fatal("peer kept after a bad offer, early candidates:", n)
+	}
+}
+
+// One person streams two rooms at most.
+func TestStreamRoomsPerPerson(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	for i, name := range []string{"u", "u:cam", "u:third"} {
+		_, err := s.openRoom(name, "u", &conn{})
+		if (i < 2) != (err == nil) {
+			t.Fatal(name, err)
+		}
+	}
+	if _, err := s.openRoom("v", "v", &conn{}); err != nil {
+		t.Fatal("another person refused:", err)
+	}
+}

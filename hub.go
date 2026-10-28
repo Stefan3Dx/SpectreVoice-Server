@@ -83,6 +83,8 @@ type session struct {
 	refill     time.Time
 	passTries  []time.Time // channel password attempts (its own read loop only)
 	dev        string      // the device it came from (optional; the app's own random id)
+	vTokens    float64     // voice changes it may still make now (its read loop only)
+	vRefill    time.Time
 	drops      int
 }
 
@@ -451,6 +453,13 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 				ss.refuse(t, "rate", "too many messages, slow down")
 			}
 			continue
+		}
+		// What re-negotiates everyone's voice (moving, whispering, a new offer) has its own, slower budget
+		if voiceOps[t] || (t == "rtc" && m["type"] == "offer") {
+			if !h.staff(ss.uid) && !ss.voiceOp() {
+				ss.refuse(t, "rate", "slow down")
+				continue
+			}
 		}
 		h.dispatch(ss, t, m)
 	}
@@ -1105,7 +1114,7 @@ func (h *hub) refreshRoles(comm int64) {
 		h.memberChanged(o)
 	}
 	if h.s.voice != nil {
-		go h.s.voice.syncAll() // the speak permission may have changed (h.mu is held here)
+		h.s.voice.syncAllSoon() // the speak permission may have changed (h.mu is held here)
 	}
 }
 
@@ -1345,4 +1354,23 @@ func (h *hub) commOf(ss *session) int64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return ss.comm
+}
+
+// voiceOps: the messages that make the server re-offer voice to others.
+var voiceOps = map[string]bool{"join": true, "whisper": true, "enter": true, "move": true, "community-join": true}
+
+// voiceOp: may this session change voice now? Three a second, bursts of ten.
+func (ss *session) voiceOp() bool {
+	now := time.Now()
+	if ss.vRefill.IsZero() {
+		ss.vTokens = 10
+	} else {
+		ss.vTokens = min(10, ss.vTokens+now.Sub(ss.vRefill).Seconds()*3)
+	}
+	ss.vRefill = now
+	if ss.vTokens < 1 {
+		return false
+	}
+	ss.vTokens--
+	return true
 }

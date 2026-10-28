@@ -39,6 +39,7 @@ type voicePeer struct {
 	pending bool                      // a server offer waits for its answer
 	again   bool                      // something changed meanwhile: offer again after it
 	early   []webrtc.ICECandidateInit // candidates before the first offer arrived
+	cands   int                       // candidates the app sent (capped: each one is work, and STUN sent out)
 	said    bool                      // our first description went out (our candidates may follow it)
 	held    []map[string]any          // our candidates made before that
 	lastHot time.Time                 // the last loud packet
@@ -49,12 +50,26 @@ type voice struct {
 	syncMu sync.Mutex // held through a whole sync
 	mu     sync.Mutex
 	peers  map[int]*voicePeer
+	kick   chan struct{} // syncAllSoon's one waiting ask
 }
 
 func newVoice(s *server) *voice {
-	v := &voice{s: s, peers: map[int]*voicePeer{}}
+	v := &voice{s: s, peers: map[int]*voicePeer{}, kick: make(chan struct{}, 1)}
 	go v.talkWatch()
+	go func() {
+		for range v.kick {
+			v.syncAll()
+		}
+	}()
 	return v
+}
+
+// syncAllSoon asks for a syncAll without waiting; many asks while one runs make one more, not many.
+func (v *voice) syncAllSoon() {
+	select {
+	case v.kick <- struct{}{}:
+	default:
+	}
 }
 
 func (v *voice) peer(sid int) *voicePeer {
@@ -75,15 +90,22 @@ func (v *voice) signal(ss *session, t string, m map[string]any) {
 			n := uint16(ml)
 			c.SDPMLineIndex = &n
 		}
-		if c.Candidate == "" {
+		if c.Candidate == "" || len(c.Candidate) > maxCandLen {
 			return
 		}
 		if p == nil {
 			return
 		}
 		p.mu.Lock()
+		p.cands++
+		if p.cands > maxCands {
+			p.mu.Unlock()
+			return
+		}
 		if p.pc.RemoteDescription() == nil {
-			p.early = append(p.early, c)
+			if len(p.early) < maxEarly {
+				p.early = append(p.early, c)
+			}
 			p.mu.Unlock()
 			return
 		}
@@ -190,9 +212,20 @@ func (v *voice) answer(p *voicePeer, offer string) {
 		p.pending, p.again = false, true
 		p.mu.Unlock()
 	}
+	// A sane offer: the app's voice plus the voices we send it (an offer with hundreds of tracks is refused)
+	p.mu.Lock()
+	most := len(p.senders) + 4
+	p.mu.Unlock()
+	if n := mlines(offer); n == 0 || n > max(most, 8) {
+		p.ss.refuse("rtc", "bad", "offer not taken")
+		v.dropPeer(p)
+		return
+	}
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}); err != nil {
 		log.Printf("voice %d: offer: %v", p.ss.sid, err)
 		p.ss.refuse("rtc", "bad", "offer not taken")
+		// Not kept half made (its candidates would pile up for ever)
+		v.dropPeer(p)
 		return
 	}
 	ans, err := pc.CreateAnswer(nil)
@@ -246,6 +279,11 @@ func (v *voice) carry(p *voicePeer, remote *webrtc.TrackRemote, recv *webrtc.RTP
 		}
 	}
 	p.mu.Lock()
+	if p.local != nil {
+		// One voice per connection: a second track isn't carried (each would re-sync the channel)
+		p.mu.Unlock()
+		return
+	}
 	p.local = local
 	p.mu.Unlock()
 	log.Printf("voice %d: up (%s)", sid, remote.Codec().MimeType)
@@ -255,6 +293,7 @@ func (v *voice) carry(p *voicePeer, remote *webrtc.TrackRemote, recv *webrtc.RTP
 	v.sync(ch)
 	buf := make([]byte, 1500)
 	var pkt rtp.Packet
+	var lastErr time.Time
 	for {
 		n, _, err := remote.Read(buf)
 		if err != nil {
@@ -274,8 +313,10 @@ func (v *voice) carry(p *voicePeer, remote *webrtc.TrackRemote, recv *webrtc.RTP
 		// The others negotiated their own extension ids: none are passed on
 		pkt.Header.Extension = false
 		pkt.Header.Extensions = nil
-		if err := local.WriteRTP(&pkt); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			return
+		// One listener's error isn't everyone's: keep forwarding (only the app's own track ending stops this)
+		if err := local.WriteRTP(&pkt); err != nil && !errors.Is(err, io.ErrClosedPipe) && time.Since(lastErr) > 10*time.Second {
+			lastErr = time.Now()
+			log.Printf("voice %d: forward: %v", sid, err)
 		}
 	}
 }
@@ -300,7 +341,8 @@ func (v *voice) talkWatch() {
 		v.mu.Unlock()
 		h.mu.Lock()
 		for _, ss := range h.sessions {
-			on := hot[ss.sid] && !ss.mic
+			// Someone silenced (or not let talk in a moderated channel) isn't shown talking either
+			on := hot[ss.sid] && !ss.mic && h.maySpeak(ss)
 			if on != ss.talk {
 				ss.talk = on
 				h.toComm(ss.comm, map[string]any{"t": "talk", "sid": ss.sid, "on": on})
@@ -482,13 +524,42 @@ func (v *voice) negotiate(p *voicePeer) {
 
 // reset drops a broken voice connection; the app makes a new one.
 func (v *voice) reset(p *voicePeer) {
-	v.drop(p.ss)
+	v.dropPeer(p)
 	p.ss.send(map[string]any{"t": "rtc-reset"})
 	v.s.hub.mu.Lock()
 	ch := p.ss.ch
 	v.s.hub.mu.Unlock()
 	v.sync(ch)
 }
+
+// dropPeer closes this connection, and forgets it only if it is still the session's (a late failure of an old one
+// mustn't close the new one).
+func (v *voice) dropPeer(p *voicePeer) {
+	v.mu.Lock()
+	if v.peers[p.ss.sid] == p {
+		delete(v.peers, p.ss.sid)
+	}
+	v.mu.Unlock()
+	if p.pc != nil {
+		_ = p.pc.Close()
+	}
+}
+
+// mlines: how many media sections an SDP has (0: it doesn't parse).
+func mlines(desc string) int {
+	var sd sdp.SessionDescription
+	if sd.UnmarshalString(desc) != nil {
+		return 0
+	}
+	return len(sd.MediaDescriptions)
+}
+
+// Limits on what an app sends about its connection.
+const (
+	maxCandLen = 512
+	maxCands   = 64
+	maxEarly   = 32
+)
 
 // drop closes a session's voice connection (it left, or the connection broke).
 func (v *voice) drop(ss *session) {

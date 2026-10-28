@@ -633,14 +633,14 @@ func TestRooms(t *testing.T) {
 	s, srv := newTestServer(t, func(c *config) { c.maxRooms = 1 })
 	// A live streamer's room isn't taken over; once its connection is gone, it is
 	first, second := &conn{}, &conn{}
-	if _, err := s.openRoom("r", first); err != nil {
+	if _, err := s.openRoom("r", "u", first); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.openRoom("r", second); err == nil {
+	if _, err := s.openRoom("r", "u", second); err == nil {
 		t.Fatal("took over a live stream")
 	}
 	first.gone.Store(true)
-	if _, err := s.openRoom("r", second); err != nil {
+	if _, err := s.openRoom("r", "u", second); err != nil {
 		t.Fatalf("restart after the streamer left: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond) // the old room's endRoom runs on its own
