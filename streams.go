@@ -23,6 +23,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -509,6 +510,9 @@ func (s *server) subscribe(rm *room, c *conn, uid string) (*subscriber, error) {
 			rm.removeSub(sub)
 		}
 	})
+	if subscribeGap != nil {
+		subscribeGap(rm)
+	}
 	// The room may have ended meanwhile (its streamer left): not joined to a dead room
 	rm.mu.Lock()
 	if rm.ended {
@@ -516,9 +520,29 @@ func (s *server) subscribe(rm *room, c *conn, uid string) (*subscriber, error) {
 		_ = pc.Close()
 		return nil, errors.New("the stream ended")
 	}
+	// Tracks (or the first simulcast layer) that came while this viewer was being made weren't given to it by
+	// OnTrack/readLayer (it wasn't among the viewers yet): it takes them here, once
+	var late []*webrtc.TrackLocalStaticRTP
+	for _, t := range rm.tracks {
+		if !slices.Contains(tracks, t) {
+			late = append(late, t)
+		}
+	}
+	var lateSim *simulcast
+	if sim == nil {
+		lateSim = rm.sim
+	}
 	rm.subs[sub] = true
 	n := len(rm.subs)
 	rm.mu.Unlock()
+	for _, t := range late {
+		if sender, err := pc.AddTrack(t); err == nil {
+			go rm.forwardRTCP(sub, sender)
+		}
+	}
+	if lateSim != nil {
+		_ = rm.addSwitcher(sub, lateSim)
+	}
 	log.Printf("[%s] viewer in (%d)", rm.name, n)
 	// A viewer that never connects doesn't keep its connection (and ports) for ever
 	time.AfterFunc(30*time.Second, func() {
@@ -530,6 +554,9 @@ func (s *server) subscribe(rm *room, c *conn, uid string) (*subscriber, error) {
 	rm.offerTo(sub)
 	return sub, nil
 }
+
+// subscribeGap: tests run it while a viewer is being made (a track arriving just then).
+var subscribeGap func(*room)
 
 // offerTo sends a viewer a (new) offer, or remembers to once the one out is answered.
 func (rm *room) offerTo(sub *subscriber) {
@@ -666,6 +693,12 @@ func (rm *room) layerOf(rid string) *layer {
 func (rm *room) readLayer(remote *webrtc.TrackRemote) {
 	rid := remote.RID()
 	rm.mu.Lock()
+	if rm.ended {
+		// A layer of a room that already ended: nothing to forward it to (and no auto loop to start, it would
+		// never stop)
+		rm.mu.Unlock()
+		return
+	}
 	sim := rm.sim
 	first := sim == nil
 	if first {

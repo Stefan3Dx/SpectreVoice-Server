@@ -1,10 +1,15 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v4"
 )
 
 // An app that makes a brand-new voice connection (its old one broke on its side first) and offers it on the same
@@ -55,4 +60,55 @@ func TestVoiceFreshConnectionSameSession(t *testing.T) {
 	if n := va2.count(want); n < 10 {
 		t.Fatalf("A's new connection got %d packets of B (%s)", n, va2.pc.ConnectionState())
 	}
+}
+
+// sinkConn: a /streams connection whose messages go nowhere (tests that call the room's functions directly).
+func sinkConn(t *testing.T) *conn {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		for {
+			if _, _, err := ws.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	return &conn{ws: ws}
+}
+
+// A streamer's track that arrives while a viewer is being made reaches that viewer too (OnTrack only gave it to
+// the viewers already in the room, and the new one had read the tracks before it).
+func TestStreamTrackDuringSubscribe(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	rm := &room{name: "x", subs: map[*subscriber]bool{}, keyAt: map[webrtc.SSRC]time.Time{}, stop: make(chan struct{})}
+	late, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}, "a", "spectre")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribeGap = func(rm *room) {
+		rm.mu.Lock()
+		rm.tracks = append(rm.tracks, late) // what OnTrack does, with nobody in rm.subs to give it to
+		rm.mu.Unlock()
+	}
+	defer func() { subscribeGap = nil }()
+	sub, err := s.subscribe(rm, sinkConn(t), "viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.pc.Close()
+	for _, snd := range sub.pc.GetSenders() {
+		if snd.Track() == late {
+			return
+		}
+	}
+	t.Fatal("the viewer never got the track that came while it joined")
 }
