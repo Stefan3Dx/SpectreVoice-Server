@@ -7,7 +7,7 @@ package main
 //	<- {"t":"invite-del","code"}                          (manage_community, or who made it)
 //	<- {"t":"community-join","invite":CODE}               (communities_hub.go) uses one
 //
-//	GET /i/<code>           a page: the community, "open in the app", the downloads
+//	GET /i/<code>           a page: the community, "open in the app", "open in the browser" (/app/), the downloads
 //	GET /api/invite/<code>  the same for the apps, as JSON
 //	GET /download/<android|windows>   the newest installer the server keeps (updates.go), for anyone
 

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<title>Spectre Voice</title>
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:,">
+</head>
+<body data-rtc="new">
+
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 108 108" aria-hidden="true"><path fill="currentColor" d="M33,48 a3,3 0 0 1 6,0 v12 a3,3 0 0 1 -6,0 z M43,38 a3,3 0 0 1 6,0 v32 a3,3 0 0 1 -6,0 z M51,30 a3,3 0 0 1 6,0 v48 a3,3 0 0 1 -6,0 z M59,38 a3,3 0 0 1 6,0 v32 a3,3 0 0 1 -6,0 z M69,48 a3,3 0 0 1 6,0 v12 a3,3 0 0 1 -6,0 z"/></svg>
+    <div>
+      <div id="serverName" class="server">Spectre Voice</div>
+      <div id="status" class="status" data-i18n="off">Deconectat</div>
+    </div>
+  </div>
+  <div class="tools">
+    <button id="lang" class="ghost" type="button" title="Language">EN</button>
+    <button id="leave" class="ghost hidden" type="button" data-i18n="leave">Ieși</button>
+  </div>
+</header>
+
+<main id="connect" class="card connect">
+  <h1 data-i18n="welcome">Intră pe server</h1>
+  <p id="inviteNote" class="muted hidden"></p>
+  <form id="form" autocomplete="off">
+    <label><span data-i18n="name">Numele tău</span><input id="name" maxlength="32" required></label>
+    <label><span data-i18n="password">Parola serverului (dacă are)</span><input id="password" type="password" maxlength="200"></label>
+    <button id="go" class="primary" type="submit" data-i18n="connect">Conectează-te</button>
+  </form>
+  <p id="connectError" class="error hidden"></p>
+  <p class="muted small"><span data-i18n="idNote">Identitatea ta e o cheie făcută în acest browser; nu există cont.</span> <span id="uidNote"></span></p>
+</main>
+
+<section id="app" class="app hidden">
+  <nav class="mobile-tabs">
+    <button type="button" data-pane="channels" class="on" data-i18n="channels">Canale</button>
+    <button type="button" data-pane="chat" data-i18n="chat">Chat</button>
+  </nav>
+  <aside id="channels" class="pane channels on">
+    <div id="commBar" class="commbar">
+      <select id="commPick" class="hidden"></select>
+      <div id="commName" class="commname"></div>
+    </div>
+    <div id="motd" class="motd hidden"></div>
+    <div id="tree" class="tree"></div>
+    <div id="noComm" class="muted small hidden" data-i18n="noComm">Nu ești în nicio comunitate: folosește un link de invitație.</div>
+  </aside>
+  <section id="chat" class="pane chat">
+    <div class="chat-tabs">
+      <button id="tabChannel" type="button" class="on"></button>
+      <button id="tabComm" type="button" data-i18n="communityChat">Comunitate</button>
+    </div>
+    <div id="messages" class="messages">
+      <button id="older" class="ghost small hidden" type="button" data-i18n="older">Mesaje mai vechi</button>
+      <div id="msgList"></div>
+    </div>
+    <form id="sayForm" class="say">
+      <input id="say" maxlength="4000" data-i18n-ph="write" placeholder="Scrie un mesaj…">
+      <button class="primary" type="submit" data-i18n="send">Trimite</button>
+    </form>
+  </section>
+  <footer class="bar">
+    <button id="ptt" class="ptt" type="button"><span data-i18n="ptt">Ține apăsat ca să vorbești</span> <kbd>Space</kbd></button>
+    <div class="bar-right">
+      <label class="chk"><input id="openMic" type="checkbox"> <span data-i18n="openMic">Microfon deschis</span></label>
+      <button id="mute" class="ghost" type="button" data-i18n="mute">Mut</button>
+      <button id="deafen" class="ghost" type="button" data-i18n="deafen">Surd</button>
+    </div>
+  </footer>
+</section>
+
+<div id="toast" class="toast hidden"></div>
+<div id="volPop" class="volpop hidden">
+  <div id="volName"></div>
+  <input id="vol" type="range" min="0" max="100" value="100">
+</div>
+
+<footer class="foot">
+  <span data-i18n="footer">Clientul web: voce și chat. Streamuri, jocuri, fișiere și mesaje private sunt în aplicație:</span>
+  <a href="https://spectrevoice.com" rel="noopener">spectrevoice.com</a>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
