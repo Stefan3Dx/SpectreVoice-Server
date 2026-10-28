@@ -31,11 +31,10 @@ const T = {
     off: 'Deconectat', connecting: 'Se conectează…', connected: 'Conectat', reconnecting: 'Reconectare…', leave: 'Ieși',
     welcome: 'Intră pe server', name: 'Numele tău', password: 'Parola serverului (dacă are)', connect: 'Conectează-te',
     idNote: 'Identitatea ta e o cheie făcută în acest browser; nu există cont.', channels: 'Canale', chat: 'Chat',
-    communityChat: 'Comunitate', older: 'Mesaje mai vechi', write: 'Scrie un mesaj…', send: 'Trimite',
+    serverChat: 'Server', older: 'Mesaje mai vechi', write: 'Scrie un mesaj…', send: 'Trimite',
     ptt: 'Ține apăsat ca să vorbești', openMic: 'Microfon deschis', mute: 'Mut', deafen: 'Surd',
-    noComm: 'Nu ești în nicio comunitate: folosește un link de invitație.',
     footer: 'Clientul web: voce și chat. Streamuri, jocuri, fișiere și mesaje private sunt în aplicație:',
-    inviteNote: 'Ai o invitație ({code}): intri în comunitate după conectare.', chPass: 'Parola canalului',
+    inviteNote: 'Ai o invitație ({code}) pe acest server.', chPass: 'Parola canalului',
     noMic: 'Microfonul nu e disponibil: doar asculți.', micDenied: 'Fără microfon (acces refuzat): doar asculți.',
     joined: 'Ai intrat în {ch}', moved: '{by} te-a mutat în {ch}', kicked: '{by} te-a dat afară', banned: '{by} te-a banat',
     back: 'Din nou pe server', lost: 'Conexiune pierdută; reîncerc…', deleted: '(mesaj șters)', edited: '(editat)',
@@ -49,11 +48,10 @@ const T = {
     off: 'Disconnected', connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…', leave: 'Leave',
     welcome: 'Join the server', name: 'Your name', password: 'Server password (if any)', connect: 'Connect',
     idNote: 'Your identity is a key made in this browser; there is no account.', channels: 'Channels', chat: 'Chat',
-    communityChat: 'Community', older: 'Older messages', write: 'Write a message…', send: 'Send',
+    serverChat: 'Server', older: 'Older messages', write: 'Write a message…', send: 'Send',
     ptt: 'Hold to talk', openMic: 'Open mic', mute: 'Mute', deafen: 'Deafen',
-    noComm: "You aren't in any community: use an invite link.",
     footer: 'The web client: voice and chat. Streams, games, files and private messages are in the app:',
-    inviteNote: 'You have an invite ({code}): you join the community once connected.', chPass: 'Channel password',
+    inviteNote: 'You have an invite ({code}) to this server.', chPass: 'Channel password',
     noMic: 'No microphone available: listening only.', micDenied: 'No microphone (access refused): listening only.',
     joined: 'You joined {ch}', moved: '{by} moved you to {ch}', kicked: '{by} kicked you', banned: '{by} banned you',
     back: 'Back on the server', lost: 'Connection lost; retrying…', deleted: '(message deleted)', edited: '(edited)',
@@ -148,7 +146,7 @@ async function signChallenge(id, nonceB64) {
 // ====== State ======
 
 const S = {
-  id: null, ws: null, phase: 'off', sid: 0, uid: '', name: '', pass: '', invite: '', wantCh: 0, comm: null, comms: [],
+  id: null, ws: null, phase: 'off', sid: 0, uid: '', name: '', pass: '', invite: '', wantCh: 0,
   channels: new Map(), members: new Map(), chat: new Map(), cur: '', ice: [], retry: 0, timer: null, wasOn: false, lastCh: 0,
   mic: false, snd: false, open: false, pressing: false, dev: '', version: '', server: '', volumes: {},
 };
@@ -159,6 +157,8 @@ if (!S.dev) {
   store.set('sv.dev', S.dev);
 }
 const me = () => S.members.get(S.sid);
+// The server chat: everyone on the server
+const SERVER_CHAT = 'g:1';
 
 function setStatus(phase) {
   S.phase = phase;
@@ -227,18 +227,21 @@ async function handle(m) {
     case 'challenge': {
       S.version = m.version || '';
       const sig = await signChallenge(S.id, m.n);
-      send({ t: 'hello', v: 2, pub: S.id.pub, sig, name: S.name, client: 'web/' + (S.version || 'dev'), password: S.pass, comm: 0, dev: S.dev });
+      send({ t: 'hello', v: 2, pub: S.id.pub, sig, name: S.name, client: 'web/' + (S.version || 'dev'), password: S.pass, invite: S.invite || undefined, dev: S.dev });
       break;
     }
     case 'welcome': welcome(m); break;
     case 'error':
-      if (m.op === 'hello') { failed(errText(m)); break; }
+      if (m.op === 'hello') { failed(errText(m)); if (m.why === 'password') $('password').focus(); break; }
       if (m.op === 'history') break;
       if (m.op === 'say') { const c = S.chat.get(S.cur); if (c) { c.items = c.items.filter((x) => !x.pending); renderChat(); } }
       toast(errText(m), true);
       break;
-    case 'community': entered(m, true); break;
-    case 'communities': S.comms = m.items || []; renderComm(); break;
+    case 'server-info':
+      S.server = m.server?.name || S.server;
+      $('serverName').textContent = S.server || 'Spectre Voice';
+      $('commName').textContent = S.server;
+      break;
     case 'channel': S.channels.set(m.c.id, m.c); render(); break;
     case 'channel-del': S.channels.delete(m.id); render(); break;
     case 'member': memberChanged(m.m); break;
@@ -252,7 +255,6 @@ async function handle(m) {
     case 'history': history(m); break;
     case 'moved': toast(t('moved', { by: m.by, ch: S.channels.get(m.ch)?.name || '?' })); break;
     case 'kicked':
-      if (m.community) { toast(t('banned', { by: m.by }) + (m.why ? ': ' + m.why : ''), true); break; }
       S.phase = 'off';
       failed(t(m.ban ? 'banned' : 'kicked', { by: m.by }) + (m.why ? ': ' + m.why : ''));
       break;
@@ -278,7 +280,7 @@ function welcome(m) {
   $('connect').classList.add('hidden');
   $('app').classList.remove('hidden');
   $('leave').classList.remove('hidden');
-  entered(m, false);
+  entered(m);
   if (S.mic || S.snd) send({ t: 'state', mic: S.mic, snd: S.snd });
   voiceStart();
   if (back) {
@@ -287,23 +289,21 @@ function welcome(m) {
     if (c && !c.locked && me()?.ch !== last) send({ t: 'join', ch: last });
   }
   S.wasOn = true;
-  if (S.invite) { send({ t: 'community-join', invite: S.invite }); S.invite = ''; }
+  // The invite was used in the hello (its channel too): not again on a reconnect
+  if (S.invite) S.invite = '';
   else if (S.wantCh) { joinChannel(S.wantCh); S.wantCh = 0; }
 }
 
-// entered: the community part of a welcome or a "community" message
-function entered(m, fresh) {
-  S.comm = m.community || null;
-  S.comms = m.communities || S.comms;
+// entered: the server's channels and people from a welcome
+function entered(m) {
   S.channels = new Map((m.channels || []).map((c) => [c.id, c]));
   S.members = new Map((m.members || []).map((x) => [x.sid, x]));
   S.chat = new Map();
-  if (fresh && S.wantCh) { joinChannel(S.wantCh); S.wantCh = 0; }
   const ch = me()?.ch || 0;
   S.lastCh = ch;
-  S.cur = ch ? 'c:' + ch : (S.comm ? 'g:' + S.comm.id : '');
+  S.cur = ch ? 'c:' + ch : SERVER_CHAT;
+  $('commName').textContent = S.server;
   render();
-  renderComm();
   loadChat();
 }
 
@@ -383,12 +383,10 @@ function render() {
     }
   };
   draw(0, tree, 0);
-  $('noComm').classList.toggle('hidden', !!S.comm);
   const cur = S.channels.get(+S.cur.slice(2));
   $('tabChannel').textContent = S.cur.startsWith('c:') && cur ? '#' + cur.name : (S.channels.get(mine)?.name ? '#' + S.channels.get(mine).name : t('chat'));
   $('tabChannel').classList.toggle('on', S.cur.startsWith('c:'));
   $('tabComm').classList.toggle('on', S.cur.startsWith('g:'));
-  $('tabComm').disabled = !S.comm;
   $('mute').classList.toggle('muted-on', S.mic);
   $('deafen').classList.toggle('muted-on', S.snd);
   $('ptt').classList.toggle('off', S.mic || !V.track);
@@ -417,23 +415,6 @@ function memberRow(mem) {
 function renderTalk(sid, on) {
   for (const el of document.querySelectorAll(`.mem[data-sid="${sid}"]`)) el.classList.toggle('talking', on);
 }
-function renderComm() {
-  const pick = $('commPick');
-  pick.textContent = '';
-  const many = S.comms.length > 1;
-  for (const c of S.comms) {
-    const o = document.createElement('option');
-    o.value = c.id;
-    o.textContent = c.name;
-    o.selected = S.comm?.id === c.id;
-    pick.appendChild(o);
-  }
-  pick.classList.toggle('hidden', !many);
-  $('commName').classList.toggle('hidden', many);
-  $('commName').textContent = S.comm?.name || '';
-}
-$('commPick').onchange = () => send({ t: 'enter', c: +$('commPick').value });
-
 // Per-person volume (kept per uid in this browser)
 function volumePop(mem, ev) {
   const pop = $('volPop');
@@ -523,7 +504,7 @@ $('sayForm').onsubmit = (ev) => {
   renderChat(true);
 };
 $('tabChannel').onclick = () => { const ch = me()?.ch; if (ch) { S.cur = 'c:' + ch; loadChat(); render(); } };
-$('tabComm').onclick = () => { if (S.comm) { S.cur = 'g:' + S.comm.id; $('tabComm').classList.remove('unread'); loadChat(); render(); } };
+$('tabComm').onclick = () => { S.cur = SERVER_CHAT; $('tabComm').classList.remove('unread'); loadChat(); render(); };
 
 // ====== Voice (WebRTC to the server's SFU) ======
 
