@@ -40,7 +40,7 @@ const spaceMark = ".space"
 func (fs *fileStore) diskUsage() int64 {
 	var n int64
 	_ = filepath.WalkDir(fs.dir, func(_ string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
+		if err == nil && !d.IsDir() && d.Name() != spaceMark { // the marks aren't files people shared
 			if info, err := d.Info(); err == nil {
 				n += info.Size()
 			}
