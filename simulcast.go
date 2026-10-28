@@ -81,6 +81,14 @@ func (sc *simulcast) rids() []string {
 	return out
 }
 
+// sending: layer rid exists and sent something lately.
+func (sc *simulcast) sending(rid string, now time.Time) bool {
+	sc.mu.RLock()
+	l := sc.layers[rid]
+	sc.mu.RUnlock()
+	return l != nil && l.alive(now)
+}
+
 // nearest: the layer closest to the one asked that is sending now (asked for "l" while only "h" and "m" come:
 // "m"); "" when none is.
 func (sc *simulcast) nearest(rid string, now time.Time) string {

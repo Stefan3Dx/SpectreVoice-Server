@@ -330,3 +330,30 @@ func TestInviteUseVoiceBudget(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// An auto viewer waiting for a layer's key frame when the streamer stops that layer (libwebrtc drops the top one
+// short of bandwidth) is moved to one that sends, instead of waiting for good (black, with nothing yet).
+func TestSimulcastPendingLayerStopped(t *testing.T) {
+	sw, _ := testSwitcher(t)
+	now := time.Now()
+	sim := &simulcast{layers: map[string]*layer{}, viewers: map[*subscriber]*switcher{}}
+	for _, rid := range []string{"h", "m"} {
+		l := &layer{rid: rid, ssrc: webrtc.SSRC(len(sim.layers) + 1)}
+		l.last.Store(now.UnixNano())
+		sim.layers[rid] = l
+	}
+	rm := &room{name: "x", subs: map[*subscriber]bool{}, keyAt: map[webrtc.SSRC]time.Time{}, sim: sim}
+	sub := &subscriber{asked: "auto", c: sinkConn(t)}
+	sub.sw.Store(sw)
+	sim.viewers[sub] = sw
+	sw.choose("h") // the viewer just came: waiting for h's key frame
+	// h stops; m goes on
+	sim.layers["h"].last.Store(now.Add(-5 * time.Second).UnixNano())
+	rm.autoTick(sim, now, 1)
+	if _, want := sw.current(); want != "m" {
+		t.Fatalf("still waiting for a layer that stopped: want %q", want)
+	}
+	if sw.push("m", vp8(1, 1000, true)); func() bool { cur, _ := sw.current(); return cur != "m" }() {
+		t.Fatal("m's key frame didn't start the picture")
+	}
+}

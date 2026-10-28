@@ -860,55 +860,69 @@ func (rm *room) autoLoop(sim *simulcast, stop chan struct{}) {
 		case <-stop:
 			return
 		case now := <-t.C:
-			dt := now.Sub(last).Seconds()
+			rm.autoTick(sim, now, now.Sub(last).Seconds())
 			last = now
-			var infos []layerInfo
-			for _, l := range sim.ordered() {
-				b := l.bytes.Swap(0)
-				if dt > 0 {
-					k := int64(float64(b) * 8 / 1000 / dt)
-					old := l.kbps.Load()
-					if old > 0 {
-						k = (old + k) / 2
-					}
-					l.kbps.Store(k)
-				}
-				if l.alive(now) {
-					infos = append(infos, layerInfo{rid: l.rid, kbps: int(l.kbps.Load())})
-				}
+		}
+	}
+}
+
+// autoTick: one second of autoLoop (dt: the seconds since the last).
+func (rm *room) autoTick(sim *simulcast, now time.Time, dt float64) {
+	var infos []layerInfo
+	for _, l := range sim.ordered() {
+		b := l.bytes.Swap(0)
+		if dt > 0 {
+			k := int64(float64(b) * 8 / 1000 / dt)
+			old := l.kbps.Load()
+			if old > 0 {
+				k = (old + k) / 2
 			}
-			sim.mu.RLock()
-			views := make([]*subscriber, 0, len(sim.viewers))
-			for sub := range sim.viewers {
-				views = append(views, sub)
+			l.kbps.Store(k)
+		}
+		if l.alive(now) {
+			infos = append(infos, layerInfo{rid: l.rid, kbps: int(l.kbps.Load())})
+		}
+	}
+	sim.mu.RLock()
+	views := make([]*subscriber, 0, len(sim.viewers))
+	for sub := range sim.viewers {
+		views = append(views, sub)
+	}
+	sim.mu.RUnlock()
+	for _, sub := range views {
+		sub.linkMu.Lock()
+		s := sub.link
+		asked := sub.asked
+		sub.link.nacks = 0
+		sub.linkMu.Unlock()
+		sw := sub.sw.Load()
+		if asked != "auto" {
+			// A layer asked for that wasn't sending yet: taken as soon as it is
+			if cur, _ := sw.current(); cur != asked {
+				rm.switchTo(sub, sim.nearest(asked, now))
 			}
-			sim.mu.RUnlock()
-			for _, sub := range views {
-				sub.linkMu.Lock()
-				s := sub.link
-				asked := sub.asked
-				sub.link.nacks = 0
-				sub.linkMu.Unlock()
-				sw := sub.sw.Load()
-				if asked != "auto" {
-					// A layer asked for that wasn't sending yet: taken as soon as it is
-					if cur, _ := sw.current(); cur != asked {
-						rm.switchTo(sub, sim.nearest(asked, now))
-					}
-					continue
-				}
-				cur, want := sw.current()
-				if want != "" && want != cur {
-					continue // a switch is on its way: judge it once it's done
-				}
-				sub.linkMu.Lock()
-				next := sub.pick.step(cur, infos, s, now)
-				sub.linkMu.Unlock()
-				if next != cur {
-					log.Printf("[%s] viewer %s: layer %s → %s (loss %.0f%%, est %d kbit/s, nacks %d)", rm.name, sub.uid, cur, next, s.lossPct, s.rembKbps, s.nacks)
-					rm.switchTo(sub, next)
-				}
+			continue
+		}
+		cur, want := sw.current()
+		if want != "" && want != cur {
+			if sim.sending(want, now) {
+				continue // a switch is on its way: judge it once it's done
 			}
+			// The layer it waits for stopped (the encoder dropped it, short of bandwidth or CPU) before its key
+			// frame came: back to what is sending, or a viewer that has nothing yet would stay black for good
+			target := cur
+			if !sim.sending(cur, now) {
+				target = sim.nearest(want, now)
+			}
+			rm.switchTo(sub, target)
+			continue
+		}
+		sub.linkMu.Lock()
+		next := sub.pick.step(cur, infos, s, now)
+		sub.linkMu.Unlock()
+		if next != cur {
+			log.Printf("[%s] viewer %s: layer %s → %s (loss %.0f%%, est %d kbit/s, nacks %d)", rm.name, sub.uid, cur, next, s.lossPct, s.rembKbps, s.nacks)
+			rm.switchTo(sub, next)
 		}
 	}
 }
