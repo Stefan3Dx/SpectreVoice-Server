@@ -419,8 +419,19 @@ func (s *server) setup() error {
 		if private {
 			// At home: the LAN address replaces the container's own
 			se.SetNAT1To1IPs([]string{ip}, webrtc.ICECandidateTypeHost)
+		} else if s.cfg.udpPort > 0 {
+			// One UDP port behind a router: the public address is added next to the LAN ones, on that same port.
+			// (A mapped srflx candidate would be gathered on a random port outside the mux, which no router
+			// forwards: the outside could never connect.)
+			if err := se.SetICEAddressRewriteRules(webrtc.ICEAddressRewriteRule{
+				External:        []string{ip},
+				AsCandidateType: webrtc.ICECandidateTypeHost,
+				Mode:            webrtc.ICEAddressRewriteAppend,
+			}); err != nil {
+				return err
+			}
 		} else {
-			// Behind a router with forwarded ports: the LAN keeps its own addresses, the outside gets the public one
+			// Behind a router with a forwarded port range: the LAN keeps its own addresses, the outside gets the public one
 			se.SetNAT1To1IPs([]string{ip}, webrtc.ICECandidateTypeSrflx)
 		}
 		log.Printf("voice announced as %s (%s)", ip, map[bool]string{true: "LAN", false: "public, plus the LAN addresses"}[private])
