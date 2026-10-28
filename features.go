@@ -42,8 +42,8 @@ func (s *server) claimCode() string {
 
 // maySpeak: is ss heard at all (not silenced, allowed to talk, in a moderated channel only when let); h.mu held.
 func (h *hub) maySpeak(ss *session) bool {
-	if ss.bot {
-		return true
+	if ss.bot && !ss.api {
+		return true // the music bot
 	}
 	if ss.vmuted || ss.comm == 0 || !h.may(ss, pSpeak) {
 		return false

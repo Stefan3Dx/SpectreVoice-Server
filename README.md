@@ -55,6 +55,12 @@ theme. A server has **30 places** (people connected at once). A donation made fo
 from +20 to no limit, by the donation's size, and donations add up. In the app: *Server › Donate*, or a donation
 code from the website (*Server › Donation code*). `SV_MAX_USERS` sets your own lower cap.
 
+## Bots
+
+Anyone can write a bot for a server: a program with its own key that a community manager registers (`bot-add`),
+limited to that community and to the permissions it was given, shown with the robot icon, outside the places
+count. The protocol and a complete example (Go, ~150 lines) are in [docs/BOTS.md](docs/BOTS.md).
+
 ## Build
 
 ```sh

@@ -36,6 +36,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// busBotKindLimit: records in one bot's kind ("bot:<slug>", bots.go).
+const busBotKindLimit = 500
+
 var busKinds = map[string]int{"events": 200, "sounds": 300, "intros": 500, "lei": 2000, "scores": 2000, "profiles": 2000, "donors": 2000}
 
 // Kinds only the server's owner and admins may change; everyone reads them.
@@ -183,6 +186,9 @@ type busSpace struct {
 }
 
 func (sp *busSpace) set(kind, id string, raw json.RawMessage) {
+	if sp.state[kind] == nil {
+		sp.state[kind] = map[string]json.RawMessage{} // a bot's kind, made on its first write
+	}
 	sp.size += len(raw) - len(sp.state[kind][id])
 	sp.state[kind][id] = raw
 }
@@ -630,6 +636,14 @@ func (b *bus) change(sp *busSpace, c *busClient, op string, m map[string]any) {
 	kind, _ := m["kind"].(string)
 	id, _ := m["id"].(string)
 	limit, ok := busKinds[kind]
+	if isBotKind(kind) {
+		// A bot's own records (bots.go): the bot writes them, the community's managers may clear them
+		limit, ok = busBotKindLimit, true
+		if !c.admin && !b.ownsBotKind(sp.name, kind, c.uid) {
+			c.refuse(m, op, "owner", "not yours to change")
+			return
+		}
+	}
 	if !ok || !safeID.MatchString(id) {
 		c.refuse(m, op, "bad", "unknown kind or bad id")
 		return
