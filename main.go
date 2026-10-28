@@ -57,6 +57,8 @@ type config struct {
 	fileMB      int64
 	fileDays    int
 	fileQuota   int64
+	cfQuota     int64 // MB all channel files may take, every community together
+	cfUserMB    int64 // MB one person's channel files may take on the server
 	fileSpaceMB int64
 	maxSpaces   int
 	playCreds   string
@@ -151,6 +153,8 @@ func main() {
 	flag.BoolVar(&cfg.files, "files", envBool("SV_FILES", true), "files shared in the chat [SV_FILES]")
 	flag.Int64Var(&cfg.fileMB, "file-max-mb", int64(envInt("SV_FILE_MAX_MB", 100)), "largest shared file, MB [SV_FILE_MAX_MB]")
 	flag.IntVar(&cfg.fileDays, "file-days", envInt("SV_FILE_DAYS", 30), "days a shared file is kept [SV_FILE_DAYS]")
+	flag.Int64Var(&cfg.cfQuota, "cf-quota-mb", int64(envInt("SV_CF_QUOTA_MB", 10240)), "MB all channel files may take, all communities together [SV_CF_QUOTA_MB]")
+	flag.Int64Var(&cfg.cfUserMB, "cf-user-mb", int64(envInt("SV_CF_USER_MB", 2048)), "MB one person's channel files may take [SV_CF_USER_MB]")
 	flag.Int64Var(&cfg.fileQuota, "file-quota-mb", int64(envInt("SV_FILE_QUOTA_MB", 5120)), "MB all shared files may take [SV_FILE_QUOTA_MB]")
 	flag.Int64Var(&cfg.fileSpaceMB, "file-space-mb", int64(envInt("SV_FILE_SPACE_MB", 1024)), "MB one community's chat files may take (0: no limit but the total) [SV_FILE_SPACE_MB]")
 	flag.IntVar(&cfg.maxSpaces, "max-spaces", envInt("SV_MAX_SPACES", 16), "communities kept open at once [SV_MAX_SPACES]")
@@ -206,7 +210,8 @@ func main() {
 	log.Printf("Spectre Voice Server %s on %s (%s%s), data in %s", version, cfg.listen, udp,
 		map[bool]string{true: ", announced as " + cfg.publicIP, false: ""}[cfg.publicIP != ""], cfg.data)
 	go s.watchdog(cfg.listen)
-	srv := &http.Server{Addr: cfg.listen, Handler: s.handler(), ReadHeaderTimeout: 15 * time.Second}
+	// Idle keep-alive connections close; uploads set their own longer deadline (files.go, chfiles.go)
+	srv := &http.Server{Addr: cfg.listen, Handler: s.handler(), ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second}
 	log.Fatal(srv.ListenAndServe())
 }
 

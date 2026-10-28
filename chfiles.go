@@ -165,18 +165,19 @@ func (cf *channelFiles) op(ss *session, t string, m map[string]any) bool {
 		cf.list(ss, ch, folder)
 	case "cf-del", "cf-rename":
 		id := i64(m, "id")
-		it, ch, _, err := cf.item(id)
+		it, ch, comm, err := cf.item(id)
 		if err != nil {
 			ss.refuse(t, "gone", "no such file")
 			return true
 		}
-		if _, ok := cf.readable(ss.uid, ch); !ok {
+		if c, ok := cf.readable(ss.uid, ch); !ok || c != comm {
 			ss.refuse(t, "gone", "no such file")
 			return true
 		}
+		// The right to manage files in the file's own community (not in whichever one this session is in)
 		h := cf.s.hub
 		h.mu.Lock()
-		boss := h.may(ss, pFiles)
+		boss := h.permsOf(comm, ss.uid)&pFiles != 0
 		h.mu.Unlock()
 		if it.By != ss.uid && !boss {
 			ss.refuse(t, "role", "not yours")
@@ -305,6 +306,21 @@ func (cf *channelFiles) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the community's space for files is full", http.StatusInsufficientStorage)
 		return
 	}
+	// The whole server's disk (all communities together) and each person's share: making communities can't fill it
+	var total, mine sql.NullInt64
+	_ = cf.db.QueryRow(`SELECT SUM(size) FROM chfiles`).Scan(&total)
+	_ = cf.db.QueryRow(`SELECT SUM(size) FROM chfiles WHERE by=?`, uid).Scan(&mine)
+	if q := cf.s.cfg.cfQuota << 20; q > 0 {
+		left = min(left, q-total.Int64)
+	}
+	if q := cf.s.cfg.cfUserMB << 20; q > 0 {
+		left = min(left, q-mine.Int64)
+	}
+	if left <= 0 || r.ContentLength > left {
+		cf.upMu.Unlock()
+		http.Error(w, "the server's space for files is full", http.StatusInsufficientStorage)
+		return
+	}
 	// The row holds the most it may become until the upload ends (then its real size)
 	reserve := min(maxFile, left)
 	if r.ContentLength > 0 {
@@ -324,6 +340,8 @@ func (cf *channelFiles) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	// A trickling upload can't hold its reserved space for ever
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(15 * time.Minute))
 	n, err := io.Copy(f, http.MaxBytesReader(w, r.Body, reserve))
 	f.Close()
 	if err != nil {

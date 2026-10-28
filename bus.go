@@ -461,6 +461,12 @@ func (sp *busSpace) mayChange(c *busClient, op, kind, id string) string {
 	by, hasBy := rec["_by"].(string)
 	mine := hasBy && by == c.uid
 	switch {
+	case kind == "lei":
+		// Purses change only by a delta the server applies (the tables' keepers pay out and take in); nobody writes
+		// or deletes a purse outright, not even their own (the shop trusts it)
+		if op != "add" {
+			return "owner"
+		}
 	case kind == "profiles" || kind == "intros":
 		if id != c.uid {
 			return "owner"
@@ -638,6 +644,12 @@ func (b *bus) change(sp *busSpace, c *busClient, op string, m map[string]any) {
 		// ("add"), counters in a record ("incr"); everyone then gets the result as a put
 		cur := decodeRecord(items[id])
 		if op == "add" {
+			if kind == "lei" {
+				// A game's win or loss, not a fortune: a bounded delta, the apps' own start and floor
+				m["d"] = max(-busLeiStep, min(busLeiStep, num(m["d"])))
+				m["start"] = max(0, min(busLeiStart, num(m["start"])))
+				m["min"] = 0.0
+			}
 			next = applyAdd(cur, m)
 		} else {
 			next = applyIncr(cur, m)
@@ -747,6 +759,12 @@ func num(v any) float64 {
 
 // applyAdd: {"d": delta, "start": value when new, "min": value when it drops to 0 or below, "set": {fields},
 // "once": a value of "d" field that makes it happen only once (a daily bonus)}. nil: nothing to do.
+// Lei: the most one change may move, and the most a new purse starts with (the apps' START)
+const (
+	busLeiStep  = 1_000_000
+	busLeiStart = 1000
+)
+
 func applyAdd(cur map[string]any, m map[string]any) map[string]any {
 	set, _ := m["set"].(map[string]any)
 	if once, ok := m["once"].(string); ok && once != "" {

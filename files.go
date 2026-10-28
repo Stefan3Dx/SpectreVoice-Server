@@ -190,6 +190,8 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	// A trickling upload can't hold its reserved space for ever
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(15 * time.Minute))
 	n, err := io.Copy(f, http.MaxBytesReader(w, r.Body, maxSize))
 	f.Close()
 	if err != nil {

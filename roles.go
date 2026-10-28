@@ -271,7 +271,9 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 		ok = !h.staff(uid) || h.s.store.role(ss.uid) == roleOwner
 	}
 	h.mu.Unlock()
-	if (t == "ban" || t == "mute" || t == "ch-ban" || t == "server-ban" || t == "voice-mute") && !ok {
+	// Every action on someone (lifting one included): only on people ranked lower, never on oneself (a muted
+	// moderator can't unmute themselves), and channel bans only in this community's channels
+	if !ok {
 		ss.refuse(t, "role", "they rank as high as you")
 		return true
 	}

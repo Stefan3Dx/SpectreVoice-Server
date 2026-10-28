@@ -443,9 +443,24 @@ func TestBusBuy(t *testing.T) {
 		t.Fatalf("title again: %v", m)
 	}
 	a.expect("put")
+	// Nobody writes or clears a purse outright (the shop trusts it), not even their own; a delta can't make a fortune
+	a.write(map[string]any{"t": "put", "kind": "lei", "id": "A", "v": map[string]any{"v": 1e9}})
+	if m := a.expect("error"); m["why"] != "owner" {
+		t.Fatalf("purse written: %v", m)
+	}
+	a.write(map[string]any{"t": "del", "kind": "lei", "id": "B"})
+	if m := a.expect("error"); m["why"] != "owner" {
+		t.Fatalf("purse cleared: %v", m)
+	}
+	a.write(map[string]any{"t": "add", "kind": "lei", "id": "Z", "d": -1e12, "min": 1e12, "start": 1e12})
+	if m := a.expect("put"); m["v"].(map[string]any)["v"] != 0.0 {
+		t.Fatalf("add made a fortune: %v", m)
+	}
 	// An empty purse counts as 100
-	a.write(map[string]any{"t": "put", "kind": "lei", "id": "A", "v": map[string]any{"v": 0}})
-	a.expect("put")
+	bt.s.bus.mu.Lock()
+	raw, _ = json.Marshal(map[string]any{"v": 0})
+	sp.set("lei", "A", raw)
+	bt.s.bus.mu.Unlock()
 	a.write(map[string]any{"t": "buy", "item": "b_clown"})
 	if m := a.expect("error"); m["why"] != "lei" {
 		t.Fatalf("refill isn't enough: %v", m)

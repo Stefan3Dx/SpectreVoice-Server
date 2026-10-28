@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
 	"sort"
@@ -40,6 +41,8 @@ var (
 	sessRatePerSec float64 = 40
 	sessRateBurst  float64 = 200
 	helloTimeout           = 15 * time.Second
+	// One person's connections at once (a PC, a phone, a tablet); admins aren't counted
+	maxSessionsPerUID = 3
 )
 
 type session struct {
@@ -77,6 +80,8 @@ type session struct {
 	bot        bool  // the music bot
 	tokens     float64
 	refill     time.Time
+	passTries  []time.Time // channel password attempts (its own read loop only)
+	dev        string      // the device it came from (optional; the app's own random id)
 	drops      int
 }
 
@@ -197,6 +202,7 @@ type hub struct {
 	next     int
 	live     map[string]liveStream
 	acc      map[int64]*commAccess
+	gate     ipGate
 }
 
 func newHub(s *server) (*hub, error) {
@@ -297,6 +303,19 @@ func cleanName(n string) string {
 }
 
 func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
+	// Unfinished handshakes and failed sign-ins per address: many idle sockets, or guessing the server's password,
+	// get turned away before any work
+	ip := requestIP(r)
+	if !h.gate.begin(ip) {
+		http.Error(w, "too many connections from your address; wait a little", http.StatusTooManyRequests)
+		return
+	}
+	handshaking := true
+	defer func() {
+		if handshaking {
+			h.gate.end(ip)
+		}
+	}()
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -310,6 +329,9 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fail := func(why, msg string) {
+		if why == "auth" || why == "password" || why == "bad" {
+			h.gate.failed(ip)
+		}
 		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_ = ws.WriteJSON(map[string]any{"t": "error", "op": "hello", "why": why, "message": msg})
 		_ = ws.Close()
@@ -325,6 +347,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		Comm     int64  `json:"comm"`
 		Nonce    string `json:"nonce"`
 		V        int    `json:"v"`
+		Dev      string `json:"dev"` // this device (optional): a new connection from it replaces its old one
 	}
 	if ws.ReadJSON(&hello) != nil || hello.T != "hello" {
 		fail("bad", "say hello first")
@@ -351,7 +374,8 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		fail("name", "choose a name")
 		return
 	}
-	rl := h.s.store.seen(uid, hello.Pub, name)
+	// Nothing is written for a visitor until the password and bans let them in
+	rl := h.s.store.role(uid)
 	if h.s.cfg.joinPass != "" && !rl.atLeast(roleAdmin) && !constEq(hello.Password, h.s.cfg.joinPass) {
 		fail("password", "wrong server password")
 		return
@@ -360,11 +384,30 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		fail("banned", "you are banned from this server")
 		return
 	}
+	rl = h.s.store.seen(uid, hello.Pub, name)
 	ss := &session{uid: uid, name: name, client: clip(hello.Client, 40), base: requestBase(r), ws: ws, out: make(chan []byte, sessQueue), done: make(chan struct{}),
-		nonce: clip(hello.Nonce, 100), since: time.Now().UnixMilli()}
+		nonce: clip(hello.Nonce, 100), since: time.Now().UnixMilli(), dev: clip(hello.Dev, 64)}
 	comm := h.pickCommunity(uid, hello.Comm)
 	h.mu.Lock()
-	if mu := h.s.maxUsers(); mu > 0 && h.people() >= mu && !rl.atLeast(roleAdmin) {
+	// The same device again (a dropped Wi-Fi, before the old socket timed out): the old one goes, and doesn't count
+	mine, gone := 0, 0
+	for _, o := range h.sessions {
+		if o.uid != uid || o.bot {
+			continue
+		}
+		if ss.dev != "" && o.dev == ss.dev {
+			gone++
+			go o.close()
+			continue
+		}
+		mine++
+	}
+	if mine >= maxSessionsPerUID && !rl.atLeast(roleAdmin) {
+		h.mu.Unlock()
+		fail("many", "you're connected from too many places")
+		return
+	}
+	if mu := h.s.maxUsers(); mu > 0 && h.people()-gone >= mu && !rl.atLeast(roleAdmin) {
 		h.mu.Unlock()
 		fail("full", "the server is full")
 		return
@@ -387,6 +430,8 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	log.Printf("in: %s %q (%s) sid %d", uid, name, ss.client, ss.sid)
 	go ss.writer()
 	defer h.leave(ss)
+	handshaking = false
+	h.gate.end(ip)
 
 	_ = ws.SetReadDeadline(time.Now().Add(busReadTimeout))
 	ws.SetPongHandler(func(string) error { return ws.SetReadDeadline(time.Now().Add(busReadTimeout)) })
@@ -519,6 +564,24 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 
 // join moves ss into channel ch (a password, room for one more), and its voice with it.
 func (h *hub) join(ss *session, ch int64, pass string) {
+	// The password first, without the hub's lock: bcrypt takes ~80 ms, and wrong passwords on a loop would hold
+	// everyone up. A few tries a minute per session.
+	h.mu.Lock()
+	var hash string
+	if c := h.chans[ch]; c != nil && c.pass != "" && !h.may(ss, pBypassLocks) {
+		hash = c.pass
+	}
+	h.mu.Unlock()
+	if hash != "" {
+		if !ss.passTry() {
+			ss.refuse("join", "rate", "too many password tries; wait a minute")
+			return
+		}
+		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
+			ss.refuse("join", "password", "wrong channel password")
+			return
+		}
+	}
 	h.mu.Lock()
 	c := h.chans[ch]
 	switch {
@@ -533,7 +596,8 @@ func (h *hub) join(ss *session, ch int64, pass string) {
 		h.mu.Unlock()
 		ss.refuse("join", "bad", "not a voice channel")
 		return
-	case !h.may(ss, pBypassLocks) && !c.passOK(pass):
+	case !h.may(ss, pBypassLocks) && c.pass != "" && c.pass != hash:
+		// The password changed meanwhile (or was just set): ask again
 		h.mu.Unlock()
 		ss.refuse("join", "password", "wrong channel password")
 		return
@@ -1146,4 +1210,101 @@ func equalInt64s(a, b []int64) bool {
 		}
 	}
 	return true
+}
+
+// passTry: may this session try a channel password now? Five a minute.
+func (ss *session) passTry() bool {
+	now := time.Now()
+	kept := ss.passTries[:0]
+	for _, t := range ss.passTries {
+		if now.Sub(t) < time.Minute {
+			kept = append(kept, t)
+		}
+	}
+	ss.passTries = kept
+	if len(kept) >= 5 {
+		return false
+	}
+	ss.passTries = append(ss.passTries, now)
+	return true
+}
+
+// ipGate: per address, the handshakes still going and the sign-ins that failed lately.
+type ipGate struct {
+	mu      sync.Mutex
+	pending map[string]int
+	fails   map[string][]time.Time
+}
+
+const (
+	gatePending = 20 // unfinished handshakes from one address
+	gateFails   = 20 // failed sign-ins from one address in 10 minutes
+)
+
+// gateFree: this machine itself (tests, local tools; behind the proxy the real address comes in its header)
+func gateFree(ip string) bool { return ip == "127.0.0.1" || ip == "::1" }
+
+func (g *ipGate) begin(ip string) bool {
+	if gateFree(ip) {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.pending == nil {
+		g.pending, g.fails = map[string]int{}, map[string][]time.Time{}
+	}
+	if g.pending[ip] >= gatePending || len(g.recent(ip)) >= gateFails {
+		return false
+	}
+	g.pending[ip]++
+	return true
+}
+
+func (g *ipGate) end(ip string) {
+	if gateFree(ip) {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.pending[ip] <= 1 {
+		delete(g.pending, ip)
+	} else {
+		g.pending[ip]--
+	}
+}
+
+func (g *ipGate) failed(ip string) {
+	if gateFree(ip) {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.fails == nil {
+		g.pending, g.fails = map[string]int{}, map[string][]time.Time{}
+	}
+	g.fails[ip] = append(g.recent(ip), time.Now())
+	// Old addresses go (the map can't grow for ever)
+	if len(g.fails) > 10000 {
+		for k := range g.fails {
+			if len(g.recent(k)) == 0 {
+				delete(g.fails, k)
+			}
+		}
+	}
+}
+
+// recent: ip's failures in the last 10 minutes; g.mu held.
+func (g *ipGate) recent(ip string) []time.Time {
+	kept := g.fails[ip][:0]
+	for _, t := range g.fails[ip] {
+		if time.Since(t) < 10*time.Minute {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) == 0 {
+		delete(g.fails, ip)
+		return nil
+	}
+	g.fails[ip] = kept
+	return kept
 }
