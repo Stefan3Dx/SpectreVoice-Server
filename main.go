@@ -354,6 +354,8 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("/privacy", s.handlePrivacy)
 	mux.HandleFunc("/delete", s.handleDelete)
 	mux.HandleFunc("/i/", s.handleInvitePage)
+	mux.HandleFunc("/app", s.handleWebApp)
+	mux.HandleFunc("/app/", s.handleWebApp)
 	mux.HandleFunc("/download/", s.handleDownload)
 	mux.HandleFunc("/api/invite/", s.handleInviteInfo)
 	mux.HandleFunc("/admin", s.handleAdmin)

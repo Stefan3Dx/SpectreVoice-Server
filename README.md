@@ -30,6 +30,32 @@ Update: `sudo bash install.sh --update`.
 
 At home behind a router: forward these to the server and set `SV_PUBLIC_IP` to your public IP or DDNS name.
 
+## Web client
+
+The server also serves a small client at **`/app/`** (`https://voice.example.com/app/`): voice and chat in the browser,
+nothing to install. An invite page (`/i/<code>`) offers *Open in the browser*, which lands on `/app/?invite=<code>`
+and joins the community after signing in; `?ch=<id>` joins a channel. The identity is a P-256 key made in the browser
+(WebCrypto, kept in IndexedDB, never leaves it) and signs the same v2 challenge as the apps, for the page's own host;
+the nickname is remembered. Channels with who's where and who talks, join (locked channels ask the password), listen
+and talk through WebRTC (push-to-talk with Space or the big button, open mic, mute, deafen, a volume per person),
+channel and community chat with history, RO/EN. Needs HTTPS (or `localhost`) for the microphone and WebCrypto.
+Not in the web client, by design: streams, games, files, private messages, moderation — the apps have them.
+
+Files: `web/index.html`, `web/app.js`, `web/app.css`, embedded in the binary (`webapp.go`); no frameworks, no build
+step, no external scripts or fonts, a strict `Content-Security-Policy` (everything from this server only).
+
+Tests: `go test -run 'TestWebApp|TestInvitePage' .` checks the page and its headers. The end-to-end test drives the
+page in headless Chromium through Playwright and is off unless asked for:
+
+```sh
+npm i -g playwright && npx playwright install chromium     # once
+SV_WEB_E2E=1 NODE_PATH=$(npm root -g) go test -run TestWebE2E -v .
+```
+
+It connects as "Web", checks the welcome (channel list), the voice connection (offer/answer, `connected`), a message
+from a Go client reaching the page and one from the page reaching it, and the talking indicator from the fake
+microphone (`web/e2e/run.js`).
+
 ## Privacy
 
 Everything stays on this server: accounts are keys made on the devices (no e-mail, no phone number), chat history,
