@@ -159,9 +159,11 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if want < 0 {
 		want = maxSize // not said up front: it could be as big as allowed
 	}
+	// The space the file is for, by its quota: one the server has (any other name would be a fresh quota of its
+	// own, and one entry more in the counters, for whoever makes names up)
 	space := r.URL.Query().Get("space")
-	if len(space) > 200 {
-		space = space[:200]
+	if !s.knownSpace(space) {
+		space = mainSpace
 	}
 	if !fs.reserve(space, want) {
 		http.Error(w, "the server's space for files is full", http.StatusInsufficientStorage)

@@ -239,3 +239,25 @@ func TestServerBanNotOneself(t *testing.T) {
 		t.Fatal("the owner banned themselves")
 	}
 }
+
+// A chat file's "space" is the server's own (or a known one): a made-up name isn't a quota of its own.
+func TestFileSpaceQuotaNotByName(t *testing.T) {
+	s, hs := newTestServer(t, func(c *config) { c.files, c.fileMB, c.fileDays = true, 10, 1 })
+	s.files.spaceQuota = 100
+	a, _ := dialV(t, hs, newKey(t), "A", "")
+	up := func(space string) int {
+		req, _ := http.NewRequest("POST", hs.URL+"/files?token="+a.tok+"&name=a.txt&space="+space, strings.NewReader(strings.Repeat("x", 80)))
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if c := up("made-up-1"); c != 200 {
+		t.Fatal(c)
+	}
+	if c := up("made-up-2"); c != http.StatusInsufficientStorage {
+		t.Fatalf("a made-up space got its own quota: %d", c)
+	}
+}
