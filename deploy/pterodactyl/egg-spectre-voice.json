@@ -136,6 +136,16 @@
             "field_type": "text"
         },
         {
+            "name": "TURN shared secret",
+            "description": "Instead of the user and password: coturn's static-auth-secret (use-auth-secret). Each person then gets TURN credentials of their own that end after two days.",
+            "env_variable": "SV_TURN_SECRET",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:120",
+            "field_type": "text"
+        },
+        {
             "name": "Music bot",
             "description": "1: install yt-dlp and ffmpeg (reinstall to apply) and turn the music bot on.",
             "env_variable": "INSTALL_MUSIC",

@@ -543,8 +543,11 @@ apt-get install -y -qq curl ca-certificates tar iproute2 >/dev/null
 
 LANIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
 [[ $UPDATE -eq 1 && $FIRST -eq 1 ]] && warn "$(t nothing)"
-# An update keeps what was chosen: the music bot only if it's on
-if [[ $FIRST -eq 0 ]]; then if grep -q "^SV_MUSIC=true" "$ENVF"; then MUSIC=1; else MUSIC=0; fi; fi
+# An update keeps what was chosen: the music bot only if it's on, automatic updates unless they were turned off
+if [[ $FIRST -eq 0 ]]; then
+  if grep -q "^SV_MUSIC=true" "$ENVF"; then MUSIC=1; else MUSIC=0; fi
+  grep -q "^SV_AUTO_UPDATE=false" "$ENVF" && AUTOUPD=0
+fi
 
 if [[ $FIRST -eq 1 ]]; then
   WANIP=$(curl -fsS4 --max-time 5 https://api.ipify.org 2>/dev/null || true)
@@ -676,6 +679,8 @@ if [[ $FIRST -eq 1 ]]; then
   [[ -n "$CONTACT" ]] && setenv SV_CONTACT_EMAIL "$CONTACT"
   setenv SV_PUBLIC_IP "$PUBLIC"
   setenv SV_MUSIC "$([[ $MUSIC -eq 1 ]] && echo true || echo false)"
+  # Asked in step 5: "no" is kept, so a later --update or re-run doesn't turn them on again
+  setenv SV_AUTO_UPDATE "$([[ $AUTOUPD -eq 1 ]] && echo true || echo false)"
   if [[ -n $UDP ]]; then
     setenv SV_UDP_MIN "${UDP%-*}"
     setenv SV_UDP_MAX "${UDP#*-}"
@@ -734,12 +739,14 @@ fi
 if [[ $FIRST -eq 1 && $TURN -eq 1 && -n "$DOMAIN" ]]; then
   say "$(t turn)"
   apt-get install -y -qq coturn >/dev/null
-  tpass=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
+  # A shared secret, not a user and password: the server gives each person credentials of their own that end
+  # (SV_TURN_SECRET), so what an app once saw isn't a relay for anyone for ever
+  tsecret=$(head -c 32 /dev/urandom | base64 | tr -d '/+=')
   cat >/etc/turnserver.conf <<EOF
 listening-port=3478
 fingerprint
-lt-cred-mech
-user=spectre:${tpass}
+use-auth-secret
+static-auth-secret=${tsecret}
 realm=${DOMAIN}
 min-port=49152
 max-port=49352
@@ -747,6 +754,7 @@ no-cli
 no-tlsv1
 no-tlsv1_1
 no-multicast-peers
+no-tcp-relay
 # Relay only to the internet, never into this network
 denied-peer-ip=0.0.0.0-0.255.255.255
 denied-peer-ip=10.0.0.0-10.255.255.255
@@ -765,12 +773,33 @@ EOF
   extip=$PUBLIC
   [[ $extip =~ ^[0-9.]+$ ]] || extip=$(getent ahostsv4 "$PUBLIC" 2>/dev/null | awk 'NR==1{print $1}')
   if [[ -n "$extip" ]]; then echo "external-ip=${extip}" >>/etc/turnserver.conf; fi
+  chown root:turnserver /etc/turnserver.conf 2>/dev/null && chmod 640 /etc/turnserver.conf
+  # A DDNS name: coturn's external-ip follows it (every 5 minutes), as the server's own voice address does
+  if [[ ! $PUBLIC =~ ^[0-9.]+$ ]]; then
+    cat >/usr/local/sbin/spectrevoice-turnip <<'TIP'
+#!/usr/bin/env bash
+# coturn's external-ip follows the DDNS name in SV_PUBLIC_IP (run by spectrevoice-turnip.timer)
+set -euo pipefail
+name=$(grep -E '^SV_PUBLIC_IP=' /etc/spectrevoice/server.env | cut -d= -f2- || true)
+[[ -n $name && ! $name =~ ^[0-9.]+$ ]] || exit 0
+ip=$(getent ahostsv4 "$name" | awk 'NR==1{print $1}' || true)
+[[ -n $ip ]] || exit 0
+grep -qx "external-ip=${ip}" /etc/turnserver.conf && exit 0
+sed -i '/^external-ip=/d' /etc/turnserver.conf
+echo "external-ip=${ip}" >>/etc/turnserver.conf
+systemctl restart coturn
+TIP
+    chmod 755 /usr/local/sbin/spectrevoice-turnip
+    printf '[Unit]\nDescription=coturn external-ip from the DDNS name (Spectre Voice)\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/spectrevoice-turnip\n' >/etc/systemd/system/spectrevoice-turnip.service
+    printf '[Unit]\nDescription=coturn external-ip from the DDNS name, every 5 minutes\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec=5min\n[Install]\nWantedBy=timers.target\n' >/etc/systemd/system/spectrevoice-turnip.timer
+    systemctl daemon-reload
+    systemctl enable --now spectrevoice-turnip.timer >/dev/null 2>&1 || true
+  fi
   sed -i 's/^#\?TURNSERVER_ENABLED=.*/TURNSERVER_ENABLED=1/' /etc/default/coturn 2>/dev/null || true
   systemctl enable --now coturn >/dev/null 2>&1 || true
   systemctl restart coturn || true
   setenv SV_TURN "turn:${DOMAIN}:3478"
-  setenv SV_TURN_USER spectre
-  setenv SV_TURN_PASS "$tpass"
+  setenv SV_TURN_SECRET "$tsecret"
 fi
 
 # ---- Firewall ----
@@ -819,6 +848,10 @@ UPD
   systemctl daemon-reload
   systemctl enable --now spectrevoice-update.timer >/dev/null 2>&1 || true
   [[ $FIRST -eq 1 ]] && say "$(t autodone)"
+else
+  # Off (asked, --no-auto-update, or SV_AUTO_UPDATE=false): kept off
+  [[ -f $ENVF ]] && setenv SV_AUTO_UPDATE false
+  [[ -f /etc/systemd/system/spectrevoice-update.timer ]] && { systemctl disable --now spectrevoice-update.timer >/dev/null 2>&1 || true; }
 fi
 
 # The system journal (the server's log: connections, uploads, moderation) kept 30 days at most (privacy policy)

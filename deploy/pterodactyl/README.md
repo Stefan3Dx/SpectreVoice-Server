@@ -14,7 +14,7 @@ the voice uses the **same number in UDP** (both must be open on the node's firew
 | `SV_MAX_USERS` | you (plan) | the plan's places, 10–1000 |
 | `SV_PARTNER_CODE` | you (hidden) | the plan's code `SVP-…`, from the API below |
 | `SV_PUBLIC_IP` | you | the node's public IP (or name): needed when the node is behind NAT |
-| `SV_TURN`, `SV_TURN_USER`, `SV_TURN_PASS` | you, optional | a TURN relay for people on strict networks |
+| `SV_TURN`, `SV_TURN_USER`, `SV_TURN_PASS` (or `SV_TURN_SECRET`) | you, optional | a TURN relay for people on strict networks; with coturn's `use-auth-secret`, `SV_TURN_SECRET` gives each person credentials that end |
 | `INSTALL_MUSIC` | you | `1`: yt-dlp + ffmpeg for the music bot (reinstall) |
 | `SV_NAME`, `SV_PASSWORD`, `SV_CONTACT_EMAIL`, `SV_INVITE_BASE`, `SV_MUSIC` | the customer | name, password, GDPR contact, invite links, music bot |
 

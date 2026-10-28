@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -93,5 +97,30 @@ func TestPublicIPFollowsDDNS(t *testing.T) {
 	lookupIP = func(string) ([]net.IP, error) { return nil, errors.New("dns down") }
 	if s.refreshPublicIP() {
 		t.Fatal("a failed lookup changed the address")
+	}
+}
+
+// With SV_TURN_SECRET each person gets TURN credentials of their own that end (coturn's TURN REST scheme).
+func TestTurnCredentials(t *testing.T) {
+	s, _ := newTestServer(t, func(c *config) { c.turn = "turn:t.example.com:3478"; c.turnSecret = "s3cret" })
+	ice := s.publicICE("U1")
+	if len(ice) != 1 {
+		t.Fatalf("ice %v", ice)
+	}
+	user, pass := ice[0]["username"].(string), ice[0]["credential"].(string)
+	exp, uid, ok := strings.Cut(user, ":")
+	n, err := strconv.ParseInt(exp, 10, 64)
+	if !ok || uid != "U1" || err != nil || n < time.Now().Unix() || n > time.Now().Add(turnCredLife+time.Minute).Unix() {
+		t.Fatalf("username %q", user)
+	}
+	m := hmac.New(sha1.New, []byte("s3cret"))
+	m.Write([]byte(user))
+	if pass != base64.StdEncoding.EncodeToString(m.Sum(nil)) {
+		t.Fatalf("credential %q isn't the HMAC of %q", pass, user)
+	}
+	// Without the secret: the fixed user and password, as before
+	s.cfg.turnSecret, s.cfg.turnUser, s.cfg.turnPass = "", "spectre", "pw"
+	if ice := s.publicICE("U1"); ice[0]["username"] != "spectre" || ice[0]["credential"] != "pw" {
+		t.Fatalf("fixed credentials: %v", ice)
 	}
 }

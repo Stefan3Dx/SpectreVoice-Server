@@ -9,6 +9,9 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
@@ -49,6 +52,7 @@ type config struct {
 	turn        string
 	turnUser    string
 	turnPass    string
+	turnSecret  string // coturn's static-auth-secret: per-person credentials that end (publicICE)
 	maxRooms    int
 	maxSubs     int
 	updates     bool
@@ -148,6 +152,7 @@ func main() {
 	flag.StringVar(&cfg.turn, "turn", env("SV_TURN", ""), "TURN server handed to the apps, e.g. turn:sfu.example.com:3478 [SV_TURN]")
 	flag.StringVar(&cfg.turnUser, "turn-user", env("SV_TURN_USER", ""), "TURN user [SV_TURN_USER]")
 	flag.StringVar(&cfg.turnPass, "turn-pass", env("SV_TURN_PASS", ""), "TURN password [SV_TURN_PASS]")
+	flag.StringVar(&cfg.turnSecret, "turn-secret", env("SV_TURN_SECRET", ""), "TURN shared secret (coturn use-auth-secret): credentials per person that end, instead of the user and password [SV_TURN_SECRET]")
 	flag.IntVar(&cfg.maxRooms, "max-streams", envInt("SV_MAX_STREAMS", 16), "most streams at once [SV_MAX_STREAMS]")
 	flag.IntVar(&cfg.maxSubs, "max-viewers", envInt("SV_MAX_VIEWERS", 50), "most viewers per stream [SV_MAX_VIEWERS]")
 	flag.BoolVar(&cfg.updates, "updates", envBool("SV_UPDATES", false), "serve the apps' updates (Android direct APK, Windows MSI) from GitHub releases [SV_UPDATES]")
@@ -509,13 +514,26 @@ func (s *server) buildAPI(ip string, private bool) (*webrtc.API, error) {
 	return webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se)), nil
 }
 
-// publicICE is what the apps get to reach the server's voice through hard networks (a TURN relay, when set).
-func (s *server) publicICE() []map[string]any {
+// turnCredLife: how long the TURN credentials a welcome gives work (with SV_TURN_SECRET); a reconnect gets new ones.
+const turnCredLife = 48 * time.Hour
+
+// publicICE is what the apps get to reach the server's voice through hard networks (a TURN relay, when set). With
+// SV_TURN_SECRET (coturn's use-auth-secret) each person gets credentials of their own that end (the TURN REST
+// scheme: "<expiry>:<uid>", HMAC-SHA1 of it with the shared secret), so a key once seen in a welcome isn't a
+// relay for ever; else the fixed SV_TURN_USER / SV_TURN_PASS.
+func (s *server) publicICE(uid string) []map[string]any {
 	var out []map[string]any
-	if s.cfg.turn != "" {
-		out = append(out, map[string]any{"urls": []string{s.cfg.turn}, "username": s.cfg.turnUser, "credential": s.cfg.turnPass})
+	if s.cfg.turn == "" {
+		return out
 	}
-	return out
+	user, pass := s.cfg.turnUser, s.cfg.turnPass
+	if s.cfg.turnSecret != "" {
+		user = strconv.FormatInt(time.Now().Add(turnCredLife).Unix(), 10) + ":" + uid
+		m := hmac.New(sha1.New, []byte(s.cfg.turnSecret))
+		m.Write([]byte(user))
+		pass = base64.StdEncoding.EncodeToString(m.Sum(nil))
+	}
+	return append(out, map[string]any{"urls": []string{s.cfg.turn}, "username": user, "credential": pass})
 }
 
 // lookupIP: DNS (tests give their own answers).

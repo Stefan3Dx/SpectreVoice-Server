@@ -474,7 +474,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	h.next++
 	ss.sid = h.next
 	h.sessions[ss.sid] = ss
-	srv := map[string]any{"motd": h.s.cfg.motd, "version": version, "ice": h.s.publicICE(),
+	srv := map[string]any{"motd": h.s.cfg.motd, "version": version, "ice": h.s.publicICE(uid),
 		"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil}
 	for k, v := range info {
 		srv[k] = v
