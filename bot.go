@@ -110,7 +110,14 @@ func (mb *musicBots) botOf(comm, ch int64) (*musicBot, error) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 	if b := mb.bots[comm]; b != nil {
-		return b, nil
+		b.mu.Lock()
+		stopped := b.stopped
+		b.mu.Unlock()
+		if !stopped {
+			return b, nil
+		}
+		// Stopped (!stop, or idle) but not gone yet: its run loop drops whatever is queued now, so a song asked
+		// for meanwhile gets a new bot (remove only takes the old one out of the map)
 	}
 	h := mb.s.hub
 	b := &musicBot{mb: mb, comm: comm, volume: 60, votes: map[string]bool{}, wake: make(chan struct{}, 1)}

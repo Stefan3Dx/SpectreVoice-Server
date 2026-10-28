@@ -112,3 +112,27 @@ func TestStreamTrackDuringSubscribe(t *testing.T) {
 	}
 	t.Fatal("the viewer never got the track that came while it joined")
 }
+
+// A song asked for right after !stop (or as the idle bot leaves) isn't lost in the bot that's going.
+func TestMusicPlayAfterStop(t *testing.T) {
+	s, hs := newTestServer(t, func(c *config) { c.music = true; c.ytdlp = "sh"; c.ffmpeg = "sh" })
+	if !s.music.enabled() {
+		t.Skip("no sh")
+	}
+	a, _ := dialV(t, hs, newKey(t), "A", "")
+	lobby := chanID(t, a.wel, "Lobby")
+	b, err := s.music.botOf(spaceID, lobby)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	b.stopped = true // what !stop does, before the bot's loop takes it away
+	b.mu.Unlock()
+	nb, err := s.music.botOf(spaceID, lobby)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nb == b {
+		t.Fatal("a stopped bot was given the next song (it would drop it)")
+	}
+}
