@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"slices"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -134,5 +136,27 @@ func TestMusicPlayAfterStop(t *testing.T) {
 	}
 	if nb == b {
 		t.Fatal("a stopped bot was given the next song (it would drop it)")
+	}
+}
+
+// One person can't keep thousands of push tokens (each notification would go to every one of them).
+func TestPushTokensPerPerson(t *testing.T) {
+	s, hs := newTestServer(t, nil)
+	if err := s.store.migratePush(); err != nil {
+		t.Fatal(err)
+	}
+	s.push = &pusher{st: s.store, queue: make(chan pushJob, 1)} // kept, never sent
+	a, _ := dialV(t, hs, newKey(t), "A", "")
+	for i := range 40 {
+		a.send(map[string]any{"t": "push-token", "token": fmt.Sprintf("tok-%030d", i), "platform": "android"})
+	}
+	a.send(map[string]any{"t": "ping", "n": 1})
+	a.wait(isT("pong"))
+	if n := len(s.store.pushTokens(a.uid)); n > maxPushTokens {
+		t.Fatalf("%d push tokens kept for one person", n)
+	}
+	toks := s.store.pushTokens(a.uid)
+	if !slices.Contains(toks, fmt.Sprintf("tok-%030d", 39)) {
+		t.Fatalf("the newest token went: %v", toks)
 	}
 }

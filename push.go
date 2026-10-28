@@ -198,6 +198,9 @@ func (p *pusher) send(token string, data map[string]string) error {
 	return nil
 }
 
+// maxPushTokens: devices kept per person for notifications.
+const maxPushTokens = 10
+
 var pushTokenRe = regexp.MustCompile(`^[A-Za-z0-9_:\-.]{20,1000}$`)
 
 func (s *server) pushOp(ss *session, t string, m map[string]any) bool {
@@ -215,7 +218,12 @@ func (s *server) pushOp(ss *session, t string, m map[string]any) bool {
 			tok, ss.uid, clip(str(m, "platform"), 20), time.Now().UnixMilli())
 		if err != nil {
 			ss.refuse(t, "server", err.Error())
+			return true
 		}
+		// A person's devices, the newest few: tokens made up by the thousand can't fill the database (or make each
+		// notification thousands of requests to Google)
+		_, _ = s.store.db.Exec(`DELETE FROM push_tokens WHERE uid=? AND token NOT IN (SELECT token FROM push_tokens WHERE uid=? ORDER BY updated DESC, rowid DESC LIMIT ?)`,
+			ss.uid, ss.uid, maxPushTokens)
 	case "push-off":
 		if s.push != nil {
 			_, _ = s.store.db.Exec(`DELETE FROM push_tokens WHERE token=? AND uid=?`, str(m, "token"), ss.uid)
