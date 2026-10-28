@@ -9,6 +9,8 @@ package main
 //	{"type":"publish","room":R,"sdp":OFFER}  -> {"type":"answer","sdp":…}
 //	{"type":"subscribe","room":R}            -> {"type":"offer","sdp":…} ; reply {"type":"answer","sdp":…}
 //	{"type":"candidate","candidate":C,"mid":M,"mline":N} both ways
+//	{"type":"layer","q":"h"|"m"|"l"|"auto"}   a viewer's layer choice (simulcast streams, see simulcast.go)
+//	server -> {"type":"layer","layer":L,"q":Q,"layers":[…]} the layer sent to the viewer
 //	server -> {"type":"ended"} when the room's streamer leaves, {"type":"error","message":…}
 //
 // GET /streams/status?room=R&token=… answers {"live":bool,"viewers":n}.
@@ -40,6 +42,10 @@ type message struct {
 	Live      *bool   `json:"live,omitempty"`
 	Viewers   *int    `json:"viewers,omitempty"`
 	Title     string  `json:"title,omitempty"`
+	// Simulcast: the layer a viewer asks for ("h", "m", "l", "auto"), the one sent, and the ones the streamer has
+	Q      string   `json:"q,omitempty"`
+	Layer  string   `json:"layer,omitempty"`
+	Layers []string `json:"layers,omitempty"`
 }
 
 // A WebSocket with one writer at a time.
@@ -63,6 +69,21 @@ type subscriber struct {
 	mu      sync.Mutex
 	pending bool // an offer is out, waiting for the answer
 	again   bool // tracks changed meanwhile: offer again after it
+	// Simulcast: what the viewer asked ("auto" or a rid), its layer switcher, the auto rule's memory, and what its
+	// RTCP said since the last tick
+	sw     atomic.Pointer[switcher]
+	pick   picker
+	linkMu sync.Mutex // guards asked, pick, link and sent
+	asked  string
+	link   linkSample
+	sent   string // the layer last reported to the viewer
+}
+
+// wanted: what the viewer asked for ("auto" or a rid).
+func (sub *subscriber) wanted() string {
+	sub.linkMu.Lock()
+	defer sub.linkMu.Unlock()
+	return sub.asked
 }
 
 type room struct {
@@ -73,8 +94,11 @@ type room struct {
 	tracks    []*webrtc.TrackLocalStaticRTP
 	ssrcs     []webrtc.SSRC // the publisher's video SSRCs, for key frame requests
 	subs      map[*subscriber]bool
-	lastKey   time.Time // the last key frame asked of the streamer (asked at most twice a second)
-	ended     bool      // endRoom ran: no new viewers
+	lastKey   time.Time                 // the last key frame asked of the streamer (asked at most twice a second)
+	ended     bool                      // endRoom ran: no new viewers
+	sim       *simulcast                // the layered picture of a simulcast streamer (nil: one picture, forwarded as is)
+	keyAt     map[webrtc.SSRC]time.Time // per layer: the last key frame asked
+	stop      chan struct{}             // closed when the room ends (stops the auto loop)
 }
 
 func (s *server) handleStreamStatus(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +113,7 @@ func (s *server) handleStreamStatus(w http.ResponseWriter, r *http.Request) {
 	live, viewers := false, 0
 	if rm != nil {
 		rm.mu.Lock()
-		live = rm.publisher != nil && len(rm.tracks) > 0
+		live = rm.publisher != nil && (len(rm.tracks) > 0 || rm.sim != nil)
 		viewers = len(rm.subs)
 		rm.mu.Unlock()
 	}
@@ -238,6 +262,11 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 			if again {
 				rm.offerTo(sub)
 			}
+		case "layer":
+			// Simulcast viewers: the layer wanted (a bad one is ignored)
+			if sub != nil && validLayer(m.Q) {
+				rm.chooseLayer(sub, m.Q)
+			}
 		case "candidate":
 			if pc == nil || m.Candidate == "" || len(m.Candidate) > maxCandLen {
 				continue
@@ -280,7 +309,7 @@ func (s *server) openRoom(name, uid string, c *conn) (*room, error) {
 	} else if len(s.rooms) >= s.cfg.maxRooms {
 		return nil, errors.New("too many streams on this server")
 	}
-	rm := &room{name: name, subs: map[*subscriber]bool{}, pubConn: c}
+	rm := &room{name: name, subs: map[*subscriber]bool{}, pubConn: c, keyAt: map[webrtc.SSRC]time.Time{}, stop: make(chan struct{})}
 	s.rooms[name] = rm
 	return rm, nil
 }
@@ -298,6 +327,10 @@ func (s *server) endRoom(rm *room, only *webrtc.PeerConnection) {
 	pub := rm.publisher
 	rm.publisher = nil
 	rm.tracks = nil
+	if rm.stop != nil {
+		close(rm.stop)
+		rm.stop = nil
+	}
 	rm.mu.Unlock()
 	s.mu.Lock()
 	gone := s.rooms[rm.name] == rm
@@ -342,6 +375,10 @@ func (s *server) publish(rm *room, c *conn, offer string) (*webrtc.PeerConnectio
 		return nil, err
 	}
 	pc.OnTrack(func(remote *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		if remote.RID() != "" && remote.Kind() == webrtc.RTPCodecTypeVideo {
+			rm.readLayer(remote)
+			return
+		}
 		local, err := webrtc.NewTrackLocalStaticRTP(remote.Codec().RTPCodecCapability, remote.ID(), "spectre")
 		if err != nil {
 			log.Printf("[%s] track: %v", rm.name, err)
@@ -365,7 +402,7 @@ func (s *server) publish(rm *room, c *conn, offer string) (*webrtc.PeerConnectio
 		for _, sub := range subs {
 			// Like the tracks a viewer gets when joining: its key frame requests go on to the streamer
 			if sender, err := sub.pc.AddTrack(local); err == nil {
-				go rm.forwardRTCP(sender)
+				go rm.forwardRTCP(sub, sender)
 				go rm.offerTo(sub) // a viewer that's slow to take it doesn't hold up the stream
 			}
 		}
@@ -423,19 +460,26 @@ func (s *server) subscribe(rm *room, c *conn, uid string) (*subscriber, error) {
 		}
 	}
 	tracks := append([]*webrtc.TrackLocalStaticRTP(nil), rm.tracks...)
+	sim := rm.sim
 	rm.mu.Unlock()
 	pc, err := s.newPC(c)
 	if err != nil {
 		return nil, err
 	}
-	sub := &subscriber{pc: pc, c: c, uid: uid}
+	sub := &subscriber{pc: pc, c: c, uid: uid, asked: "auto"}
 	for _, t := range tracks {
 		sender, err := pc.AddTrack(t)
 		if err != nil {
 			_ = pc.Close()
 			return nil, err
 		}
-		go rm.forwardRTCP(sender)
+		go rm.forwardRTCP(sub, sender)
+	}
+	if sim != nil {
+		if err := rm.addSwitcher(sub, sim); err != nil {
+			_ = pc.Close()
+			return nil, err
+		}
 	}
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
 		if st == webrtc.PeerConnectionStateConnected {
@@ -492,20 +536,60 @@ func (rm *room) offerTo(sub *subscriber) {
 	sub.c.send(message{Type: "offer", SDP: sub.pc.LocalDescription().SDP})
 }
 
-// forwardRTCP passes a viewer's key frame requests on to the streamer.
-func (rm *room) forwardRTCP(sender *webrtc.RTPSender) {
+// forwardRTCP passes a viewer's key frame requests on to the streamer and keeps what its reports say about the
+// link (loss, bandwidth, NACKs) for the layer choice.
+func (rm *room) forwardRTCP(sub *subscriber, sender *webrtc.RTPSender) {
 	for {
 		pkts, _, err := sender.ReadRTCP()
 		if err != nil {
 			return
 		}
 		for _, p := range pkts {
-			switch p.(type) {
+			switch p := p.(type) {
 			case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
-				rm.keyFrame()
+				rm.keyFrameFor(sub)
+			case *rtcp.ReceiverReport:
+				if sub.sw.Load() != nil {
+					for _, r := range p.Reports {
+						sub.linkMu.Lock()
+						sub.link.lossPct = float64(r.FractionLost) * 100 / 256
+						sub.linkMu.Unlock()
+					}
+				}
+			case *rtcp.ReceiverEstimatedMaximumBitrate:
+				if sub.sw.Load() != nil {
+					sub.linkMu.Lock()
+					sub.link.rembKbps = int(p.Bitrate / 1000)
+					sub.linkMu.Unlock()
+				}
+			case *rtcp.TransportLayerNack:
+				if sub.sw.Load() != nil {
+					n := 0
+					for _, pair := range p.Nacks {
+						n += len(pair.PacketList())
+					}
+					sub.linkMu.Lock()
+					sub.link.nacks += n
+					sub.linkMu.Unlock()
+				}
 			}
 		}
 	}
+}
+
+// keyFrameFor asks the streamer for a key frame where [sub] needs one: its layer, or the whole picture.
+func (rm *room) keyFrameFor(sub *subscriber) {
+	if sw := sub.sw.Load(); sub != nil && sw != nil {
+		cur, want := sw.current()
+		if want != "" && want != cur {
+			cur = want
+		}
+		if l := rm.layerOf(cur); l != nil {
+			rm.keyFrameOn(l.ssrc)
+			return
+		}
+	}
+	rm.keyFrame()
 }
 
 func (rm *room) keyFrame() {
@@ -527,12 +611,259 @@ func (rm *room) keyFrame() {
 	}
 }
 
+// keyFrameOn asks the streamer for a key frame of one layer (at most twice a second per layer).
+func (rm *room) keyFrameOn(ssrc webrtc.SSRC) {
+	rm.mu.Lock()
+	pub := rm.publisher
+	if time.Since(rm.keyAt[ssrc]) < 500*time.Millisecond {
+		rm.mu.Unlock()
+		return
+	}
+	rm.keyAt[ssrc] = time.Now()
+	rm.mu.Unlock()
+	if pub != nil {
+		_ = pub.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(ssrc)}})
+	}
+}
+
+// ====== Simulcast in the room ======
+
+// layerOf: the room's layer [rid] (nil without simulcast or that layer).
+func (rm *room) layerOf(rid string) *layer {
+	rm.mu.Lock()
+	sim := rm.sim
+	rm.mu.Unlock()
+	if sim == nil {
+		return nil
+	}
+	sim.mu.RLock()
+	defer sim.mu.RUnlock()
+	return sim.layers[rid]
+}
+
+// readLayer takes one layer of a simulcast streamer: the first one makes the room layered (every viewer gets its
+// own switched track), then its packets go to each viewer's switcher.
+func (rm *room) readLayer(remote *webrtc.TrackRemote) {
+	rid := remote.RID()
+	rm.mu.Lock()
+	sim := rm.sim
+	first := sim == nil
+	if first {
+		sim = &simulcast{codec: remote.Codec().RTPCodecCapability, id: remote.ID(), layers: map[string]*layer{}, viewers: map[*subscriber]*switcher{}}
+		rm.sim = sim
+	}
+	sim.mu.Lock()
+	if len(sim.layers) >= maxStreamTracks {
+		sim.mu.Unlock()
+		rm.mu.Unlock()
+		return
+	}
+	l := &layer{rid: rid, ssrc: remote.SSRC()}
+	l.last.Store(time.Now().UnixNano())
+	sim.layers[rid] = l
+	sim.mu.Unlock()
+	rm.ssrcs = append(rm.ssrcs, remote.SSRC())
+	subs := make([]*subscriber, 0, len(rm.subs))
+	for sub := range rm.subs {
+		subs = append(subs, sub)
+	}
+	stop := rm.stop
+	rm.mu.Unlock()
+	log.Printf("[%s] video layer %q %s", rm.name, rid, remote.Codec().MimeType)
+	if first {
+		for _, sub := range subs {
+			if err := rm.addSwitcher(sub, sim); err == nil {
+				go rm.offerTo(sub)
+			}
+		}
+		go rm.autoLoop(sim, stop)
+	} else {
+		// Viewers that waited for this layer (asked before it came) get it at its first key frame
+		for _, sub := range subs {
+			rm.tellLayer(sub, false)
+		}
+	}
+	for {
+		p, _, err := remote.ReadRTP()
+		if err != nil {
+			return
+		}
+		now := time.Now()
+		l.bytes.Add(int64(len(p.Payload) + 12))
+		l.last.Store(now.UnixNano())
+		sim.mu.RLock()
+		views := make([]*subscriber, 0, len(sim.viewers))
+		for sub := range sim.viewers {
+			views = append(views, sub)
+		}
+		sim.mu.RUnlock()
+		for i, sub := range views {
+			pkt := p
+			if i < len(views)-1 {
+				cp := *p
+				pkt = &cp
+			}
+			if sub.sw.Load().push(rid, pkt) {
+				rm.tellLayer(sub, true)
+			}
+		}
+	}
+}
+
+// addSwitcher gives a viewer its own video track, fed by one layer at a time.
+func (rm *room) addSwitcher(sub *subscriber, sim *simulcast) error {
+	track, err := webrtc.NewTrackLocalStaticRTP(sim.codec, sim.id, "spectre")
+	if err != nil {
+		return err
+	}
+	sender, err := sub.pc.AddTrack(track)
+	if err != nil {
+		return err
+	}
+	sw := newSwitcher(track, sim.codec.MimeType)
+	sub.sw.Store(sw)
+	go rm.forwardRTCP(sub, sender)
+	sim.mu.Lock()
+	sim.viewers[sub] = sw
+	sim.mu.Unlock()
+	rm.chooseLayer(sub, sub.wanted())
+	return nil
+}
+
+// chooseLayer applies a viewer's request: a rid (the nearest sending one), or auto (the best, then the rule).
+func (rm *room) chooseLayer(sub *subscriber, q string) {
+	rm.mu.Lock()
+	sim := rm.sim
+	rm.mu.Unlock()
+	sub.linkMu.Lock()
+	sub.asked = q
+	if q == "auto" {
+		sub.pick = picker{}
+	}
+	sub.linkMu.Unlock()
+	sw := sub.sw.Load()
+	if sim == nil || sw == nil {
+		return
+	}
+	// Auto starts from the best layer and steps down when the link can't take it
+	now := time.Now()
+	want := "h"
+	if q != "auto" {
+		want = q
+	}
+	rm.switchTo(sub, sim.nearest(want, now))
+}
+
+// switchTo makes a viewer's switcher move to [rid] (a key frame of it is asked of the streamer).
+func (rm *room) switchTo(sub *subscriber, rid string) {
+	sw := sub.sw.Load()
+	if rid == "" || sw == nil {
+		return
+	}
+	if sw.choose(rid) {
+		if l := rm.layerOf(rid); l != nil {
+			rm.keyFrameOn(l.ssrc)
+		}
+	}
+	rm.tellLayer(sub, false)
+}
+
+// tellLayer sends the viewer its layer status when it changed ([force]: even if not).
+func (rm *room) tellLayer(sub *subscriber, force bool) {
+	rm.mu.Lock()
+	sim := rm.sim
+	rm.mu.Unlock()
+	sw := sub.sw.Load()
+	if sim == nil || sw == nil {
+		return
+	}
+	cur, _ := sw.current()
+	sub.linkMu.Lock()
+	asked := sub.asked
+	changed := sub.sent != cur+"/"+asked
+	sub.sent = cur + "/" + asked
+	sub.linkMu.Unlock()
+	if !changed && !force {
+		return
+	}
+	sub.c.send(message{Type: "layer", Layer: cur, Q: asked, Layers: sim.rids()})
+}
+
+// autoLoop, once a second: measures each layer's rate and moves the auto viewers by what their links say.
+func (rm *room) autoLoop(sim *simulcast, stop chan struct{}) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	last := time.Now()
+	for {
+		select {
+		case <-stop:
+			return
+		case now := <-t.C:
+			dt := now.Sub(last).Seconds()
+			last = now
+			var infos []layerInfo
+			for _, l := range sim.ordered() {
+				b := l.bytes.Swap(0)
+				if dt > 0 {
+					k := int64(float64(b) * 8 / 1000 / dt)
+					old := l.kbps.Load()
+					if old > 0 {
+						k = (old + k) / 2
+					}
+					l.kbps.Store(k)
+				}
+				if l.alive(now) {
+					infos = append(infos, layerInfo{rid: l.rid, kbps: int(l.kbps.Load())})
+				}
+			}
+			sim.mu.RLock()
+			views := make([]*subscriber, 0, len(sim.viewers))
+			for sub := range sim.viewers {
+				views = append(views, sub)
+			}
+			sim.mu.RUnlock()
+			for _, sub := range views {
+				sub.linkMu.Lock()
+				s := sub.link
+				asked := sub.asked
+				sub.link.nacks = 0
+				sub.linkMu.Unlock()
+				sw := sub.sw.Load()
+				if asked != "auto" {
+					// A layer asked for that wasn't sending yet: taken as soon as it is
+					if cur, _ := sw.current(); cur != asked {
+						rm.switchTo(sub, sim.nearest(asked, now))
+					}
+					continue
+				}
+				cur, want := sw.current()
+				if want != "" && want != cur {
+					continue // a switch is on its way: judge it once it's done
+				}
+				sub.linkMu.Lock()
+				next := sub.pick.step(cur, infos, s, now)
+				sub.linkMu.Unlock()
+				if next != cur {
+					log.Printf("[%s] viewer %s: layer %s → %s (loss %.0f%%, est %d kbit/s, nacks %d)", rm.name, sub.uid, cur, next, s.lossPct, s.rembKbps, s.nacks)
+					rm.switchTo(sub, next)
+				}
+			}
+		}
+	}
+}
+
 func (rm *room) removeSub(sub *subscriber) {
 	rm.mu.Lock()
 	_, was := rm.subs[sub]
 	delete(rm.subs, sub)
 	n := len(rm.subs)
+	sim := rm.sim
 	rm.mu.Unlock()
+	if sim != nil {
+		sim.mu.Lock()
+		delete(sim.viewers, sub)
+		sim.mu.Unlock()
+	}
 	if was {
 		_ = sub.pc.Close()
 		log.Printf("[%s] viewer out (%d)", rm.name, n)
