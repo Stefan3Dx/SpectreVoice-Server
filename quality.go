@@ -14,7 +14,7 @@ package main
 // Video (screen and camera; H.264 by default, VP9 / AV1 when both ends have them):
 //
 //	1 360p30 0.8 Mbit/s · 2 480p30 1.2 · 3 720p30 2.5 · 4 720p60 4 · 5 1080p30 5
-//	6 1080p60 8 · 7 1440p60 12 · 8 2160p60 20 
+//	6 1080p60 8 · 7 1440p60 12 · 8 2160p60 20
 //
 // A channel has its voice level (0: the server's default); the apps encode at min(channel, their own
 // setting). The server forwards packets as they are (no transcoding), so quality costs it bandwidth, not CPU.

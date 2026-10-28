@@ -9,6 +9,7 @@ package main
 //	!pause !resume !stop    (those allowed, or whoever asked for the song playing)
 //	!queue  !np  !vol 1-100  !join
 //	<- {"t":"music","cmd":"play","q":…}   the same from the apps' buttons
+//	<- {"t":"music","cmd":"play","q":…,"quiet":true}   a song whose title stays hidden (the guessing game)
 //
 // Needs yt-dlp and ffmpeg (install.sh installs them). Nothing is kept on disk: ffmpeg streams into the bot.
 
@@ -45,6 +46,18 @@ type song struct {
 	By    string `json:"by"`
 	ByUID string `json:"-"`
 	Secs  int    `json:"secs,omitempty"`
+	// Hidden: nobody is told what it is (the apps' "guess the song" plays it); its asker alone knows
+	Hidden bool `json:"-"`
+}
+
+const hiddenTitle = "🎵 ?"
+
+// shown is the song as everyone may see it: the same, or a hidden one with no title or page.
+func (sg song) shown() song {
+	if sg.Hidden {
+		sg.Title, sg.Page, sg.Secs = hiddenTitle, "", 0
+	}
+	return sg
 }
 
 type musicBot struct {
@@ -181,7 +194,16 @@ func (b *musicBot) status() map[string]any {
 	h.mu.Unlock()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return map[string]any{"t": "music", "sid": b.ss.sid, "ch": ch, "now": b.now, "queue": b.queue, "paused": b.paused, "volume": b.volume}
+	var now *song
+	if b.now != nil {
+		sh := b.now.shown()
+		now = &sh
+	}
+	queue := make([]song, len(b.queue))
+	for i, sg := range b.queue {
+		queue[i] = sg.shown()
+	}
+	return map[string]any{"t": "music", "sid": b.ss.sid, "ch": ch, "now": now, "queue": queue, "paused": b.paused, "volume": b.volume}
 }
 
 func (b *musicBot) tell() {
@@ -234,10 +256,10 @@ func (b *musicBot) run() {
 			}
 		}
 		b.tell()
-		b.say("▶ " + next.Title + " · cerut de " + next.By)
+		b.say("▶ " + next.shown().Title + " · cerut de " + next.By)
 		if err := b.play(next); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("music: %s: %v", next.Title, err)
-			b.say("Nu pot reda „" + next.Title + "”.")
+			b.say("Nu pot reda „" + next.shown().Title + "”.")
 		}
 		idle.Reset(botIdle)
 	}
@@ -469,7 +491,7 @@ func (mb *musicBots) command(ss *session, ch int64, text string) bool {
 		return false
 	}
 	cmd, arg, _ := strings.Cut(strings.TrimSpace(text[1:]), " ")
-	return mb.run(ss, ch, strings.ToLower(cmd), strings.TrimSpace(arg))
+	return mb.run(ss, ch, strings.ToLower(cmd), strings.TrimSpace(arg), false)
 }
 
 func (mb *musicBots) op(ss *session, t string, m map[string]any) bool {
@@ -484,7 +506,7 @@ func (mb *musicBots) op(ss *session, t string, m map[string]any) bool {
 	h.mu.Lock()
 	ch := ss.ch
 	h.mu.Unlock()
-	if !mb.run(ss, ch, str(m, "cmd"), str(m, "q")) {
+	if !mb.run(ss, ch, str(m, "cmd"), str(m, "q"), m["quiet"] == true) {
 		comm := h.commOf(ss)
 		mb.mu.Lock()
 		b := mb.bots[comm]
@@ -499,7 +521,8 @@ func (mb *musicBots) op(ss *session, t string, m map[string]any) bool {
 }
 
 // run: one command; ch is where it was typed (only for the answer), the bot goes to the sender's voice channel.
-func (mb *musicBots) run(ss *session, _ int64, cmd, arg string) bool {
+// quiet: the song's title is kept from everyone (the guessing game asks for it).
+func (mb *musicBots) run(ss *session, _ int64, cmd, arg string, quiet bool) bool {
 	h := mb.s.hub
 	// Where and who, once (the search below takes a while; the session may move or rename meanwhile)
 	h.mu.Lock()
@@ -563,7 +586,7 @@ func (mb *musicBots) run(ss *session, _ int64, cmd, arg string) bool {
 				ss.refuse("music", "gone", "nothing found for "+clip(arg, 60))
 				return
 			}
-			sg.By, sg.ByUID = name, ss.uid
+			sg.By, sg.ByUID, sg.Hidden = name, ss.uid, quiet
 			bot, err := mb.botOf(comm, ch)
 			if err != nil {
 				ss.refuse("music", "server", err.Error())
@@ -575,7 +598,7 @@ func (mb *musicBots) run(ss *session, _ int64, cmd, arg string) bool {
 			playing := bot.now != nil
 			bot.mu.Unlock()
 			if playing {
-				bot.say(fmt.Sprintf("➕ %s (în coadă: %d)", sg.Title, n))
+				bot.say(fmt.Sprintf("➕ %s (în coadă: %d)", sg.shown().Title, n))
 			}
 			bot.poke()
 			bot.tell()

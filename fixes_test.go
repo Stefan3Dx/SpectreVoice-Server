@@ -149,3 +149,33 @@ func TestWipeScrubsCounters(t *testing.T) {
 		t.Fatal(don)
 	}
 }
+
+// A quiet "play" (the guessing game) keeps the song's title out of the bot's status and chat lines.
+func TestQuietPlayHidesTitle(t *testing.T) {
+	s, hs := newTestServer(t, func(c *config) { c.music = true; c.ytdlp = "true"; c.ffmpeg = "true" })
+	if !s.music.enabled() {
+		t.Skip("music off")
+	}
+	s.music.resolveFn = func(q string) (song, error) {
+		return song{Title: "Secret Song", Page: "https://x/secret", URL: "x"}, nil
+	}
+	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
+	ana.send(map[string]any{"t": "music", "cmd": "play", "q": "secret", "quiet": true})
+	m := ana.wait(func(m map[string]any) bool { return m["t"] == "music" && m["now"] != nil })
+	now := m["now"].(map[string]any)
+	if now["title"] != hiddenTitle || now["page"] != nil {
+		t.Fatalf("the title leaked: %v", now)
+	}
+	// The chat line too
+	line := ana.wait(func(m map[string]any) bool {
+		if m["t"] != "msg" {
+			return false
+		}
+		text, _ := m["m"].(map[string]any)["text"].(string)
+		return strings.HasPrefix(text, "▶")
+	})
+	if text, _ := line["m"].(map[string]any)["text"].(string); strings.Contains(text, "Secret") {
+		t.Fatalf("the title in chat: %s", text)
+	}
+	s.music.stopIn(1)
+}
