@@ -374,7 +374,7 @@ func (s *server) endRoom(rm *room, only *webrtc.PeerConnection) {
 }
 
 func (s *server) newPC(c *conn) (*webrtc.PeerConnection, error) {
-	pc, err := s.api.NewPeerConnection(webrtc.Configuration{ICEServers: s.ice})
+	pc, err := s.webrtcAPI().NewPeerConnection(webrtc.Configuration{ICEServers: s.ice})
 	if err != nil {
 		return nil, err
 	}

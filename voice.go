@@ -166,7 +166,7 @@ func (v *voice) open(ss *session) (*voicePeer, error) {
 		return nil, errors.New("voice is full")
 	}
 	v.mu.Unlock()
-	pc, err := v.s.api.NewPeerConnection(webrtc.Configuration{ICEServers: v.s.ice})
+	pc, err := v.s.webrtcAPI().NewPeerConnection(webrtc.Configuration{ICEServers: v.s.ice})
 	if err != nil {
 		return nil, err
 	}

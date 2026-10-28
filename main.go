@@ -82,7 +82,9 @@ type config struct {
 type server struct {
 	udpMux  *ice.MultiUDPMuxDefault // with SV_UDP_PORT
 	cfg     config
-	api     *webrtc.API
+	apiMu   sync.RWMutex
+	api     *webrtc.API // through webrtcAPI (rebuilt when the DDNS name moves)
+	pubIP   string      // the address SV_PUBLIC_IP resolved to
 	ice     []webrtc.ICEServer
 	secret  []byte
 	store   *store
@@ -263,6 +265,7 @@ func newServer(cfg config) (*server, error) {
 	if err := s.setup(); err != nil {
 		return nil, err
 	}
+	go s.watchPublicIP()
 	s.mods = newMods(s)
 	// The hub before the voice: the voice's talk watcher reads s.hub from its own goroutine
 	if s.hub, err = newHub(s); err != nil {
@@ -375,22 +378,99 @@ func (s *server) handler() http.Handler {
 }
 
 func (s *server) setup() error {
+	if s.cfg.udpPort > 0 {
+		// Everything on one UDP port (a hosting panel gives one port per server)
+		mux, err := ice.NewMultiUDPMuxFromPort(s.cfg.udpPort)
+		if err != nil {
+			return fmt.Errorf("udp port %d: %w", s.cfg.udpPort, err)
+		}
+		s.udpMux = mux
+	}
+	ip, private := "", false
+	if s.cfg.publicIP != "" {
+		var err error
+		if ip, private, err = resolvePublic(s.cfg.publicIP); err != nil {
+			return fmt.Errorf("public ip %q: %w", s.cfg.publicIP, err)
+		}
+	}
+	api, err := s.buildAPI(ip, private)
+	if err != nil {
+		return err
+	}
+	s.apiMu.Lock()
+	s.api, s.pubIP = api, ip
+	s.apiMu.Unlock()
+	if s.cfg.stun != "" {
+		s.ice = append(s.ice, webrtc.ICEServer{URLs: []string{s.cfg.stun}})
+	}
+	return nil
+}
+
+// webrtcAPI: what new voice and stream connections are made with (rebuilt when a DDNS name moves).
+func (s *server) webrtcAPI() *webrtc.API {
+	s.apiMu.RLock()
+	defer s.apiMu.RUnlock()
+	return s.api
+}
+
+// publicIPEvery: how often a DDNS name in SV_PUBLIC_IP is looked up again (a var for the tests).
+var publicIPEvery = 5 * time.Minute
+
+// watchPublicIP follows a DDNS name: when it points somewhere new (a home connection's address changed), new
+// connections announce the new address. Connections made before keep theirs; they break with the old address and
+// the apps make new ones.
+func (s *server) watchPublicIP() {
+	if s.cfg.publicIP == "" || net.ParseIP(s.cfg.publicIP) != nil {
+		return // an address doesn't move
+	}
+	for range time.Tick(publicIPEvery) {
+		s.refreshPublicIP()
+	}
+}
+
+// refreshPublicIP looks the DDNS name up once and rebuilds the API if it moved; true when it did.
+func (s *server) refreshPublicIP() bool {
+	ip, private, err := resolvePublic(s.cfg.publicIP)
+	if err != nil {
+		return false // a lookup that failed now (DNS down) keeps the address we have
+	}
+	s.apiMu.RLock()
+	same := ip == s.pubIP
+	s.apiMu.RUnlock()
+	if same {
+		return false
+	}
+	api, err := s.buildAPI(ip, private)
+	if err != nil {
+		log.Printf("voice: %s moved to %s, but: %v", s.cfg.publicIP, ip, err)
+		return false
+	}
+	s.apiMu.Lock()
+	old := s.pubIP
+	s.api, s.pubIP = api, ip
+	s.apiMu.Unlock()
+	log.Printf("voice: %s moved from %s to %s: new connections announce %s", s.cfg.publicIP, old, ip, ip)
+	return true
+}
+
+// buildAPI makes the WebRTC API (codecs, interceptors, ports) announcing ip ("": the machine's own addresses).
+func (s *server) buildAPI(ip string, private bool) (*webrtc.API, error) {
 	m := &webrtc.MediaEngine{}
 	if err := registerCodecs(m); err != nil {
-		return err
+		return nil, err
 	}
 	// The voice's level in every packet (who's talking)
 	if err := m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: sdp.AudioLevelURI}, webrtc.RTPCodecTypeAudio); err != nil {
-		return err
+		return nil, err
 	}
 	ir := &interceptor.Registry{}
 	if err := webrtc.RegisterDefaultInterceptors(m, ir); err != nil {
-		return err
+		return nil, err
 	}
 	// A key frame now and then, so a stream viewer that missed one doesn't stay grey
 	pli, err := intervalpli.NewReceiverInterceptor(intervalpli.GeneratorInterval(3 * time.Second))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ir.Add(pli)
 	se := webrtc.SettingEngine{}
@@ -400,26 +480,16 @@ func (s *server) setup() error {
 	se.SetRemoteIPFilter(func(ip net.IP) bool {
 		return !(ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified())
 	})
-	if s.cfg.udpPort > 0 {
-		// Everything on one UDP port (a hosting panel gives one port per server)
-		mux, err := ice.NewMultiUDPMuxFromPort(s.cfg.udpPort)
-		if err != nil {
-			return fmt.Errorf("udp port %d: %w", s.cfg.udpPort, err)
-		}
-		se.SetICEUDPMux(mux)
-		s.udpMux = mux
+	if s.udpMux != nil {
+		se.SetICEUDPMux(s.udpMux)
 	} else if err := se.SetEphemeralUDPPortRange(uint16(s.cfg.udpMin), uint16(s.cfg.udpMax)); err != nil {
-		return err
+		return nil, err
 	}
-	if s.cfg.publicIP != "" {
-		ip, private, err := resolvePublic(s.cfg.publicIP)
-		if err != nil {
-			return fmt.Errorf("public ip %q: %w", s.cfg.publicIP, err)
-		}
+	if ip != "" {
 		if private {
 			// At home: the LAN address replaces the container's own
 			se.SetNAT1To1IPs([]string{ip}, webrtc.ICECandidateTypeHost)
-		} else if s.cfg.udpPort > 0 {
+		} else if s.udpMux != nil {
 			// One UDP port behind a router: the public address is added next to the LAN ones, on that same port.
 			// (A mapped srflx candidate would be gathered on a random port outside the mux, which no router
 			// forwards: the outside could never connect.)
@@ -428,7 +498,7 @@ func (s *server) setup() error {
 				AsCandidateType: webrtc.ICECandidateTypeHost,
 				Mode:            webrtc.ICEAddressRewriteAppend,
 			}); err != nil {
-				return err
+				return nil, err
 			}
 		} else {
 			// Behind a router with a forwarded port range: the LAN keeps its own addresses, the outside gets the public one
@@ -436,11 +506,7 @@ func (s *server) setup() error {
 		}
 		log.Printf("voice announced as %s (%s)", ip, map[bool]string{true: "LAN", false: "public, plus the LAN addresses"}[private])
 	}
-	s.api = webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se))
-	if s.cfg.stun != "" {
-		s.ice = append(s.ice, webrtc.ICEServer{URLs: []string{s.cfg.stun}})
-	}
-	return nil
+	return webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se)), nil
 }
 
 // publicICE is what the apps get to reach the server's voice through hard networks (a TURN relay, when set).
@@ -452,11 +518,14 @@ func (s *server) publicICE() []map[string]any {
 	return out
 }
 
+// lookupIP: DNS (tests give their own answers).
+var lookupIP = net.LookupIP
+
 // resolvePublic takes an IP or a name (a DDNS address) and says whether it's a private (LAN) address.
 func resolvePublic(v string) (string, bool, error) {
 	ip := net.ParseIP(v)
 	if ip == nil {
-		addrs, err := net.LookupIP(v)
+		addrs, err := lookupIP(v)
 		if err != nil {
 			return "", false, err
 		}

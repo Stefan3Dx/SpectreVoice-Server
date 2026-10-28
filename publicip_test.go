@@ -1,7 +1,10 @@
 package main
 
 import (
+	"errors"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,7 +14,7 @@ import (
 // candidatesOf: the server side's gathered candidates for a fresh audio connection.
 func candidatesOf(t *testing.T, s *server) string {
 	t.Helper()
-	pc, err := s.api.NewPeerConnection(webrtc.Configuration{})
+	pc, err := s.webrtcAPI().NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,5 +59,39 @@ func TestPublicIPOnPortRange(t *testing.T) {
 	sdp := candidatesOf(t, s)
 	if !strings.Contains(sdp, "203.0.113.7") {
 		t.Fatalf("public address not offered:\n%s", sdp)
+	}
+}
+
+// A DDNS name in SV_PUBLIC_IP that moves (a home connection's new address): new connections announce the new one.
+func TestPublicIPFollowsDDNS(t *testing.T) {
+	addr := "203.0.113.7"
+	var mu sync.Mutex
+	lookupIP = func(string) ([]net.IP, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return []net.IP{net.ParseIP(addr)}, nil
+	}
+	defer func() { lookupIP = net.LookupIP }()
+	s, _ := newTestServer(t, func(c *config) { c.udpPort = 41756; c.publicIP = "home.example.net" })
+	if sdp := candidatesOf(t, s); !strings.Contains(sdp, "203.0.113.7 41756 typ host") {
+		t.Fatalf("first address not offered:\n%s", sdp)
+	}
+	if s.refreshPublicIP() {
+		t.Fatal("rebuilt though the name didn't move")
+	}
+	mu.Lock()
+	addr = "198.51.100.9"
+	mu.Unlock()
+	if !s.refreshPublicIP() {
+		t.Fatal("the move wasn't seen")
+	}
+	sdp := candidatesOf(t, s)
+	if !strings.Contains(sdp, "198.51.100.9 41756 typ host") || strings.Contains(sdp, "203.0.113.7") {
+		t.Fatalf("after the move:\n%s", sdp)
+	}
+	// A failed lookup keeps the address
+	lookupIP = func(string) ([]net.IP, error) { return nil, errors.New("dns down") }
+	if s.refreshPublicIP() {
+		t.Fatal("a failed lookup changed the address")
 	}
 }
