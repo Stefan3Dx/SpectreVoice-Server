@@ -116,6 +116,11 @@ func (v *voice) signal(ss *session, t string, m map[string]any) {
 	desc := str(m, "sdp")
 	switch str(m, "type") {
 	case "offer":
+		if p != nil && p.dead() {
+			// The app's old connection is gone (it closed it, or it broke): this offer is a new connection
+			v.dropPeer(p)
+			p = nil
+		}
 		if p == nil {
 			var err error
 			if p, err = v.open(ss); err != nil {
@@ -123,7 +128,16 @@ func (v *voice) signal(ss *session, t string, m map[string]any) {
 				return
 			}
 		}
-		v.answer(p, desc)
+		if !v.answer(p, desc) && p.wasReady() {
+			// An offer a working connection can't take: a new connection of the app's (another DTLS and ICE).
+			// It gets a fresh peer instead of no voice at all
+			np, err := v.open(ss)
+			if err != nil {
+				ss.refuse("rtc", "server", err.Error())
+				return
+			}
+			v.answer(np, desc)
+		}
 	case "answer":
 		if p == nil {
 			return
@@ -186,9 +200,19 @@ func (v *voice) open(ss *session) (*voicePeer, error) {
 		v.carry(p, remote, recv)
 	})
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
-		if st == webrtc.PeerConnectionStateFailed {
+		switch st {
+		case webrtc.PeerConnectionStateFailed:
 			log.Printf("voice %d: connection failed", ss.sid)
 			v.reset(p)
+		case webrtc.PeerConnectionStateClosed:
+			// Closed from the app's side (DTLS close): a dead peer isn't kept, and the others stop getting its voice
+			if v.peer(ss.sid) == p {
+				v.dropPeer(p)
+				v.s.hub.mu.Lock()
+				ch := p.ss.ch
+				v.s.hub.mu.Unlock()
+				go v.sync(ch)
+			}
 		}
 	})
 	v.mu.Lock()
@@ -202,8 +226,22 @@ func (v *voice) open(ss *session) (*voicePeer, error) {
 	return p, nil
 }
 
-// answer takes an offer from the app (its first, or a new one, e.g. after a network change).
-func (v *voice) answer(p *voicePeer, offer string) {
+// dead: the peer's connection is closed or failed (an offer can't go on it).
+func (p *voicePeer) dead() bool {
+	st := p.pc.ConnectionState()
+	return st == webrtc.PeerConnectionStateClosed || st == webrtc.PeerConnectionStateFailed
+}
+
+// wasReady: the peer had answered the app's first offer (a connection that worked).
+func (p *voicePeer) wasReady() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ready
+}
+
+// answer takes an offer from the app (its first, or a new one, e.g. after a network change); false when it
+// couldn't be taken (the peer is dropped then).
+func (v *voice) answer(p *voicePeer, offer string) bool {
 	pc := p.pc
 	if pc.SignalingState() == webrtc.SignalingStateHaveLocalOffer {
 		// Both offered at once: the app's wins, ours goes out again afterwards
@@ -219,14 +257,16 @@ func (v *voice) answer(p *voicePeer, offer string) {
 	if n := mlines(offer); n == 0 || n > max(most, 8) {
 		p.ss.refuse("rtc", "bad", "offer not taken")
 		v.dropPeer(p)
-		return
+		return true
 	}
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}); err != nil {
 		log.Printf("voice %d: offer: %v", p.ss.sid, err)
-		p.ss.refuse("rtc", "bad", "offer not taken")
 		// Not kept half made (its candidates would pile up for ever)
 		v.dropPeer(p)
-		return
+		if !p.wasReady() {
+			p.ss.refuse("rtc", "bad", "offer not taken")
+		}
+		return false
 	}
 	ans, err := pc.CreateAnswer(nil)
 	if err == nil {
@@ -235,7 +275,7 @@ func (v *voice) answer(p *voicePeer, offer string) {
 	if err != nil {
 		log.Printf("voice %d: answer: %v", p.ss.sid, err)
 		v.reset(p)
-		return
+		return true
 	}
 	p.mu.Lock()
 	p.ss.send(map[string]any{"t": "rtc", "type": "answer", "sdp": pc.LocalDescription().SDP})
@@ -262,6 +302,7 @@ func (v *voice) answer(p *voicePeer, offer string) {
 	} else if again {
 		v.negotiate(p)
 	}
+	return true
 }
 
 // carry forwards the app's voice to its local track, and watches its level for "talking".
