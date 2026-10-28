@@ -192,9 +192,11 @@ func main() {
 	flag.StringVar(&cfg.tvVideo, "tv-video", env("SV_TV_VIDEO", "auto"), "how the TV's picture is encoded: auto (the graphics card through VAAPI when it works, else x264), vaapi, x264 [SV_TV_VIDEO]")
 	flag.StringVar(&cfg.tvVaapi, "tv-vaapi", env("SV_TV_VAAPI", "/dev/dri/renderD128"), "the graphics card for SV_TV_VIDEO vaapi/auto [SV_TV_VAAPI]")
 	flag.IntVar(&cfg.tvIdle, "tv-idle", envInt("SV_TV_IDLE", 90), "seconds the TV keeps playing with nobody watching [SV_TV_IDLE]")
+	tvLoop := flag.Bool("tv-test-loopback", false, "tests only: the TV may open 127.0.0.1 (never on a real server: the server's own ports are there)")
 	flag.StringVar(&cfg.inviteBase, "invite-base", env("SV_INVITE_BASE", ""), "invite links' start, e.g. https://sfu.example.com/i/ (default: this server's address) [SV_INVITE_BASE]")
 	flag.Parse()
 	cfg.udpMin, cfg.udpMax = uint(*udpMin), uint(*udpMax)
+	tvLoopbackOK = *tvLoop
 
 	switch flag.Arg(0) {
 	case "version":
