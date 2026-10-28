@@ -8,7 +8,8 @@ package main
 //
 // After that, both ways (see the handlers below): join, say/history/dms/edit/unsay, relay, poke, state, name,
 // ch-save/ch-del/move (admins), rtc/ice (voice, voice.go). The server sends channel/channel-del,
-// member/member-left, talk, msg, history, dms, poke, rtc/ice and error.
+// member/member-left, talk, msg, history, dms, poke, rtc/ice and error. Bots (bots.go, docs/BOTS.md) use the same
+// connection with their own keys.
 
 import (
 	"crypto/rand"
@@ -78,7 +79,8 @@ type session struct {
 	since      int64 // connected at (ms)
 	vmuted     bool  // a moderator silenced the voice
 	talker     bool  // may talk in a moderated channel
-	bot        bool  // the music bot
+	bot        bool  // a bot: the music bot, or a registered one (api)
+	api        bool  // a registered bot (bots.go): someone else's program, with its own key
 	tokens     float64
 	refill     time.Time
 	passTries  []time.Time // channel password attempts (its own read loop only)
@@ -180,10 +182,14 @@ func (ss *session) writer() {
 
 func (ss *session) allow() bool {
 	now := time.Now()
-	if ss.refill.IsZero() {
-		ss.tokens, ss.refill = sessRateBurst, now
+	rate, burst := sessRatePerSec, sessRateBurst
+	if ss.api {
+		rate, burst = botRatePerSec, botRateBurst // a program has no reason to be fast
 	}
-	ss.tokens = min(sessRateBurst, ss.tokens+now.Sub(ss.refill).Seconds()*sessRatePerSec)
+	if ss.refill.IsZero() {
+		ss.tokens, ss.refill = burst, now
+	}
+	ss.tokens = min(burst, ss.tokens+now.Sub(ss.refill).Seconds()*rate)
 	ss.refill = now
 	if ss.tokens < 1 {
 		ss.drops++
@@ -373,6 +379,19 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := cleanName(hello.Name)
+	// A registered bot (bots.go): the name its manager gave it, its community and no other
+	bot := h.s.store.botOf(uid)
+	if bot != nil {
+		if hello.Comm != 0 && hello.Comm != bot.Comm {
+			fail("bot", "this bot belongs to another community")
+			return
+		}
+		if h.s.mods.banned(uid, bot.Comm) {
+			fail("banned", "this bot is banned from its community")
+			return
+		}
+		name = bot.Name
+	}
 	if name == "" {
 		fail("name", "choose a name")
 		return
@@ -390,13 +409,20 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	rl = h.s.store.seen(uid, hello.Pub, name)
 	ss := &session{uid: uid, name: name, client: clip(hello.Client, 40), base: requestBase(r), ws: ws, out: make(chan []byte, sessQueue), done: make(chan struct{}),
 		nonce: clip(hello.Nonce, 100), since: time.Now().UnixMilli(), dev: clip(hello.Dev, 64)}
-	comm := h.pickCommunity(uid, hello.Comm)
+	var comm int64
+	if bot != nil {
+		ss.bot, ss.api = true, true
+		_ = h.s.store.join(bot.Comm, uid) // a member again if it was taken out (the registration is what counts)
+		comm = bot.Comm
+	} else {
+		comm = h.pickCommunity(uid, hello.Comm)
+	}
 	pre := h.preEnter(uid, comm)
 	h.mu.Lock()
 	// The same device again (a dropped Wi-Fi, before the old socket timed out): the old one goes, and doesn't count
 	mine, gone := 0, 0
 	for _, o := range h.sessions {
-		if o.uid != uid || o.bot {
+		if o.uid != uid || (o.bot && !o.api) {
 			continue
 		}
 		if ss.dev != "" && o.dev == ss.dev {
@@ -411,9 +437,14 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		fail("many", "you're connected from too many places")
 		return
 	}
-	if mu := h.s.maxUsers(); mu > 0 && h.people()-gone >= mu && !rl.atLeast(roleAdmin) {
+	if mu := h.s.maxUsers(); mu > 0 && h.people()-gone >= mu && !rl.atLeast(roleAdmin) && bot == nil {
 		h.mu.Unlock()
 		fail("full", "the server is full")
+		return
+	}
+	if bot != nil && h.botSessions() >= maxBotSessions {
+		h.mu.Unlock()
+		fail("full", "too many bots on this server")
 		return
 	}
 	h.next++
@@ -424,6 +455,9 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		"server": map[string]any{"name": h.s.cfg.name, "motd": h.s.cfg.motd, "version": version, "ice": h.s.publicICE(), "create": h.s.cfg.createCommunities,
 			"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil},
 		"tier": h.s.lic.welcome(),
+	}
+	if bot != nil {
+		welcome["bot"] = true
 	}
 	for k, v := range h.enterWith(ss, comm, pre) {
 		welcome[k] = v
@@ -461,6 +495,10 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 				ss.refuse(t, "rate", "slow down")
 				continue
 			}
+		}
+		if why := h.botAllowed(ss, t); why != "" {
+			ss.refuse(t, "bot", why)
+			continue
 		}
 		h.dispatch(ss, t, m)
 	}
@@ -567,7 +605,7 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 		h.s.voice.signal(ss, t, m)
 	default:
 		if !h.communityOp(ss, t, m) && !h.codeOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
-			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) {
+			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {
 			ss.refuse(t, "bad", "unknown message")
 		}
 	}
@@ -758,7 +796,9 @@ func (h *hub) say(ss *session, t, to string, m map[string]any) {
 	h.mu.Lock()
 	h.deliver(out, ch, ss.uid, other)
 	h.mu.Unlock()
-	go h.pushFor(ss, msg, ch, other)
+	if !ss.api { // a bot's words don't wake anyone's phone
+		go h.pushFor(ss, msg, ch, other)
+	}
 	if ch > 0 && strings.HasPrefix(text, "!") {
 		go h.s.music.command(ss, ch, text)
 	}

@@ -237,6 +237,9 @@ func newServer(cfg config) (*server, error) {
 	if err := s.store.migrateChannels(); err != nil {
 		return nil, fmt.Errorf("channels: %w", err)
 	}
+	if err := s.store.migrateBots(); err != nil {
+		return nil, fmt.Errorf("bots: %w", err)
+	}
 	// A server older than text channels gets one "general" per community, once
 	if !s.store.hasColumnValue("channels", "kind", "text") {
 		_, _ = s.store.db.Exec(`INSERT INTO channels(parent,name,pos,is_default,comm,kind) SELECT 0,'general',-10,0,id,'text' FROM communities`)

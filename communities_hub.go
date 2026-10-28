@@ -381,7 +381,10 @@ func (h *hub) afterRemoval(comm int64, uid, why string) {
 	h.mu.Lock()
 	var moved []*session
 	for _, o := range h.sessions {
-		if o.uid == uid && o.comm == comm {
+		if o.uid == uid && o.comm == comm && o.api {
+			// A bot has no other community to go to
+			go o.close()
+		} else if o.uid == uid && o.comm == comm {
 			payload := h.enterLocked(o, h.firstOther(uid, comm))
 			payload["t"] = "community"
 			if why != "" {

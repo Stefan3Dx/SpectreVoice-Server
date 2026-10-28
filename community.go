@@ -318,7 +318,7 @@ func (st *store) deleteCommunity(id int64) error {
 		`DELETE FROM messages WHERE conv='g:' || ?`,
 		`DELETE FROM mods WHERE kind IN ('ban','mute','vmute') AND ch=?`,
 		`UPDATE user_state SET last_comm=0 WHERE last_comm=?`, `DELETE FROM member_roles WHERE comm=?`, `DELETE FROM roles WHERE comm=?`,
-		`DELETE FROM memberships WHERE comm=?`, `DELETE FROM invites WHERE comm=?`, `DELETE FROM comm_requests WHERE comm=?`, `DELETE FROM communities WHERE id=?`,
+		`DELETE FROM memberships WHERE comm=?`, `DELETE FROM bots WHERE comm=?`, `DELETE FROM invites WHERE comm=?`, `DELETE FROM comm_requests WHERE comm=?`, `DELETE FROM communities WHERE id=?`,
 	} {
 		if _, err := st.db.Exec(q, id); err != nil && !strings.Contains(err.Error(), "no such table") {
 			return err
@@ -432,6 +432,7 @@ type commAccess struct {
 	roles  map[int64]crole
 	every  crole
 	member map[string][]int64
+	bots   map[string]perm // the registered bots' permissions (bots.go)
 }
 
 // access gives (and keeps) what the hub needs to decide permissions in comm; h.mu held.
@@ -455,6 +456,12 @@ func (h *hub) access(comm int64) *commAccess {
 	if a.member == nil {
 		a.member = map[string][]int64{}
 	}
+	a.bots = map[string]perm{}
+	if bs, _ := h.s.store.botsIn(comm); bs != nil {
+		for _, b := range bs {
+			a.bots[b.UID] = b.p
+		}
+	}
 	h.acc[comm] = a
 	return a
 }
@@ -468,6 +475,9 @@ func (h *hub) staff(uid string) bool { return h.s.store.role(uid).atLeast(roleAd
 // permsOf: uid's permissions in comm; h.mu held.
 func (h *hub) permsOf(comm int64, uid string) perm {
 	a := h.access(comm)
+	if p, ok := a.bots[uid]; ok {
+		return p // exactly what its manager gave it, roles or not
+	}
 	if h.staff(uid) || (a.comm.Owner != "" && a.comm.Owner == uid) {
 		return pAll
 	}
@@ -484,6 +494,9 @@ func (h *hub) permsOf(comm int64, uid string) perm {
 // rank: how high uid stands in comm (owner and staff above every role); h.mu held.
 func (h *hub) rank(comm int64, uid string) int {
 	a := h.access(comm)
+	if _, ok := a.bots[uid]; ok {
+		return botRank
+	}
 	if h.staff(uid) {
 		return 1 << 30
 	}
