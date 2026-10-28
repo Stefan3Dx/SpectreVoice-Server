@@ -287,6 +287,7 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 			}
 		}
 		h.afterRemoval(comm, uid, "banned")
+		m.s.bus.kick(spaceOf(comm), uid)
 	case "unban":
 		m.remove(uid, "ban", comm)
 	case "server-ban":
@@ -295,6 +296,7 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 			o.send(map[string]any{"t": "kicked", "by": ss.name, "why": why, "ban": true})
 			time.AfterFunc(300*time.Millisecond, o.close)
 		}
+		m.s.bus.kick("", uid)
 	case "server-unban":
 		m.remove(uid, "sban", 0)
 	case "mute":

@@ -127,6 +127,10 @@ func (s *server) checkToken(tok string) (string, bool) {
 	if err != nil || time.Now().Unix() > exp {
 		return "", false
 	}
+	// Banned from the server since: the token's day is over (files, streams, backups, reports)
+	if s.mods != nil && s.mods.banned(parts[0], 0) {
+		return "", false
+	}
 	return parts[0], true
 }
 

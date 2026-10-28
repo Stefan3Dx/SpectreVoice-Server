@@ -15,10 +15,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // claimCode: on a server nobody owns yet, a code (in <data>/claim.code and the log) that makes whoever types it in
 // the app the owner, once. install.sh prints it.
+var claimMu sync.Mutex
+
 func (s *server) claimCode() string {
 	var n int
 	_ = s.store.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role='owner'`).Scan(&n)
@@ -88,6 +91,9 @@ func (h *hub) featureOp(ss *session, t string, m map[string]any) bool {
 		h.mu.Unlock()
 		h.s.voice.sync(ch)
 	case "claim":
+		// One claim at a time: two right codes at once can't make two owners
+		claimMu.Lock()
+		defer claimMu.Unlock()
 		code := h.s.claimCode()
 		if code == "" || !constEq(strings.ToUpper(strings.TrimSpace(str(m, "code"))), code) {
 			ss.refuse(t, "bad", "wrong code, or the server has an owner")

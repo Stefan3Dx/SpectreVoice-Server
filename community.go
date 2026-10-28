@@ -327,6 +327,13 @@ func (st *store) deleteCommunity(id int64) error {
 	return nil
 }
 
+// sharesCommunity: a and b are members of at least one community together.
+func (st *store) sharesCommunity(a, b string) bool {
+	var n int
+	_ = st.db.QueryRow(`SELECT COUNT(*) FROM memberships x JOIN memberships y ON x.comm=y.comm WHERE x.uid=? AND y.uid=?`, a, b).Scan(&n)
+	return n > 0
+}
+
 func (st *store) isMember(comm int64, uid string) bool {
 	var n int
 	_ = st.db.QueryRow(`SELECT COUNT(*) FROM memberships WHERE comm=? AND uid=?`, comm, uid).Scan(&n)

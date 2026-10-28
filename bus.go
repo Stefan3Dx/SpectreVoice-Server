@@ -91,17 +91,19 @@ const (
 )
 
 type busClient struct {
-	ws      *websocket.Conn
-	uid     string
-	admin   bool
-	staff   bool        // a server admin (not just a community manager): server-wide wipe and reports
-	authed  bool        // proved it is uid (always, now: the token says so)
-	out     chan []byte // waiting to be written by writer, so one slow client doesn't hold up the others
-	tokens  float64     // messages it may still send now (the read loop's rate limit)
-	refill  time.Time   // when tokens was last topped up
-	dropped int         // messages refused for going too fast
-	done    chan struct{}
-	once    sync.Once
+	ws        *websocket.Conn
+	uid       string
+	admin     bool
+	staff     bool        // a server admin (not just a community manager): server-wide wipe and reports
+	authed    bool        // proved it is uid (always, now: the token says so)
+	out       chan []byte // waiting to be written by writer, so one slow client doesn't hold up the others
+	tokens    float64     // messages it may still send now (the read loop's rate limit)
+	refill    time.Time   // when tokens was last topped up
+	dropped   int         // messages refused for going too fast
+	relayLeft float64     // bytes it may still pass on to others (its read loop only)
+	relayAt   time.Time
+	done      chan struct{}
+	once      sync.Once
 }
 
 func newBusClient(ws *websocket.Conn, uid string) *busClient {
@@ -531,7 +533,21 @@ func (s *server) handleBus(w http.ResponseWriter, r *http.Request) {
 	defer b.conns.Done()
 	b.fileMu.Lock()
 	b.mu.Lock()
-	sp, err := b.load(name)
+	// One person holds a few spaces at most (spaces are shared by the whole server: they can't all be theirs)
+	held := 0
+	for _, o := range b.spaces {
+		for oc := range o.clients {
+			if oc.uid == uid {
+				held++
+			}
+		}
+	}
+	sp, err := (*busSpace)(nil), error(nil)
+	if held >= busSpacesPerUID && !c.staff {
+		err = errors.New("you're connected to too many communities at once")
+	} else {
+		sp, err = b.load(name)
+	}
 	if err != nil {
 		b.mu.Unlock()
 		b.fileMu.Unlock()
@@ -592,6 +608,16 @@ func (s *server) handleBus(w http.ResponseWriter, r *http.Request) {
 		default:
 			m["from"] = c.uid
 			m["relay"] = true
+			// A byte budget, as the hub's relays (128 KB/s, bursts of 1 MB: drawings): one app can't flood the space
+			raw, _ := json.Marshal(m)
+			now := time.Now()
+			c.relayLeft = min(busRelayBurst, c.relayLeft+now.Sub(c.relayAt).Seconds()*busRelayRate)
+			c.relayAt = now
+			if c.relayLeft < float64(len(raw)) {
+				c.refuse(m, t, "rate", "too much, slow down")
+				continue
+			}
+			c.relayLeft -= float64(len(raw))
 			b.mu.Lock()
 			sp.broadcast(m, c)
 			b.mu.Unlock()
@@ -841,4 +867,32 @@ func applyIncr(cur map[string]any, m map[string]any) map[string]any {
 		}
 	}
 	return cur
+}
+
+// Relayed bytes per client: the rate and the burst (vars: a test floods on purpose).
+var (
+	busRelayRate  float64 = 128 << 10
+	busRelayBurst float64 = 1 << 20
+)
+
+// busSpacesPerUID: connections one person may hold at once (a PC and a phone, each in a community or two).
+const busSpacesPerUID = 6
+
+// kick closes uid's connections to a space ("": every space), after a ban.
+func (b *bus) kick(space, uid string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for name, sp := range b.spaces {
+		if space != "" && name != space {
+			continue
+		}
+		for c := range sp.clients {
+			if c.uid == uid {
+				c.close()
+			}
+		}
+	}
 }

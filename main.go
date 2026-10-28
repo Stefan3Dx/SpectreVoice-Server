@@ -335,7 +335,7 @@ func (s *server) mayUseSpace(name, uid string) bool {
 		return true
 	}
 	c := commOfSpace(name)
-	return c != 0 && (s.store.isMember(c, uid) || s.store.role(uid).atLeast(roleAdmin))
+	return c != 0 && (s.store.isMember(c, uid) || s.store.role(uid).atLeast(roleAdmin)) && (s.mods == nil || !s.mods.banned(uid, c))
 }
 
 func (s *server) handler() http.Handler {

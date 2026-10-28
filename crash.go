@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,8 +23,13 @@ import (
 var unsafeChars = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
 func (s *server) handleCrash(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
+	uid, ok := s.tokenUID(r)
+	if !ok {
 		http.Error(w, "sign in first", http.StatusUnauthorized)
+		return
+	}
+	if (r.Method == http.MethodPut || r.Method == http.MethodPost) && !crashLimit.allow(uid) {
+		http.Error(w, "too many reports; later", http.StatusTooManyRequests)
 		return
 	}
 	if s.bus.dir == "" {
@@ -117,4 +123,34 @@ func (s *server) handleCrash(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method", http.StatusMethodNotAllowed)
 	}
+}
+
+// crashLimit: a few reports per person an hour, so one can't push out everyone else's.
+var crashLimit = &perUID{max: 5, per: time.Hour}
+
+type perUID struct {
+	mu   sync.Mutex
+	max  int
+	per  time.Duration
+	seen map[string][]time.Time
+}
+
+func (p *perUID) allow(uid string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.seen == nil || len(p.seen) > 10000 {
+		p.seen = map[string][]time.Time{}
+	}
+	kept := p.seen[uid][:0]
+	for _, t := range p.seen[uid] {
+		if time.Since(t) < p.per {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= p.max {
+		p.seen[uid] = kept
+		return false
+	}
+	p.seen[uid] = append(kept, time.Now())
+	return true
 }

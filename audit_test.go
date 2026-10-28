@@ -77,3 +77,22 @@ func TestChannelUnbanScoped(t *testing.T) {
 		t.Fatal("the ban was lifted from another community")
 	}
 }
+
+// Private messages and pokes go only to people one shares a community with, by a real uid.
+func TestDirectMessageTargets(t *testing.T) {
+	_, hs := newTestServer(t, nil)
+	a, _ := dialV(t, hs, newKey(t), "Ana", "")
+	b, _ := dialV(t, hs, newKey(t), "Bob", "")
+	for _, to := range []string{"u:AAAAAAAAAAAAAAAAAAAA", "u:Z:" + b.uid} {
+		a.send(map[string]any{"t": "say", "to": to, "text": "hi"})
+		if e := a.wait(isT("error")); e["why"] != "bad" {
+			t.Fatal(to, e)
+		}
+	}
+	a.send(map[string]any{"t": "poke", "uid": "AAAAAAAAAAAAAAAAAAAA"})
+	if e := a.wait(isT("error")); e["why"] != "gone" {
+		t.Fatal(e)
+	}
+	a.send(map[string]any{"t": "say", "to": "u:" + b.uid, "text": "salut"})
+	b.wait(func(m map[string]any) bool { return m["t"] == "msg" })
+}

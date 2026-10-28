@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -661,13 +662,13 @@ func (h *hub) target(ss *session, to string) (conv string, ch int64, other strin
 	case strings.HasPrefix(to, "g:"):
 		// The community's own chat, everyone in it
 		comm, _ := strconv.ParseInt(to[2:], 10, 64)
-		if comm == 0 || comm != ss.comm {
+		if comm == 0 || comm != h.commOf(ss) {
 			return "", 0, "", fmt.Errorf("not in that community")
 		}
 		return to, -comm, "", nil
 	case strings.HasPrefix(to, "u:"):
 		other = to[2:]
-		if !safeID.MatchString(other) || other == ss.uid {
+		if !uidRe.MatchString(other) || other == ss.uid {
 			return "", 0, "", fmt.Errorf("bad recipient")
 		}
 		return dmConv(ss.uid, other), 0, other, nil
@@ -694,8 +695,13 @@ func (h *hub) say(ss *session, t, to string, m map[string]any) {
 		ss.refuse(t, "bad", err.Error())
 		return
 	}
-	if ss.comm != 0 && h.s.mods.muted(ss.uid, ss.comm) {
+	if comm := h.commOf(ss); comm != 0 && h.s.mods.muted(ss.uid, comm) {
 		ss.refuse(t, "muted", "you can't write here for now")
+		return
+	}
+	// Private messages only to people one shares a community with (not to any uid on the server)
+	if other != "" && !h.s.store.sharesCommunity(ss.uid, other) {
+		ss.refuse(t, "bad", "you don't share a community with them")
 		return
 	}
 	if t == "relay" {
@@ -783,6 +789,24 @@ func (h *hub) edit(ss *session, t string, id int64, text string) {
 		ss.refuse(t, "owner", "not yours")
 		return
 	}
+	// One's own message, but only where one may still write: in the community and the channel now, not banned
+	// or muted there (a banned person can't rewrite what they left behind)
+	if mine && (isChan || isComm) {
+		cid, _ := strconv.ParseInt(msg.To[2:], 10, 64)
+		h.mu.Lock()
+		comm := ss.comm
+		ok := false
+		if isChan {
+			ok = h.mayRead(ss, cid)
+		} else {
+			ok = cid == comm
+		}
+		h.mu.Unlock()
+		if !ok || h.s.mods.banned(ss.uid, comm) || (t == "edit" && h.s.mods.muted(ss.uid, comm)) {
+			ss.refuse(t, "owner", "you can't change messages there now")
+			return
+		}
+	}
 	if t == "unsay" && !mine {
 		ok := false
 		if isChan {
@@ -837,6 +861,10 @@ func (h *hub) edit(ss *session, t string, id int64, text string) {
 
 func (h *hub) poke(ss *session, uid, text string) {
 	text = clip(strings.TrimSpace(text), 200)
+	if !uidRe.MatchString(uid) || !h.s.store.sharesCommunity(ss.uid, uid) {
+		ss.refuse("poke", "gone", "they aren't here")
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	n := 0
@@ -1116,7 +1144,7 @@ func (h *hub) mayWatch(uid, room string) bool {
 	h.mu.Lock()
 	ls, ok := h.live[room]
 	h.mu.Unlock()
-	return ok && (ls.Comm == 0 || h.s.store.isMember(ls.Comm, uid))
+	return ok && (ls.Comm == 0 || h.s.store.isMember(ls.Comm, uid)) && !h.s.mods.banned(uid, ls.Comm)
 }
 
 // liveList: comm's streams now, oldest first; h.mu held.
@@ -1307,4 +1335,14 @@ func (g *ipGate) recent(ip string) []time.Time {
 	}
 	g.fails[ip] = kept
 	return kept
+}
+
+// uidRe: a person's uid (base64url of 15 bytes).
+var uidRe = regexp.MustCompile(`^[A-Za-z0-9_-]{20}$`)
+
+// commOf: the session's community now (another goroutine may move it: a ban, a deleted community).
+func (h *hub) commOf(ss *session) int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return ss.comm
 }

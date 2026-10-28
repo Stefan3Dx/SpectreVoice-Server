@@ -531,8 +531,10 @@ func TestBusDamagedFile(t *testing.T) {
 
 func TestBusSlowClient(t *testing.T) {
 	burst := busRateBurst
+	rate, rburst := busRelayRate, busRelayBurst
 	busRateBurst = 10000 // this test floods on purpose
-	t.Cleanup(func() { busRateBurst = burst })
+	busRelayRate, busRelayBurst = 1e12, 1e12
+	t.Cleanup(func() { busRateBurst = burst; busRelayRate, busRelayBurst = rate, rburst })
 	bt := newBusTest(t, nil, nil)
 	a := bt.dial("slow", "A")
 	fast := bt.dial("slow", "F")

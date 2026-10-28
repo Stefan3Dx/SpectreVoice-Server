@@ -226,7 +226,7 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 		if v, ok := m["about"].(string); ok {
 			c.About = clip(strings.TrimSpace(v), 1000)
 		}
-		if v, ok := m["icon"].(string); ok && (v == "" || strings.HasPrefix(v, "https://") || strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "/f/")) {
+		if v, ok := m["icon"].(string); ok && (v == "" || strings.HasPrefix(v, "https://") || strings.HasPrefix(v, "/f/")) {
 			c.Icon = clip(v, 500)
 		}
 		if v, ok := boolOf(m, "open"); ok {
