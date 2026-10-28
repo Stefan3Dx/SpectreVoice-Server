@@ -17,6 +17,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,6 +27,24 @@ import (
 )
 
 const authPrefix = "spectrevoice-auth-v1:"
+
+// v2 binds the signature to the server the app dialed (its host name): a server that relays our challenge to an app
+// gets a signature for its own name, which no other server accepts. v1 (older apps) stays accepted for now.
+const authPrefixV2 = "spectrevoice-auth-v2:"
+
+// hostOnly: a Host header or address without its port and brackets, lower case.
+func hostOnly(h string) string {
+	h = strings.TrimSpace(h)
+	if hh, _, err := net.SplitHostPort(h); err == nil {
+		h = hh
+	}
+	return strings.ToLower(strings.Trim(h, "[]"))
+}
+
+// signedV2: what a v2 app signs for this server.
+func signedV2(host string, nonce []byte) []byte {
+	return append([]byte(authPrefixV2+hostOnly(host)+"\n"), nonce...)
+}
 
 const tokenLife = 24 * time.Hour
 
@@ -37,6 +56,15 @@ func uidOf(spki []byte) string {
 
 // verifyIdentity checks sig over nonce by pub and gives the key's uid.
 func verifyIdentity(pub string, nonce, sig []byte) (string, error) {
+	return verifyAuthSig(pub, append([]byte(authPrefix), nonce...), sig)
+}
+
+// verifyIdentityV2: the signature over this server's host name and the nonce.
+func verifyIdentityV2(pub, host string, nonce, sig []byte) (string, error) {
+	return verifyAuthSig(pub, signedV2(host, nonce), sig)
+}
+
+func verifyAuthSig(pub string, data, sig []byte) (string, error) {
 	if len(pub) == 0 || len(pub) > 512 || len(sig) == 0 || len(sig) > 128 {
 		return "", errors.New("pub or sig missing")
 	}
@@ -52,7 +80,7 @@ func verifyIdentity(pub string, nonce, sig []byte) (string, error) {
 	if !ok || ek.Curve.Params().Name != "P-256" {
 		return "", errors.New("pub isn't a P-256 key")
 	}
-	h := sha256.Sum256(append([]byte(authPrefix), nonce...))
+	h := sha256.Sum256(data)
 	if !ecdsa.VerifyASN1(ek, h[:], sig) {
 		return "", errors.New("bad signature")
 	}

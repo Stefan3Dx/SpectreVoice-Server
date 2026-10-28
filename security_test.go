@@ -673,3 +673,26 @@ func TestRooms(t *testing.T) {
 		}
 	}
 }
+
+// A signature an app made for another server (v2 binds the host) is refused here: a hostile server can't relay
+// our challenge to an app and sign in as it.
+func TestAuthV2BoundToHost(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	pub := base64.StdEncoding.EncodeToString(der)
+	nonce := []byte("0123456789abcdef0123456789abcdef")
+	sign := func(host string) []byte {
+		h := sha256.Sum256(signedV2(host, nonce))
+		s, _ := ecdsa.SignASN1(rand.Reader, k, h[:])
+		return s
+	}
+	if _, err := verifyIdentityV2(pub, "voice.example.com:443", nonce, sign("VOICE.example.com")); err != nil {
+		t.Fatal("same host refused:", err)
+	}
+	if _, err := verifyIdentityV2(pub, "voice.example.com", nonce, sign("evil.example.net")); err == nil {
+		t.Fatal("another server's signature accepted")
+	}
+	if _, err := verifyIdentityV2(pub, "[::1]:7880", nonce, sign("::1")); err != nil {
+		t.Fatal("ipv6 host refused:", err)
+	}
+}

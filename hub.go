@@ -14,6 +14,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -323,13 +324,24 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Comm     int64  `json:"comm"`
 		Nonce    string `json:"nonce"`
+		V        int    `json:"v"`
 	}
 	if ws.ReadJSON(&hello) != nil || hello.T != "hello" {
 		fail("bad", "say hello first")
 		return
 	}
 	sig, _ := base64.StdEncoding.DecodeString(hello.Sig)
-	uid, err := verifyIdentity(hello.Pub, nonce, sig)
+	// v2: signed for the host this request came to (Caddy keeps the Host header), so a signature made for another
+	// server is refused here
+	var uid string
+	if hello.V >= 2 {
+		uid, err = verifyIdentityV2(hello.Pub, r.Host, nonce, sig)
+		if err != nil {
+			err = errors.New("signature not for this server (" + hostOnly(r.Host) + ")")
+		}
+	} else {
+		uid, err = verifyIdentity(hello.Pub, nonce, sig)
+	}
 	if err != nil {
 		fail("auth", err.Error())
 		return
