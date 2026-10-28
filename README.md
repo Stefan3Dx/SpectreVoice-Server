@@ -37,7 +37,7 @@ Update: `sudo bash install.sh --update`.
 | | |
 |---|---|
 | TCP 443 (and 80 for the certificate) | the apps (HTTPS); on a LAN only TCP 7880 |
-| UDP 50000–50200 | voice and streams |
+| UDP 50000–50200 | voice and streams ("P2P only" streams go app to app: the server passes on only their signalling) |
 | TCP/UDP 3478, UDP 49152–49352 | TURN (only with a domain) |
 
 At home behind a router: forward these to the server and set `SV_PUBLIC_IP` to your public IP or DDNS name.

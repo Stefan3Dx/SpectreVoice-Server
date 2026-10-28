@@ -121,6 +121,9 @@ type liveStream struct {
 	Title string `json:"title,omitempty"`
 	Since int64  `json:"since"`
 	Comm  int64  `json:"comm,omitempty"` // only that community is told (and may watch)
+	// "p2p": the streamer's app sends it to each viewer itself (p2p.go), asked through its session SID; else the SFU
+	Mode string `json:"mode,omitempty"`
+	SID  int    `json:"sid,omitempty"`
 }
 
 func (ss *session) member() member {
@@ -538,6 +541,7 @@ func (h *hub) leave(ss *session) {
 	h.toComm(ss.comm, map[string]any{"t": "member-left", "sid": ss.sid, "uid": ss.uid})
 	h.mu.Unlock()
 	h.s.voice.drop(ss)
+	h.p2pGone(ss)
 	if whisp {
 		h.s.voice.syncAll()
 	} else {
@@ -631,6 +635,8 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 		h.whisper(ss, m)
 	case "rtc", "ice":
 		h.s.voice.signal(ss, t, m)
+	case "p2p-live", "p2p-join", "p2p-offer", "p2p-answer", "p2p-ice", "p2p-bye":
+		h.p2pOp(ss, t, m)
 	default:
 		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
 			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {
@@ -1217,7 +1223,8 @@ func (h *hub) setLive(room, uid, title string, comm int64, on bool) {
 		return
 	}
 	ls, ok := h.live[room]
-	if !ok {
+	if !ok || ls.Mode == "p2p" {
+		// A stream that moved from the SFU to P2P stays live (p2p.go ends it)
 		return
 	}
 	delete(h.live, room)

@@ -91,6 +91,7 @@ type server struct {
 	mods    *mods
 	mu      sync.Mutex
 	rooms   map[string]*room
+	p2p     *p2pState // P2P streams: signalling only (p2p.go)
 	updates []*updater
 	files   *fileStore
 	bus     *bus
@@ -217,7 +218,7 @@ func newServer(cfg config) (*server, error) {
 	if err := os.MkdirAll(cfg.data, 0o750); err != nil {
 		return nil, err
 	}
-	s := &server{cfg: cfg, rooms: map[string]*room{}, admin: newAdminAuth(), logs: newLogRing(500)}
+	s := &server{cfg: cfg, rooms: map[string]*room{}, p2p: newP2P(), admin: newAdminAuth(), logs: newLogRing(500)}
 	log.SetOutput(io.MultiWriter(os.Stderr, s.logs))
 	var err error
 	if s.secret, err = loadSecret(cfg.data); err != nil {

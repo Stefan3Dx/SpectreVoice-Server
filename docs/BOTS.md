@@ -111,7 +111,7 @@ Every message is a JSON object with `"t"`. Unknown types should be ignored (new 
 | `role` | `role, roles, perms, staff` | the bot's permissions changed (a manager edited its registration) |
 | `roles` | `items` | the server's roles changed |
 | `server-info` | `server: {name,about,icon,password}` | an admin changed the server's name, description, icon or password |
-| `live` | `on, s: {room,uid,title,since,comm}` | a screen stream started or ended |
+| `live` | `on, s: {room,uid,title,since,comm,mode,sid}` | a screen stream started or ended (`mode` `"p2p"`: sent app to app, asked from session `sid`; bots can't take part) |
 | `talk` | `sid, on` | who is talking in voice |
 | `music` | `sid, ch, now, queue, paused, volume` | the music bot's state (if the server has one) |
 | `kicked` | `by, why, ban?` | the bot was kicked, banned or unregistered; the connection closes right after |

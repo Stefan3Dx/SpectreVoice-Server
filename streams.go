@@ -13,7 +13,9 @@ package main
 //	server -> {"type":"layer","layer":L,"q":Q,"layers":[…]} the layer sent to the viewer
 //	server -> {"type":"ended"} when the room's streamer leaves, {"type":"error","message":…}
 //
-// GET /streams/status?room=R&token=… answers {"live":bool,"viewers":n}.
+// GET /streams/status?room=R&token=… answers {"live":bool,"viewers":n,"bytes":b,"sfuBytes":t,"mode":…,"p2p":n}: live and
+// viewers through the SFU, the media bytes the SFU got for R and for every stream since it started, and for a P2P
+// stream (p2p.go) "mode":"p2p" with its peer-to-peer viewer count.
 
 import (
 	"encoding/json"
@@ -46,7 +48,15 @@ type message struct {
 	Q      string   `json:"q,omitempty"`
 	Layer  string   `json:"layer,omitempty"`
 	Layers []string `json:"layers,omitempty"`
+	// /streams/status: media bytes the SFU got (this room, all), and a P2P stream's mode and viewers
+	Bytes    *int64 `json:"bytes,omitempty"`
+	SFUBytes *int64 `json:"sfuBytes,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+	P2P      *int   `json:"p2p,omitempty"`
 }
+
+// statStreamIn: media bytes the SFU got from streamers (all rooms, since it started).
+var statStreamIn atomic.Int64
 
 // A WebSocket with one writer at a time.
 type conn struct {
@@ -99,6 +109,7 @@ type room struct {
 	sim       *simulcast                // the layered picture of a simulcast streamer (nil: one picture, forwarded as is)
 	keyAt     map[webrtc.SSRC]time.Time // per layer: the last key frame asked
 	stop      chan struct{}             // closed when the room ends (stops the auto loop)
+	bytes     atomic.Int64              // media the streamer sent us
 }
 
 func (s *server) handleStreamStatus(w http.ResponseWriter, r *http.Request) {
@@ -110,15 +121,21 @@ func (s *server) handleStreamStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	rm := s.rooms[name]
 	s.mu.Unlock()
-	live, viewers := false, 0
+	live, viewers, bytes := false, 0, int64(0)
 	if rm != nil {
 		rm.mu.Lock()
 		live = rm.publisher != nil && (len(rm.tracks) > 0 || rm.sim != nil)
 		viewers = len(rm.subs)
 		rm.mu.Unlock()
+		bytes = rm.bytes.Load()
+	}
+	all := statStreamIn.Load()
+	out := message{Type: "status", Room: name, Live: &live, Viewers: &viewers, Bytes: &bytes, SFUBytes: &all}
+	if n, ok := s.p2pViewers(name); ok {
+		out.Mode, out.P2P = "p2p", &n
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(message{Type: "status", Room: name, Live: &live, Viewers: &viewers})
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
@@ -293,6 +310,7 @@ func (s *server) openRoom(name, uid string, c *conn) (*room, error) {
 			mine++
 		}
 	}
+	mine += s.p2pCount(uid, name) // and its peer-to-peer ones (p2p.go)
 	if mine >= 2 {
 		return nil, errors.New("you already have two streams live")
 	}
@@ -413,6 +431,8 @@ func (s *server) publish(rm *room, c *conn, offer string) (*webrtc.PeerConnectio
 			if err != nil {
 				return
 			}
+			rm.bytes.Add(int64(n))
+			statStreamIn.Add(int64(n))
 			// One viewer's error isn't everyone's: keep forwarding
 			if _, err := local.Write(buf[:n]); err != nil && !errors.Is(err, io.ErrClosedPipe) && time.Since(lastErr) > 10*time.Second {
 				lastErr = time.Now()
@@ -690,6 +710,8 @@ func (rm *room) readLayer(remote *webrtc.TrackRemote) {
 		}
 		now := time.Now()
 		l.bytes.Add(int64(len(p.Payload) + 12))
+		rm.bytes.Add(int64(len(p.Payload) + 12))
+		statStreamIn.Add(int64(len(p.Payload) + 12))
 		l.last.Store(now.UnixNano())
 		sim.mu.RLock()
 		views := make([]*subscriber, 0, len(sim.viewers))
