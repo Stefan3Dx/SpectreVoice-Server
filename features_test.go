@@ -144,6 +144,11 @@ func TestChannelFiles(t *testing.T) {
 	if len(l["items"].([]any)) != 1 || len(l["path"].([]any)) != 1 {
 		t.Fatal(l)
 	}
+	// Ana's folder holds Bob's file: deleting the folder would delete it too, which she may not
+	ana.send(map[string]any{"t": "cf-del", "id": fid})
+	if e := ana.wait(isT("error")); e["why"] != "role" {
+		t.Fatal(e)
+	}
 	// Ana (not the owner, no "files") can't delete Bob's file; Bob can
 	ana.send(map[string]any{"t": "cf-del", "id": got.ID})
 	if e := ana.wait(isT("error")); e["why"] != "role" {

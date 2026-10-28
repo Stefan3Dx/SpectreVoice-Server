@@ -183,6 +183,11 @@ func (cf *channelFiles) op(ss *session, t string, m map[string]any) bool {
 			ss.refuse(t, "role", "not yours")
 			return true
 		}
+		// One's own folder goes with what's in it: not when others' files are in there (that's for "files")
+		if t == "cf-del" && it.Dir && !boss && cf.othersIn(id, ss.uid) {
+			ss.refuse(t, "role", "others' files are in this folder")
+			return true
+		}
 		var parent int64
 		_ = cf.db.QueryRow(`SELECT parent FROM chfiles WHERE id=?`, id).Scan(&parent)
 		if t == "cf-rename" {
@@ -202,8 +207,27 @@ func (cf *channelFiles) op(ss *session, t string, m map[string]any) bool {
 	return true
 }
 
+// othersIn: something under folder id was put there by someone other than uid.
+func (cf *channelFiles) othersIn(id int64, uid string) bool {
+	for _, x := range cf.tree(id)[1:] {
+		var by string
+		if cf.db.QueryRow(`SELECT by FROM chfiles WHERE id=?`, x).Scan(&by) == nil && by != uid {
+			return true
+		}
+	}
+	return false
+}
+
 // removeTree deletes a file, or a folder with everything in it.
 func (cf *channelFiles) removeTree(id int64) {
+	for _, x := range cf.tree(id) {
+		_, _ = cf.db.Exec(`DELETE FROM chfiles WHERE id=?`, x)
+		_ = os.Remove(filepath.Join(cf.dir, strconv.FormatInt(x, 10)))
+	}
+}
+
+// tree: id and everything below it.
+func (cf *channelFiles) tree(id int64) []int64 {
 	ids := []int64{id}
 	for i := 0; i < len(ids) && i < 100000; i++ {
 		rows, err := cf.db.Query(`SELECT id FROM chfiles WHERE parent=?`, ids[i])
@@ -218,10 +242,7 @@ func (cf *channelFiles) removeTree(id int64) {
 		}
 		rows.Close()
 	}
-	for _, x := range ids {
-		_, _ = cf.db.Exec(`DELETE FROM chfiles WHERE id=?`, x)
-		_ = os.Remove(filepath.Join(cf.dir, strconv.FormatInt(x, 10)))
-	}
+	return ids
 }
 
 // dropBy deletes the files uid put in channels (their account is wiped); how many.
