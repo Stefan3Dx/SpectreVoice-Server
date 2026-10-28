@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,8 +117,9 @@ func (v *voice) signal(ss *session, t string, m map[string]any) {
 	desc := str(m, "sdp")
 	switch str(m, "type") {
 	case "offer":
-		if p != nil && p.dead() {
-			// The app's old connection is gone (it closed it, or it broke): this offer is a new connection
+		if p != nil && (p.dead() || p.otherConnection(desc)) {
+			// The app's old connection is gone (it closed it, or it broke), or this offer comes from another
+			// connection of the app's (another DTLS certificate: the old peer would take it and never connect)
 			v.dropPeer(p)
 			p = nil
 		}
@@ -230,6 +232,27 @@ func (v *voice) open(ss *session) (*voicePeer, error) {
 func (p *voicePeer) dead() bool {
 	st := p.pc.ConnectionState()
 	return st == webrtc.PeerConnectionStateClosed || st == webrtc.PeerConnectionStateFailed
+}
+
+// otherConnection: offer is from another of the app's connections than the one this peer talks to (its DTLS
+// fingerprint differs: a connection keeps its certificate for life, renegotiations and ICE restarts too).
+func (p *voicePeer) otherConnection(offer string) bool {
+	rd := p.pc.RemoteDescription()
+	if rd == nil {
+		return false
+	}
+	a, b := sdpFingerprint(rd.SDP), sdpFingerprint(offer)
+	return a != "" && b != "" && a != b
+}
+
+// sdpFingerprint: the first a=fingerprint of a description ("" when none).
+func sdpFingerprint(desc string) string {
+	_, rest, ok := strings.Cut(desc, "a=fingerprint:")
+	if !ok {
+		return ""
+	}
+	line, _, _ := strings.Cut(rest, "\n")
+	return strings.ToLower(strings.TrimSpace(line))
 }
 
 // wasReady: the peer had answered the app's first offer (a connection that worked).

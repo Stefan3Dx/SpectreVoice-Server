@@ -65,6 +65,55 @@ func TestVoiceFreshConnectionSameSession(t *testing.T) {
 	}
 }
 
+// The same, with the old connection never closed: the server's peer still looks connected.
+func TestVoiceFreshConnectionOldOpen(t *testing.T) {
+	_, hs := newTestServer(t, nil)
+	a, _ := dialV(t, hs, newKey(t), "A", "")
+	b, _ := dialV(t, hs, newKey(t), "B", "")
+	va, vb := newVoiceClient(t, a), newVoiceClient(t, b)
+	stopA := make(chan struct{})
+	stop := make(chan struct{})
+	defer close(stop)
+	go va.pump(stopA)
+	go vb.pump(stop)
+	speak := func(vc *voiceClient) {
+		seq := uint16(0)
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		for i := 0; i < 1500; i++ {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+			}
+			seq++
+			_ = vc.track.WriteRTP(&rtp.Packet{Header: rtp.Header{Version: 2, PayloadType: 111, SequenceNumber: seq, Timestamp: uint32(seq) * 960}, Payload: []byte{0xf8, 0xff, 0xfe}})
+		}
+	}
+	go speak(vb)
+	want := "s" + itoa(b.sid)
+	deadline := time.Now().Add(15 * time.Second)
+	for va.count(want) < 10 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if va.count(want) < 10 {
+		t.Fatalf("A didn't hear B at first")
+	}
+	// A's side broke: a new connection, same session
+	close(stopA)
+	time.Sleep(200 * time.Millisecond)
+	// The old one isn't closed (its network broke: no DTLS close reaches the server)
+	va2 := newVoiceClient(t, a)
+	go va2.pump(stop)
+	deadline = time.Now().Add(15 * time.Second)
+	for va2.count(want) < 10 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := va2.count(want); n < 10 {
+		t.Fatalf("A's new connection got %d packets of B (%s)", n, va2.pc.ConnectionState())
+	}
+}
+
 // sinkConn: a /streams connection whose messages go nowhere (tests that call the room's functions directly).
 func sinkConn(t *testing.T) *conn {
 	t.Helper()
