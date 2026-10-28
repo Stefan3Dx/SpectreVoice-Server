@@ -698,6 +698,11 @@ unit=/etc/systemd/system/spectrevoice.service
 if [[ -f "$HERE/deploy/spectrevoice.service" ]]; then cp "$HERE/deploy/spectrevoice.service" "$unit"
 else curl -fsSL "https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/spectrevoice.service" -o "$unit"; fi
 
+# ---- ffmpeg for the TV (SV_TV, on unless set false), even without the music bot ----
+if [[ $MUSIC -eq 0 ]] && ! grep -q "^SV_TV=false" "$ENVF" 2>/dev/null && ! command -v ffmpeg >/dev/null 2>&1; then
+  apt-get install -y -qq ffmpeg >/dev/null || true
+fi
+
 # ---- Music bot ----
 if [[ $MUSIC -eq 1 ]]; then
   say "$(t music)"

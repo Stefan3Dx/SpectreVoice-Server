@@ -69,6 +69,31 @@ It connects as "Web", checks the welcome (channel list), the voice connection (o
 from a Go client reaching the page and one from the page reaching it, and the talking indicator from the fake
 microphone (`web/e2e/run.js`).
 
+## TV (IPTV)
+
+The server can play one IPTV channel for everyone, watched in the apps like a screen share, with sound. Someone with
+the **TV** permission (admins have it) gives the playlist: an M3U address (`http://…/get.php?…&type=m3u_plus`) or an
+uploaded `.m3u` file, and decides whether everyone may change the channel. Everyone sees the channel list (names,
+groups and logos, with search and a group filter) and who put the channel on, and when.
+
+The server plays the channel itself with **ffmpeg** (installed with the music bot; without it the apps say so):
+H.264 at most `SV_TV_HEIGHT` (720) lines, 30 frames a second and `SV_TV_KBPS` (3000) kbit/s, Opus sound, published as
+the stream room `tv:main`. It starts when someone puts a channel on or comes to watch and stops when nobody has
+watched for `SV_TV_IDLE` (90) seconds; the channel chosen stays. ffmpeg has read timeouts, reconnects, a watchdog
+(nothing for 25 s: restarted, 8 failures in a row: it gives up and says why), its own process group and dies with
+the server. `SV_TV_VIDEO=auto` uses the graphics card (VAAPI, `SV_TV_VAAPI`) when a test encode works, else x264.
+The TV counts as one of the server's streams (`SV_MAX_STREAMS`) and its viewers as a stream's (`SV_MAX_VIEWERS`).
+
+The playlist's address and the channels' addresses hold the subscription's user and password: they never leave the
+server, are never logged, and the apps only ever get names, groups and logos (the logos fetched by the server). An
+uploaded file is kept as `data/tv/playlist.m3u`, readable by the server only. Playlists up to 10 MB and 20,000
+channels; channel addresses must be http or https.
+
+Every address the TV opens (the playlist, the logos, the channel and anything it leads to: redirects, HLS
+segments) must be **public**: ffmpeg goes through a small proxy of the server on 127.0.0.1 that refuses loopback,
+the LAN, link-local and other reserved ranges, checked on the address actually connected to. To play sources on
+your own LAN (a tuner, a home IPTV box), set `SV_TV_LAN=true`. `SV_TV=false` turns the TV off.
+
 ## Privacy
 
 Everything stays on this server: accounts are keys made on the devices (no e-mail, no phone number), chat history,
@@ -78,6 +103,8 @@ files and settings are here and nowhere else. What leaves it, and only when you 
   server, never who or what (`SV_PUSH_CONTENT=false`). On the phone they're off until the person turns them on.
 - **Music bot**: `!play some words` searches YouTube from this server (the words go there); `!play <link>` plays
   only that link (public addresses only).
+- **TV**: the server downloads the playlist and plays the channel from the IPTV provider (the provider sees this
+  server's address, never the viewers').
 - **Donations for places**: when you redeem one, this server's key fingerprint goes to the donation service.
   Nothing about the people on it.
 - **Crash reports** from the apps go to the developer only if the person says yes, with addresses and ids taken out.

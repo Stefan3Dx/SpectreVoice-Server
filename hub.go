@@ -441,6 +441,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	pre := h.preEnter()
 	info := h.s.serverInfo()
+	tvFull, tvPub := h.s.tv.state(true), h.s.tv.state(false)
 	pre.wantCh = hello.Ch
 	h.mu.Lock()
 	// The same device again (a dropped Wi-Fi, before the old socket timed out): the old one goes, and doesn't count
@@ -487,6 +488,12 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	for k, v := range h.enterWith(ss, pre) {
 		welcome[k] = v
+	}
+	if !ss.api {
+		welcome["tv"] = tvPub
+		if h.may(ss, pTV) {
+			welcome["tv"] = tvFull
+		}
 	}
 	ss.send(welcome)
 	h.mu.Unlock()
@@ -637,6 +644,8 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 		h.s.voice.signal(ss, t, m)
 	case "p2p-live", "p2p-join", "p2p-offer", "p2p-answer", "p2p-ice", "p2p-bye":
 		h.p2pOp(ss, t, m)
+	case "tv":
+		h.tvOp(ss, m)
 	default:
 		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
 			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {
@@ -1245,6 +1254,10 @@ func (h *hub) streamComm(uid string) (int64, bool) {
 
 // mayWatch: uid may watch room (a member of the stream's community).
 func (h *hub) mayWatch(uid, room string) bool {
+	if room == tvRoom {
+		// The server's TV: everyone on the server
+		return h.s.tv.enabled() && h.s.store.isMember(spaceID, uid) && !h.s.mods.banned(uid, spaceID)
+	}
 	h.mu.Lock()
 	ls, ok := h.live[room]
 	h.mu.Unlock()

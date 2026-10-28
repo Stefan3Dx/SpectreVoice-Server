@@ -81,6 +81,13 @@ type config struct {
 	pushContent bool   // push notifications carry who and what (through Google); off: only that there's something
 	ytdlp       string
 	ffmpeg      string
+	tv          bool   // the server's TV (tv.go): an IPTV channel everyone watches, played by ffmpeg
+	tvLAN       bool   // the TV may open LAN addresses (else only public ones)
+	tvKbps      int    // the TV's video bit rate
+	tvHeight    int    // the TV's picture height at most (16:9 width)
+	tvVideo     string // "auto" (VAAPI when it works, else x264), "vaapi", "x264"
+	tvVaapi     string // the VAAPI device
+	tvIdle      int    // seconds the TV plays with nobody watching
 }
 
 type server struct {
@@ -109,6 +116,7 @@ type server struct {
 	admin   *adminAuth
 	logs    *logRing
 	conf    serverConf // name and password, as the admins set them (settings.go)
+	tv      *tvManager // the server's TV (tv.go)
 	// testSpaces lets tests open bus spaces besides mainSpace (nil in production)
 	testSpaces func(name string) bool
 }
@@ -177,6 +185,13 @@ func main() {
 	flag.BoolVar(&cfg.music, "music", envBool("SV_MUSIC", true), "the music bot (!play), when yt-dlp and ffmpeg are installed [SV_MUSIC]")
 	flag.StringVar(&cfg.ytdlp, "yt-dlp", env("SV_YTDLP", "yt-dlp"), "yt-dlp program [SV_YTDLP]")
 	flag.StringVar(&cfg.ffmpeg, "ffmpeg", env("SV_FFMPEG", "ffmpeg"), "ffmpeg program [SV_FFMPEG]")
+	flag.BoolVar(&cfg.tv, "tv", envBool("SV_TV", true), "the server's TV: an IPTV channel (M3U playlist) everyone watches like a stream, played by ffmpeg [SV_TV]")
+	flag.BoolVar(&cfg.tvLAN, "tv-lan", envBool("SV_TV_LAN", false), "the TV may open LAN addresses (10.x, 192.168.x, …) for its playlist and channels; off: public ones only [SV_TV_LAN]")
+	flag.IntVar(&cfg.tvKbps, "tv-kbps", envInt("SV_TV_KBPS", 3000), "the TV's video bit rate, kbit/s (12000 at most) [SV_TV_KBPS]")
+	flag.IntVar(&cfg.tvHeight, "tv-height", envInt("SV_TV_HEIGHT", 720), "the TV's picture height at most (240-1080, 16:9) [SV_TV_HEIGHT]")
+	flag.StringVar(&cfg.tvVideo, "tv-video", env("SV_TV_VIDEO", "auto"), "how the TV's picture is encoded: auto (the graphics card through VAAPI when it works, else x264), vaapi, x264 [SV_TV_VIDEO]")
+	flag.StringVar(&cfg.tvVaapi, "tv-vaapi", env("SV_TV_VAAPI", "/dev/dri/renderD128"), "the graphics card for SV_TV_VIDEO vaapi/auto [SV_TV_VAAPI]")
+	flag.IntVar(&cfg.tvIdle, "tv-idle", envInt("SV_TV_IDLE", 90), "seconds the TV keeps playing with nobody watching [SV_TV_IDLE]")
 	flag.StringVar(&cfg.inviteBase, "invite-base", env("SV_INVITE_BASE", ""), "invite links' start, e.g. https://sfu.example.com/i/ (default: this server's address) [SV_INVITE_BASE]")
 	flag.Parse()
 	cfg.udpMin, cfg.udpMax = uint(*udpMin), uint(*udpMax)
@@ -277,6 +292,7 @@ func newServer(cfg config) (*server, error) {
 		return nil, err
 	}
 	s.voice = newVoice(s)
+	s.tv = newTV(s)
 	go s.lic.slotsWatch()
 	s.metrics = newMetrics(s)
 	if code := s.claimCode(); code != "" {
@@ -370,6 +386,9 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("/admin/", s.handleAdmin)
 	mux.HandleFunc("/cf/upload", s.chfiles.handleUpload)
 	mux.HandleFunc("/cf/", s.chfiles.handleDownload)
+	mux.HandleFunc("/tv/channels", s.handleTVChannels)
+	mux.HandleFunc("/tv/logo", s.handleTVLogo)
+	mux.HandleFunc("/tv/playlist", s.handleTVPlaylist)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok\n") })
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

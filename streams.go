@@ -111,6 +111,8 @@ type room struct {
 	keyAt     map[webrtc.SSRC]time.Time // per layer: the last key frame asked
 	stop      chan struct{}             // closed when the room ends (stops the auto loop)
 	bytes     atomic.Int64              // media the streamer sent us
+	local     bool                      // the server's own TV (tv.go): no streamer, ffmpeg sends a key frame every 2 s
+	localLive atomic.Bool               // the TV's picture is coming
 }
 
 func (s *server) handleStreamStatus(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +127,7 @@ func (s *server) handleStreamStatus(w http.ResponseWriter, r *http.Request) {
 	live, viewers, bytes := false, 0, int64(0)
 	if rm != nil {
 		rm.mu.Lock()
-		live = rm.publisher != nil && (len(rm.tracks) > 0 || rm.sim != nil)
+		live = (rm.publisher != nil || (rm.local && rm.localLive.Load())) && (len(rm.tracks) > 0 || rm.sim != nil)
 		viewers = len(rm.subs)
 		rm.mu.Unlock()
 		bytes = rm.bytes.Load()
@@ -213,7 +215,7 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				c.send(message{Type: "error", Message: "already publishing or watching"})
 				continue
 			}
-			if m.Room != uid && !strings.HasPrefix(m.Room, uid+":") {
+			if (m.Room != uid && !strings.HasPrefix(m.Room, uid+":")) || strings.HasPrefix(m.Room, tvRoomPrefix) {
 				c.send(message{Type: "error", Message: "you may only stream as yourself"})
 				return
 			}
@@ -254,6 +256,10 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 			s.mu.Lock()
 			rm = s.rooms[m.Room]
 			s.mu.Unlock()
+			// The server's TV starts its channel when someone comes to watch
+			if rm == nil && m.Room == tvRoom && s.hub != nil && s.hub.mayWatch(uid, m.Room) {
+				rm = s.tv.ensure()
+			}
 			if rm == nil || (s.hub != nil && !s.hub.mayWatch(uid, m.Room)) {
 				c.send(message{Type: "ended"})
 				return

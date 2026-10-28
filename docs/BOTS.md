@@ -34,7 +34,7 @@ go run . -server wss://voice.example.com/v1/ws
 - It has **no voice unless allowed**: `rtc` and `ice` are refused without the `speak` permission. With it, the
   bot is a normal WebRTC peer (see the apps; it's beyond this page).
 - It **can't stream**, can't whisper, can't register devices for push, can't use the server's own messages
-  (claim, slots, admin link, server bans), the server's settings or its invites.
+  (claim, slots, admin link, server bans), the server's settings, its invites or its TV.
 - A server has at most 10 registered bots and 64 bot connections at once.
 
 Treat the bot's key like a password: whoever has it is the bot.

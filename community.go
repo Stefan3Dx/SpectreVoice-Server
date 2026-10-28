@@ -41,7 +41,8 @@ const (
 	pMuteVoice       perm = 1 << 15 // silence someone's voice for everyone; let people talk in moderated channels
 	pFiles           perm = 1 << 16 // manage the channels' files (folders, others' files)
 	pMusic           perm = 1 << 17 // control the music bot for everyone (skip, stop, without a vote)
-	pAll             perm = 1<<18 - 1
+	pTV              perm = 1 << 18 // the server's TV: its playlist, who may change the channel, the channel (tv.go)
+	pAll             perm = 1<<19 - 1
 )
 
 // The permissions apps may show, by name (role-save takes and gives these).
@@ -50,7 +51,7 @@ var permNames = map[string]perm{
 	"manage_roles": pManageRoles, "move": pMove, "kick": pKick, "ban": pBan, "mute_chat": pMuteChat,
 	"channel_ban": pChannelBan, "delete_messages": pDeleteMessages, "invite": pInvite, "stream": pStream,
 	"bypass_locks": pBypassLocks, "mention_all": pMentionAll, "speak": pSpeak,
-	"mute_voice": pMuteVoice, "files": pFiles, "music": pMusic,
+	"mute_voice": pMuteVoice, "files": pFiles, "music": pMusic, "tv": pTV,
 }
 
 func permList(p perm) []string {
@@ -82,7 +83,7 @@ func permOf(v any) perm {
 const (
 	everyonePerms = pInvite | pStream | pSpeak
 	modPerms      = pMove | pKick | pMuteChat | pChannelBan | pDeleteMessages | pMuteVoice | pFiles | pMusic | everyonePerms
-	adminPerms    = pAdministrator | modPerms | pManageChannels | pManageRoles | pManageCommunity | pBan
+	adminPerms    = pAdministrator | modPerms | pManageChannels | pManageRoles | pManageCommunity | pBan | pTV
 )
 
 type community struct {

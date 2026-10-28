@@ -230,6 +230,7 @@ var botDenied = map[string]bool{
 	"role-save": true, "role-del": true, "member-roles": true, "role": true, "bot-add": true, "bot-del": true, "bots": true,
 	"claim": true, "push-token": true, "push-off": true, "server-ban": true, "server-unban": true, "admin-link": true,
 	"slots": true, "slots-redeem": true, "invite-create": true, "invite-del": true, "invites": true, "whisper": true,
+	"tv": true,
 }
 
 // botAllowed: may a bot session send t now ("" when it may, else why not).
