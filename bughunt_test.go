@@ -152,7 +152,7 @@ func TestStreamTrackDuringSubscribe(t *testing.T) {
 		rm.mu.Unlock()
 	}
 	defer func() { subscribeGap = nil }()
-	sub, err := s.subscribe(rm, sinkConn(t), "viewer")
+	sub, err := s.subscribe(rm, sinkConn(t), "viewer", "")
 	if err != nil {
 		t.Fatal(err)
 	}

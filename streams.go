@@ -7,7 +7,10 @@ package main
 // Signalling is JSON over a WebSocket at /streams?token=…:
 //
 //	{"type":"publish","room":R,"sdp":OFFER}  -> {"type":"answer","sdp":…}
-//	{"type":"subscribe","room":R}            -> {"type":"offer","sdp":…} ; reply {"type":"answer","sdp":…}
+//	{"type":"subscribe","room":R,"dev":D}    -> {"type":"offer","sdp":…} ; reply {"type":"answer","sdp":…}
+//	                                            (the offer once the stream has a track: a viewer that comes before
+//	                                            the first frame waits for it; a new watch of the same person and
+//	                                            device "dev", optional, replaces the old one)
 //	{"type":"candidate","candidate":C,"mid":M,"mline":N} both ways
 //	{"type":"layer","q":"h"|"m"|"l"|"auto"}   a viewer's layer choice (simulcast streams, see simulcast.go)
 //	server -> {"type":"layer","layer":L,"q":Q,"layers":[…]} the layer sent to the viewer
@@ -45,6 +48,7 @@ type message struct {
 	Live      *bool   `json:"live,omitempty"`
 	Viewers   *int    `json:"viewers,omitempty"`
 	Title     string  `json:"title,omitempty"`
+	Dev       string  `json:"dev,omitempty"` // subscribe: the app's device (optional): its new watch replaces its old one
 	// Simulcast: the layer a viewer asks for ("h", "m", "l", "auto"), the one sent, and the ones the streamer has
 	Q      string   `json:"q,omitempty"`
 	Layer  string   `json:"layer,omitempty"`
@@ -75,11 +79,13 @@ func (c *conn) send(m message) {
 
 type subscriber struct {
 	uid     string
+	dev     string // the app's device, when it says ("": unknown)
 	pc      *webrtc.PeerConnection
 	c       *conn
 	mu      sync.Mutex
-	pending bool // an offer is out, waiting for the answer
-	again   bool // tracks changed meanwhile: offer again after it
+	pending bool        // an offer is out, waiting for the answer
+	again   bool        // tracks changed meanwhile: offer again after it
+	offered atomic.Bool // its first offer went out (a viewer that came before the first frame waits for it)
 	// Simulcast: what the viewer asked ("auto" or a rid), its layer switcher, the auto rule's memory, and what its
 	// RTCP said since the last tick
 	sw     atomic.Pointer[switcher]
@@ -264,7 +270,7 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				c.send(message{Type: "ended"})
 				return
 			}
-			sub, err = s.subscribe(rm, c, uid)
+			sub, err = s.subscribe(rm, c, uid, clip(m.Dev, 64))
 			if err != nil {
 				c.send(message{Type: "error", Message: err.Error()})
 				return
@@ -474,17 +480,26 @@ func (s *server) publish(rm *room, c *conn, offer string) (*webrtc.PeerConnectio
 	return pc, nil
 }
 
-func (s *server) subscribe(rm *room, c *conn, uid string) (*subscriber, error) {
+// sameWatcher: [o] is the same person's watch from the same device as (uid, dev), which a new one replaces (one
+// watch per person and device; an app that doesn't name its device has one per person).
+func sameWatcher(o *subscriber, uid, dev string) bool {
+	return uid != "" && o.uid == uid && (dev == "" || o.dev == "" || o.dev == dev)
+}
+
+// subscribe makes [uid]'s viewer of the room. Its own earlier watch from the same device (a connection that
+// dropped and is still open here, for up to 75 s) is replaced. A viewer that comes before the streamer's first
+// track (the stream is announced at the publish) waits in the room and is offered the tracks as they come.
+func (s *server) subscribe(rm *room, c *conn, uid, dev string) (*subscriber, error) {
 	rm.mu.Lock()
-	if len(rm.subs) >= s.cfg.maxSubs {
+	n := 0
+	for o := range rm.subs {
+		if !sameWatcher(o, uid, dev) {
+			n++
+		}
+	}
+	if n >= s.cfg.maxSubs {
 		rm.mu.Unlock()
 		return nil, errors.New("this stream has as many viewers as it may")
-	}
-	for o := range rm.subs {
-		if o.uid == uid && uid != "" {
-			rm.mu.Unlock()
-			return nil, errors.New("you're already watching this stream")
-		}
 	}
 	tracks := append([]*webrtc.TrackLocalStaticRTP(nil), rm.tracks...)
 	sim := rm.sim
@@ -493,7 +508,7 @@ func (s *server) subscribe(rm *room, c *conn, uid string) (*subscriber, error) {
 	if err != nil {
 		return nil, err
 	}
-	sub := &subscriber{pc: pc, c: c, uid: uid, asked: "auto"}
+	sub := &subscriber{pc: pc, c: c, uid: uid, dev: dev, asked: "auto"}
 	for _, t := range tracks {
 		sender, err := pc.AddTrack(t)
 		if err != nil {
@@ -538,9 +553,20 @@ func (s *server) subscribe(rm *room, c *conn, uid string) (*subscriber, error) {
 	if sim == nil {
 		lateSim = rm.sim
 	}
+	var replaced []*subscriber
+	for o := range rm.subs {
+		if sameWatcher(o, uid, dev) {
+			replaced = append(replaced, o)
+			delete(rm.subs, o)
+		}
+	}
 	rm.subs[sub] = true
-	n := len(rm.subs)
+	n = len(rm.subs)
+	roomSim := rm.sim
 	rm.mu.Unlock()
+	for _, o := range replaced {
+		rm.dropReplaced(o, roomSim)
+	}
 	for _, t := range late {
 		if sender, err := pc.AddTrack(t); err == nil {
 			go rm.forwardRTCP(sub, sender)
@@ -549,17 +575,35 @@ func (s *server) subscribe(rm *room, c *conn, uid string) (*subscriber, error) {
 	if lateSim != nil {
 		_ = rm.addSwitcher(sub, lateSim)
 	}
+	if len(tracks) == 0 && len(late) == 0 && sim == nil && lateSim == nil {
+		// Nothing to offer yet: an offer without media has no ICE in it, and the viewer's answer would be refused.
+		// OnTrack / readLayer give it the tracks (it's in rm.subs now) and offer them
+		log.Printf("[%s] viewer in (%d), waiting for the stream's first frame", rm.name, n)
+		return sub, nil
+	}
 	log.Printf("[%s] viewer in (%d)", rm.name, n)
-	// A viewer that never connects doesn't keep its connection (and ports) for ever
-	time.AfterFunc(30*time.Second, func() {
-		if pc.ConnectionState() != webrtc.PeerConnectionStateConnected {
-			rm.removeSub(sub)
-			_ = pc.Close()
-		}
-	})
 	rm.offerTo(sub)
 	return sub, nil
 }
+
+// dropReplaced ends a viewer that a newer watch of the same person and device replaced (already out of rm.subs).
+func (rm *room) dropReplaced(o *subscriber, sim *simulcast) {
+	if sim != nil {
+		sim.mu.Lock()
+		delete(sim.viewers, o)
+		sim.mu.Unlock()
+	}
+	log.Printf("[%s] viewer %s replaced by its new watch", rm.name, o.uid)
+	go func() {
+		// Told, in case it's still there (not "already watching": an app would subscribe again on that)
+		o.c.send(message{Type: "error", Message: "you're watching this stream on another connection now"})
+		_ = o.pc.Close()
+		_ = o.c.ws.Close()
+	}()
+}
+
+// viewerConnectWait: a viewer must be connected this long after its first offer, else it's let go.
+const viewerConnectWait = 30 * time.Second
 
 // subscribeGap: tests run it while a viewer is being made (a track arriving just then).
 var subscribeGap func(*room)
@@ -574,6 +618,15 @@ func (rm *room) offerTo(sub *subscriber) {
 	}
 	sub.pending = true
 	sub.mu.Unlock()
+	if sub.offered.CompareAndSwap(false, true) {
+		// A viewer that never connects doesn't keep its connection (and ports) for ever
+		time.AfterFunc(viewerConnectWait, func() {
+			if sub.pc.ConnectionState() != webrtc.PeerConnectionStateConnected {
+				rm.removeSub(sub)
+				_ = sub.pc.Close()
+			}
+		})
+	}
 	offer, err := sub.pc.CreateOffer(nil)
 	if err == nil {
 		err = sub.pc.SetLocalDescription(offer)
