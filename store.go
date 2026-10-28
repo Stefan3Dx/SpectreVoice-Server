@@ -307,6 +307,63 @@ func (st *store) history(conv string, before int64, limit int) ([]chatMsg, error
 	return out, rows.Err()
 }
 
+func (st *store) scanMessages(rows *sql.Rows) ([]chatMsg, error) {
+	defer rows.Close()
+	var out []chatMsg
+	for rows.Next() {
+		var m chatMsg
+		var del int
+		if err := rows.Scan(&m.ID, &m.To, &m.From, &m.Name, &m.Text, &m.At, &m.Edit, &del); err != nil {
+			return nil, err
+		}
+		if del == 1 {
+			m.Del, m.Text = true, ""
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// historyAfter gives up to limit messages of conv newer than after, oldest first (an app catching up).
+func (st *store) historyAfter(conv string, after int64, limit int) ([]chatMsg, error) {
+	rows, err := st.db.Query(`SELECT id,conv,from_uid,from_name,text,at,edited,deleted FROM messages WHERE conv=? AND id>? ORDER BY id ASC LIMIT ?`, conv, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	return st.scanMessages(rows)
+}
+
+// historyAround gives up to half messages up to and including id and half after it, oldest first, and whether
+// older and newer ones exist beyond them.
+func (st *store) historyAround(conv string, id int64, half int) (items []chatMsg, older, newer bool, err error) {
+	rows, err := st.db.Query(`SELECT id,conv,from_uid,from_name,text,at,edited,deleted FROM messages WHERE conv=? AND id<=? ORDER BY id DESC LIMIT ?`, conv, id, half+1)
+	if err != nil {
+		return nil, false, false, err
+	}
+	before, err := st.scanMessages(rows)
+	if err != nil {
+		return nil, false, false, err
+	}
+	if older = len(before) > half; older {
+		before = before[:half]
+	}
+	for i, j := 0, len(before)-1; i < j; i, j = i+1, j-1 {
+		before[i], before[j] = before[j], before[i]
+	}
+	rows, err = st.db.Query(`SELECT id,conv,from_uid,from_name,text,at,edited,deleted FROM messages WHERE conv=? AND id>? ORDER BY id ASC LIMIT ?`, conv, id, half+1)
+	if err != nil {
+		return nil, false, false, err
+	}
+	after, err := st.scanMessages(rows)
+	if err != nil {
+		return nil, false, false, err
+	}
+	if newer = len(after) > half; newer {
+		after = after[:half]
+	}
+	return append(before, after...), older, newer, nil
+}
+
 func (st *store) message(id int64) (*chatMsg, error) {
 	var m chatMsg
 	var del int

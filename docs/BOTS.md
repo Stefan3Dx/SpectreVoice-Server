@@ -61,6 +61,8 @@ Endpoint: `wss://<host>/v1/ws` (plain `ws://` on a LAN, port 7880 by default).
   old, half-dead connection at once instead of counting as a second one.
 - `password`: only when the server has a join password (`SV_JOIN_PASSWORD`).
 - `comm`: leave it out, or give the bot's own community id.
+- `ch`: the voice channel it was in before a reconnect (optional): it lands back there if it could join it now
+  without a password, else in the default one.
 
 4. The server answers with the welcome, or `{"t":"error","op":"hello","why":…,"message":…}` and closes.
 
@@ -128,7 +130,7 @@ is dropped after 75 s of silence.
 | `{"t":"ping","n":1}` | | `pong` |
 | `{"t":"join","ch":5,"password":"…"}` | | move into a voice channel of the community (text channels can't be joined; locked ones want their password, 5 tries a minute; full ones refuse) |
 | `{"t":"say","to":"c:5","text":"…","n":"my-id"}` | not muted | a chat message: `to` is `c:<channel>` (a channel the bot may read: unlocked, or the one it's in), `g:<comm>` (the community chat) or `u:<uid>` (a private message to someone in the community). Up to 4000 characters. `n` (optional, ≤ 64 chars) comes back on the `msg` so you can match it. A text starting with `!` in a voice channel also goes to the music bot, if the server has one |
-| `{"t":"history","to":"c:5","before":0}` | | the last 50 messages of a chat (`before`: an id, for older pages; `more` says if there are) |
+| `{"t":"history","to":"c:5","before":0}` | | the last 50 messages of a chat (`before`: an id, for older pages; `more` says if there are). `after: <id>` instead gives the ones newer than that id (catching up after a reconnect; `more`: there are newer still); `around: <id>` the 25 up to it and the 25 after (`more`: older exist, `moreAfter`: newer) |
 | `{"t":"dms"}` | | the bot's private conversations |
 | `{"t":"edit","id":…,"text":"…"}`, `{"t":"unsay","id":…}` | own message (`unsay` of others': `delete_messages`) | change or take back a message |
 | `{"t":"poke","uid":"…","text":"…"}` | | a poke to someone connected (≤ 200 chars) |

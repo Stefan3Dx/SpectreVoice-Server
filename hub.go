@@ -357,6 +357,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		Nonce    string `json:"nonce"`
 		V        int    `json:"v"`
 		Dev      string `json:"dev"` // this device (optional): a new connection from it replaces its old one
+		Ch       int64  `json:"ch"`  // the channel the app was in (optional): back there after a reconnect, if still allowed
 	}
 	if ws.ReadJSON(&hello) != nil || hello.T != "hello" {
 		fail("bad", "say hello first")
@@ -418,6 +419,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		comm = h.pickCommunity(uid, hello.Comm)
 	}
 	pre := h.preEnter(uid, comm)
+	pre.wantCh = hello.Ch
 	h.mu.Lock()
 	// The same device again (a dropped Wi-Fi, before the old socket timed out): the old one goes, and doesn't count
 	mine, gone := 0, 0
@@ -544,7 +546,7 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 	case "say", "relay":
 		h.say(ss, t, str(m, "to"), m)
 	case "history":
-		h.history(ss, str(m, "to"), i64(m, "before"))
+		h.history(ss, str(m, "to"), i64(m, "before"), i64(m, "after"), i64(m, "around"))
 	case "dms":
 		list, err := h.s.store.dms(ss.uid, 100)
 		if err != nil {
@@ -804,25 +806,44 @@ func (h *hub) say(ss *session, t, to string, m map[string]any) {
 	}
 }
 
-func (h *hub) history(ss *session, to string, before int64) {
+// history: the last page of a chat (before: older pages), the messages after an id (a reconnecting app catches
+// up from the last one it has), or the page around one (a search result).
+func (h *hub) history(ss *session, to string, before, after, around int64) {
 	conv, _, _, err := h.target(ss, to)
 	if err != nil {
 		ss.refuse("history", "bad", err.Error())
 		return
 	}
-	items, err := h.s.store.history(conv, before, historyPage+1)
+	out := map[string]any{"t": "history", "to": conv, "before": before}
+	var items []chatMsg
+	more := false
+	switch {
+	case around > 0:
+		var older, newer bool
+		items, older, newer, err = h.s.store.historyAround(conv, around, historyPage/2)
+		out["around"], out["moreAfter"] = around, newer
+		more = older
+	case after > 0:
+		items, err = h.s.store.historyAfter(conv, after, historyPage+1)
+		out["after"] = after
+		if more = len(items) > historyPage; more {
+			items = items[:historyPage]
+		}
+	default:
+		items, err = h.s.store.history(conv, before, historyPage+1)
+		if more = len(items) > historyPage; more {
+			items = items[1:]
+		}
+	}
 	if err != nil {
 		ss.refuse("history", "server", err.Error())
 		return
 	}
-	more := len(items) > historyPage
-	if more {
-		items = items[1:]
-	}
 	if items == nil {
 		items = []chatMsg{}
 	}
-	ss.send(map[string]any{"t": "history", "to": conv, "items": items, "more": more, "before": before})
+	out["items"], out["more"] = items, more
+	ss.send(out)
 }
 
 // edit changes or takes back a message: its writer, or a moderator for a channel's.

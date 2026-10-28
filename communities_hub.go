@@ -51,8 +51,9 @@ func (h *hub) enterLocked(ss *session, comm int64) map[string]any {
 // enterPre: what enterLocked reads from the database, read before taking h.mu (the database has one connection: a
 // slow query mustn't hold the whole hub).
 type enterPre struct {
-	comms []community
-	roles []crole
+	comms  []community
+	roles  []crole
+	wantCh int64 // the channel the app asks to be back in (a reconnect), if still allowed
 }
 
 func (h *hub) preEnter(uid string, comm int64) *enterPre {
@@ -92,6 +93,9 @@ func (h *hub) enterWith(ss *session, comm int64, pre *enterPre) map[string]any {
 	ss.role, ss.roles = h.legacyRole(comm, ss.uid), a.member[ss.uid]
 	ss.vmuted, ss.talker = h.s.mods.voiceMuted(ss.uid, comm), false
 	ss.ch = h.defaultChannel(comm)
+	if pre != nil && pre.wantCh != 0 && h.mayLandIn(ss, pre.wantCh) {
+		ss.ch = pre.wantCh
+	}
 	members := make([]member, 0)
 	for _, o := range h.sessions {
 		if o.comm == comm {
@@ -124,6 +128,22 @@ func (h *hub) enterWith(ss *session, comm int64, pre *enterPre) map[string]any {
 		}
 	}()
 	return out
+}
+
+// mayLandIn: a reconnecting app goes straight back into ch when it could join it now without a password (a locked
+// one asks again); h.mu held.
+func (h *hub) mayLandIn(ss *session, ch int64) bool {
+	c := h.chans[ch]
+	if c == nil || c.Comm != ss.comm || c.Kind != "" {
+		return false
+	}
+	if c.pass != "" && !h.may(ss, pBypassLocks) {
+		return false
+	}
+	if c.MaxUsers > 0 && h.countIn(ch) >= c.MaxUsers && !h.may(ss, pBypassLocks) {
+		return false
+	}
+	return !h.s.mods.channelBanned(ss.uid, ch) || h.may(ss, pChannelBan)
 }
 
 // enter: the app moves ss into another of its communities.
