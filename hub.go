@@ -391,6 +391,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	ss := &session{uid: uid, name: name, client: clip(hello.Client, 40), base: requestBase(r), ws: ws, out: make(chan []byte, sessQueue), done: make(chan struct{}),
 		nonce: clip(hello.Nonce, 100), since: time.Now().UnixMilli(), dev: clip(hello.Dev, 64)}
 	comm := h.pickCommunity(uid, hello.Comm)
+	pre := h.preEnter(uid, comm)
 	h.mu.Lock()
 	// The same device again (a dropped Wi-Fi, before the old socket timed out): the old one goes, and doesn't count
 	mine, gone := 0, 0
@@ -424,7 +425,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 			"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil},
 		"tier": h.s.lic.welcome(),
 	}
-	for k, v := range h.enterLocked(ss, comm) {
+	for k, v := range h.enterWith(ss, comm, pre) {
 		welcome[k] = v
 	}
 	ss.send(welcome)
@@ -469,11 +470,11 @@ func (h *hub) leave(ss *session) {
 	ss.close()
 	h.mu.Lock()
 	delete(h.sessions, ss.sid)
-	ch := ss.ch
+	ch, whisp := ss.ch, ss.whispering
 	h.toComm(ss.comm, map[string]any{"t": "member-left", "sid": ss.sid, "uid": ss.uid})
 	h.mu.Unlock()
 	h.s.voice.drop(ss)
-	if ss.whispering {
+	if whisp {
 		h.s.voice.syncAll()
 	} else {
 		h.s.voice.sync(ch)

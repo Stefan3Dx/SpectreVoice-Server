@@ -45,6 +45,25 @@ func (h *hub) pickCommunity(uid string, want int64) int64 {
 // enterLocked puts ss into comm (0: none) and gives what the app needs to show it; h.mu held. Whoever was with ss
 // before is told it left, those in comm that it came.
 func (h *hub) enterLocked(ss *session, comm int64) map[string]any {
+	return h.enterWith(ss, comm, nil)
+}
+
+// enterPre: what enterLocked reads from the database, read before taking h.mu (the database has one connection: a
+// slow query mustn't hold the whole hub).
+type enterPre struct {
+	comms []community
+	roles []crole
+}
+
+func (h *hub) preEnter(uid string, comm int64) *enterPre {
+	p := &enterPre{comms: h.myCommunities(uid)}
+	if comm != 0 {
+		p.roles, _ = h.s.store.rolesOf(comm)
+	}
+	return p
+}
+
+func (h *hub) enterWith(ss *session, comm int64, pre *enterPre) map[string]any {
 	old, oldCh := ss.comm, ss.ch
 	if old != 0 && old != comm {
 		h.toComm(old, map[string]any{"t": "member-left", "sid": ss.sid, "uid": ss.uid})
@@ -53,7 +72,13 @@ func (h *hub) enterLocked(ss *session, comm int64) map[string]any {
 	ss.ch = 0
 	ss.talk = false
 	ss.whispering, ss.whisperTo, ss.whisperCh = false, nil, nil
-	out := map[string]any{"communities": h.myCommunities(ss.uid), "staff": h.staff(ss.uid), "live": h.liveList(comm)}
+	var comms []community
+	if pre != nil {
+		comms = pre.comms
+	} else {
+		comms = h.myCommunities(ss.uid)
+	}
+	out := map[string]any{"communities": comms, "staff": h.staff(ss.uid), "live": h.liveList(comm)}
 	if comm == 0 {
 		ss.role, ss.roles = roleMember, nil
 		out["community"] = nil
@@ -73,7 +98,12 @@ func (h *hub) enterLocked(ss *session, comm int64) map[string]any {
 			members = append(members, o.member())
 		}
 	}
-	rs, _ := h.s.store.rolesOf(comm)
+	var rs []crole
+	if pre != nil {
+		rs = pre.roles
+	} else {
+		rs, _ = h.s.store.rolesOf(comm)
+	}
 	if rs == nil {
 		rs = []crole{}
 	}
@@ -106,8 +136,9 @@ func (h *hub) enter(ss *session, comm int64) {
 		ss.refuse("enter", "banned", "you are banned from that community")
 		return
 	}
+	pre := h.preEnter(ss.uid, comm)
 	h.mu.Lock()
-	payload := h.enterLocked(ss, comm)
+	payload := h.enterWith(ss, comm, pre)
 	payload["t"] = "community"
 	ss.send(payload)
 	h.mu.Unlock()
@@ -297,6 +328,11 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 		log.Printf("community %d deleted by %s", comm, ss.uid)
 		for _, o := range inside {
 			h.mu.Lock()
+			if h.sessions[o.sid] != o || o.comm != comm {
+				// Gone meanwhile (or moved on by itself): not brought back as a ghost
+				h.mu.Unlock()
+				continue
+			}
 			payload := h.enterLocked(o, h.firstOther(o.uid, comm))
 			payload["t"] = "community"
 			o.send(payload)
@@ -308,19 +344,20 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 		h.saveRole(ss, m)
 	case "role-del":
 		h.mu.Lock()
+		comm := ss.comm // read once, under the lock
 		id := i64(m, "id")
-		r, ok := h.access(ss.comm).roles[id]
-		allowed := ok && h.may(ss, pManageRoles) && !r.Everyone && r.Pos < h.rank(ss.comm, ss.uid)
+		r, ok := h.access(comm).roles[id]
+		allowed := ok && h.may(ss, pManageRoles) && !r.Everyone && r.Pos < h.rank(comm, ss.uid)
 		h.mu.Unlock()
 		if !allowed {
 			ss.refuse(t, "role", "not allowed")
 			return true
 		}
-		if err := st.deleteRole(ss.comm, id); err != nil {
+		if err := st.deleteRole(comm, id); err != nil {
 			ss.refuse(t, "server", err.Error())
 			return true
 		}
-		h.rolesChanged(ss.comm)
+		h.rolesChanged(comm)
 	case "member-roles":
 		h.setMemberRoles(ss, str(m, "uid"), m["roles"])
 	default:
@@ -378,16 +415,17 @@ func (h *hub) rolesChanged(comm int64) {
 func (h *hub) saveRole(ss *session, m map[string]any) {
 	const t = "role-save"
 	h.mu.Lock()
-	if ss.comm == 0 || !h.may(ss, pManageRoles) {
+	comm := ss.comm // read once, under the lock (a ban may move this session meanwhile)
+	if comm == 0 || !h.may(ss, pManageRoles) {
 		h.mu.Unlock()
 		ss.refuse(t, "role", "not allowed")
 		return
 	}
-	a := h.access(ss.comm)
-	mine := h.permsOf(ss.comm, ss.uid)
-	top := h.rank(ss.comm, ss.uid)
+	a := h.access(comm)
+	mine := h.permsOf(comm, ss.uid)
+	top := h.rank(comm, ss.uid)
 	id := i64(m, "id")
-	r := crole{Comm: ss.comm}
+	r := crole{Comm: comm}
 	if id != 0 {
 		old, ok := a.roles[id]
 		if !ok || (!old.Everyone && old.Pos >= top) {
@@ -426,8 +464,8 @@ func (h *hub) saveRole(ss *session, m map[string]any) {
 		ss.refuse(t, "server", err.Error())
 		return
 	}
-	log.Printf("community %d: role %d %q saved by %s", ss.comm, r.ID, r.Name, ss.uid)
-	h.rolesChanged(ss.comm)
+	log.Printf("community %d: role %d %q saved by %s", comm, r.ID, r.Name, ss.uid)
+	h.rolesChanged(comm)
 }
 
 func (h *hub) setMemberRoles(ss *session, uid string, v any) {
@@ -445,7 +483,8 @@ func (h *hub) setMemberRoles(ss *session, uid string, v any) {
 		}
 	}
 	h.mu.Lock()
-	if ss.comm == 0 || !h.may(ss, pManageRoles) || !h.s.store.isMember(ss.comm, uid) {
+	comm := ss.comm // read once, under the lock (a ban may move this session meanwhile)
+	if comm == 0 || !h.may(ss, pManageRoles) || !h.s.store.isMember(comm, uid) {
 		h.mu.Unlock()
 		ss.refuse(t, "role", "not allowed")
 		return
@@ -455,8 +494,8 @@ func (h *hub) setMemberRoles(ss *session, uid string, v any) {
 		ss.refuse(t, "role", "they rank as high as you")
 		return
 	}
-	a := h.access(ss.comm)
-	top := h.rank(ss.comm, ss.uid)
+	a := h.access(comm)
+	top := h.rank(comm, ss.uid)
 	// Roles at or above one's own place stay as they are; the rest are what was asked
 	var next []int64
 	for _, id := range a.member[uid] {
@@ -470,13 +509,13 @@ func (h *hub) setMemberRoles(ss *session, uid string, v any) {
 		}
 	}
 	h.mu.Unlock()
-	if err := h.s.store.setMemberRoles(ss.comm, uid, next); err != nil {
+	if err := h.s.store.setMemberRoles(comm, uid, next); err != nil {
 		ss.refuse(t, "server", err.Error())
 		return
 	}
-	log.Printf("community %d: %s's roles %v (by %s)", ss.comm, uid, next, ss.uid)
+	log.Printf("community %d: %s's roles %v (by %s)", comm, uid, next, ss.uid)
 	h.mu.Lock()
-	h.refreshRoles(ss.comm)
+	h.refreshRoles(comm)
 	h.mu.Unlock()
 	ss.send(map[string]any{"t": "done", "op": t, "uid": uid})
 }

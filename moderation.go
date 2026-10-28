@@ -81,6 +81,14 @@ func (r *reports) allow(who string, per int) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
+	// Who hasn't filed anything this hour is forgotten (the map can't grow for ever)
+	if len(r.rate) > 5000 {
+		for k, ts := range r.rate {
+			if len(ts) == 0 || now.Sub(ts[len(ts)-1]) >= time.Hour {
+				delete(r.rate, k)
+			}
+		}
+	}
 	recent := r.rate[who][:0]
 	for _, t := range r.rate[who] {
 		if now.Sub(t) < time.Hour {

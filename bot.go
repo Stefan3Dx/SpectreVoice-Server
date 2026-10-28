@@ -485,8 +485,9 @@ func (mb *musicBots) op(ss *session, t string, m map[string]any) bool {
 	ch := ss.ch
 	h.mu.Unlock()
 	if !mb.run(ss, ch, str(m, "cmd"), str(m, "q")) {
+		comm := h.commOf(ss)
 		mb.mu.Lock()
-		b := mb.bots[ss.comm]
+		b := mb.bots[comm]
 		mb.mu.Unlock()
 		if b != nil {
 			ss.send(b.status())
@@ -500,13 +501,17 @@ func (mb *musicBots) op(ss *session, t string, m map[string]any) bool {
 // run: one command; ch is where it was typed (only for the answer), the bot goes to the sender's voice channel.
 func (mb *musicBots) run(ss *session, _ int64, cmd, arg string) bool {
 	h := mb.s.hub
+	// Where and who, once (the search below takes a while; the session may move or rename meanwhile)
+	h.mu.Lock()
+	comm, name := ss.comm, ss.name
+	h.mu.Unlock()
 	mb.mu.Lock()
-	b := mb.bots[ss.comm]
+	b := mb.bots[comm]
 	mb.mu.Unlock()
 	h.mu.Lock()
 	boss := h.may(ss, pMusic)
 	ch := ss.ch // the sender's voice channel
-	if c := h.chans[ch]; c == nil || c.Comm != ss.comm || c.Kind != "" {
+	if c := h.chans[ch]; c == nil || c.Comm != comm || c.Kind != "" {
 		ch = 0
 	}
 	listeners, inBot := 0, false
@@ -558,8 +563,8 @@ func (mb *musicBots) run(ss *session, _ int64, cmd, arg string) bool {
 				ss.refuse("music", "gone", "nothing found for "+clip(arg, 60))
 				return
 			}
-			sg.By, sg.ByUID = ss.name, ss.uid
-			bot, err := mb.botOf(ss.comm, ch)
+			sg.By, sg.ByUID = name, ss.uid
+			bot, err := mb.botOf(comm, ch)
 			if err != nil {
 				ss.refuse("music", "server", err.Error())
 				return
@@ -605,7 +610,7 @@ func (mb *musicBots) run(ss *session, _ int64, cmd, arg string) bool {
 				c()
 			}
 		} else {
-			b.say(fmt.Sprintf("⏭ %s vrea mai departe (%d/%d)", ss.name, got, need))
+			b.say(fmt.Sprintf("⏭ %s vrea mai departe (%d/%d)", name, got, need))
 		}
 	case "pause", "resume", "stop":
 		if b == nil {
