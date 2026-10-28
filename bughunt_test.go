@@ -310,3 +310,23 @@ func TestFileSpaceQuotaNotByName(t *testing.T) {
 		t.Fatalf("a made-up space got its own quota: %d", c)
 	}
 }
+
+// invite-use moves one's voice like join (two invites to two channels, alternated): it has the same slower budget.
+func TestInviteUseVoiceBudget(t *testing.T) {
+	ownerKey := newKey(t)
+	spki, _ := x509.MarshalPKIXPublicKey(&ownerKey.PublicKey)
+	_, hs := newTestServer(t, func(c *config) { c.owners = uidOf(spki) })
+	o, _ := dialV(t, hs, ownerKey, "Owner", "")
+	codes := []string{}
+	for _, ch := range []string{"Lobby", "AFK"} {
+		o.send(map[string]any{"t": "invite-create", "ch": chanID(t, o.wel, ch)})
+		codes = append(codes, o.wait(isT("invite"))["code"].(string))
+	}
+	a, _ := dialV(t, hs, newKey(t), "A", "")
+	for i := range 30 {
+		a.send(map[string]any{"t": "invite-use", "invite": codes[i%2]})
+	}
+	if e := a.wait(func(m map[string]any) bool { return m["t"] == "error" && m["op"] == "invite-use" }); e["why"] != "rate" {
+		t.Fatal(e)
+	}
+}

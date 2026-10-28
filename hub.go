@@ -1465,7 +1465,7 @@ func (h *hub) commOf(ss *session) int64 {
 }
 
 // voiceOps: the messages that make the server re-offer voice to others.
-var voiceOps = map[string]bool{"join": true, "whisper": true, "move": true, "community-join": true}
+var voiceOps = map[string]bool{"join": true, "whisper": true, "move": true, "community-join": true, "invite-use": true, "talker": true, "ch-kick": true}
 
 // voiceOp: may this session change voice now? Three a second, bursts of ten.
 func (ss *session) voiceOp() bool {
