@@ -1,4 +1,4 @@
-// Private messages, end-to-end encrypted (e2e.js; docs/E2E.md in the apps repo): this browser's device key (a
+// Private messages, end-to-end encrypted (e2e.js; docs/E2E.md): this browser's device key (a
 // non-extractable ECDH key in IndexedDB) published signed by the identity, each line sealed for every device of
 // both people, opened here; the server keeps only ciphertext. A "Private" tab in the chat column, a "Message" button
 // on a person's card, the lock on every line, the safety number to compare ("Verify"), a warning when someone's

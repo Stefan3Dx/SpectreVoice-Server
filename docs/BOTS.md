@@ -101,7 +101,7 @@ Every message is a JSON object with `"t"`. Unknown types should be ignored (new 
 |---|---|---|
 | `member` | `m: {sid,uid,name,ch,role,roles,client,mic,snd,away,talk,awayMsg,rtt,loss,since,vmuted,talker,bot}` | someone came, moved channel, or changed state; also one for the bot itself |
 | `member-left` | `sid, uid` | a connection left the server |
-| `msg` | `m: {id,to,from,name,text,at,edit?,del?}`, `n?` | a chat message the bot may read: in a channel (`to: "c:<ch>"`), the server chat (`"g:1"`) or a private message to it (`"d:<uid>:<uid>"`). An edit or a deletion comes as `msg` again with the same `id` (`edit` set, or `del: true` and an empty text). The music bot's notes come as `msg` with a negative `id` and `from: "bot-music-1"` |
+| `msg` | `m: {id,to,from,name,text,at,edit?,del?}`, `n?` | a chat message the bot may read: in a channel (`to: "c:<ch>"`), the server chat (`"g:1"`) or a private message to it (`"d:<uid>:<uid>"`). Private messages from the apps are end-to-end encrypted (docs/E2E.md): they come with an empty `text` and the envelope in `e2e`, which a bot can't read (bots have no device key, so the apps don't write to them privately). An edit or a deletion comes as `msg` again with the same `id` (`edit` set, or `del: true` and an empty text). The music bot's notes come as `msg` with a negative `id` and `from: "bot-music-1"` |
 | `history` | `to, items: [msg…], more, before` | the answer to `history` |
 | `dms` | `items: [{with,name,last}]` | the answer to `dms` |
 | `channel` / `channel-del` | `c: {channel}` / `id` | a channel saved or removed |
@@ -129,10 +129,10 @@ is dropped after 75 s of silence.
 |---|---|---|
 | `{"t":"ping","n":1}` | | `pong` |
 | `{"t":"join","ch":5,"password":"…"}` | | move into a voice channel (text channels can't be joined; locked ones want their password, 5 tries a minute; full ones refuse) |
-| `{"t":"say","to":"c:5","text":"…","n":"my-id"}` | not muted | a chat message: `to` is `c:<channel>` (a channel the bot may read: unlocked, or the one it's in), `g:1` (the server chat) or `u:<uid>` (a private message to someone on the server). Up to 4000 characters. `n` (optional, ≤ 64 chars) comes back on the `msg` so you can match it. A text starting with `!` in a voice channel also goes to the music bot, if the server has one |
+| `{"t":"say","to":"c:5","text":"…","n":"my-id"}` | not muted | a chat message: `to` is `c:<channel>` (a channel the bot may read: unlocked, or the one it's in), `g:1` (the server chat) or `u:<uid>` (a private message to someone on the server; the apps show a bot's private lines as \"not encrypted\"). Up to 4000 characters. `n` (optional, ≤ 64 chars) comes back on the `msg` so you can match it. A text starting with `!` in a voice channel also goes to the music bot, if the server has one |
 | `{"t":"history","to":"c:5","before":0}` | | the last 50 messages of a chat (`before`: an id, for older pages; `more` says if there are). `after: <id>` instead gives the ones newer than that id (catching up after a reconnect; `more`: there are newer still); `around: <id>` the 25 up to it and the 25 after (`more`: older exist, `moreAfter`: newer) |
 | `{"t":"dms"}` | | the bot's private conversations |
-| `{"t":"search","q":"word","to":"c:5","before":0}` | | the messages with `q` in them (2–64 characters, case-insensitive), newest first, 50 a page (`before`: the last page's oldest id). `to` is a chat it may read, or `*` for all of them (the server's channels and chat, its own private ones). Answer: `{"t":"search","q","to","items":[msg…],"more"}`. Two a second |
+| `{"t":"search","q":"word","to":"c:5","before":0}` | | the messages with `q` in them (2–64 characters, case-insensitive), newest first, 50 a page (`before`: the last page's oldest id). `to` is a chat it may read, or `*` for all of them (the server's channels and chat; private chats are never searched by the server). Answer: `{"t":"search","q","to","items":[msg…],"more"}`. Two a second |
 | `{"t":"edit","id":…,"text":"…"}`, `{"t":"unsay","id":…}` | own message (`unsay` of others': `delete_messages`) | change or take back a message |
 | `{"t":"poke","uid":"…","text":"…"}` | | a poke to someone connected (≤ 200 chars) |
 | `{"t":"state","away":true,"awayMsg":"…"}` | | the bot's own state flags (`mic`, `snd`, `away`, `awayMsg`), shown in member lists |

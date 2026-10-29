@@ -1,4 +1,4 @@
-// End-to-end encryption of private messages, with WebCrypto only (docs/E2E.md in the apps repo; the same scheme as
+// End-to-end encryption of private messages, with WebCrypto only (docs/E2E.md; the same scheme as
 // the apps' core/E2eCrypto.kt): ECDH and ECDSA on P-256, HKDF-SHA256, AES-256-GCM, SHA-256/512. Nothing here keeps
 // or logs anything; dm.js holds the keys. Works in the browser and in node (globalThis.crypto) for the interop tests.
 

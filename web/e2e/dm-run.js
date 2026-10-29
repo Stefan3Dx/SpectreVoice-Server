@@ -6,7 +6,7 @@
 // Ana opens a private chat with Bob from his card, sees the lock, sends <secret text> and a picture; Bob gets both
 // decrypted (the picture opened from the encrypted upload), with the lock; Bob answers; both show the same safety
 // number. Prints SENT once Ana's line is delivered (the Go test then looks at the database), OK at the end.
-// Screenshots (when a folder is given): dm-web.png (Ana's private chat), dm-web-safety.png (the safety number).
+// Screenshots (when a folder is given): e2e-web-dm.png (Ana's private chat), e2e-web-safety.png (the safety number).
 
 const { chromium } = require('playwright');
 const path = require('path');
@@ -65,7 +65,7 @@ async function join(browser, name) {
     await ana.waitForFunction(() => document.querySelectorAll('#dmList .msg').length === 1, null, { timeout: 5000 });
     await ana.fill('#dmFilter', '');
     await ana.waitForFunction(() => document.querySelectorAll('#dmList .msg').length >= 3, null, { timeout: 5000 });
-    if (shots) await ana.screenshot({ path: path.join(shots, 'dm-web.png') });
+    if (shots) await ana.screenshot({ path: path.join(shots, 'e2e-web-dm.png') });
 
     // The same safety number on both sides
     await ana.click('#dmVerifyBtn');
@@ -75,7 +75,7 @@ async function join(browser, name) {
     const na = await ana.textContent('#safetyNumber');
     const nb = await bob.textContent('#safetyNumber');
     if (!/^\d{60}$/.test(na) || na !== nb) throw new Error('safety numbers: ' + na + ' / ' + nb);
-    if (shots) await ana.screenshot({ path: path.join(shots, 'dm-web-safety.png') });
+    if (shots) await ana.screenshot({ path: path.join(shots, 'e2e-web-safety.png') });
     await ana.click('.dlg-foot button.primary');
     await ana.waitForSelector('.verified', { timeout: 5000 });
     console.log('OK');

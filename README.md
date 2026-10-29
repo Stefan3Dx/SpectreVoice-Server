@@ -57,7 +57,8 @@ joins a channel. A server with a password asks for it. The identity is a P-256 k
 the nickname is remembered. Channels with who's where and who talks, join (locked channels ask the password), listen
 and talk through WebRTC (push-to-talk with Space or the big button, open mic, mute, deafen, a volume per person),
 channel and server chat with history, RO/EN. Needs HTTPS (or `localhost`) for the microphone and WebCrypto.
-Not in the web client, by design: streams, games, files, private messages, moderation — the apps have them.
+Private messages are end-to-end encrypted (docs/E2E.md): the server keeps and passes on only ciphertext, in the apps and in the web client (`web/dm.js`, `web/e2e.js`).
+Not in the web client, by design: games, moderation — the apps have them.
 
 Files: `web/index.html`, `web/app.js`, `web/app.css`, embedded in the binary (`webapp.go`); no frameworks, no build
 step, no external scripts or fonts, a strict `Content-Security-Policy` (everything from this server only).
@@ -73,6 +74,8 @@ SV_WEB_E2E=1 NODE_PATH=$(npm root -g) go test -run TestWebE2E -v .
 It connects as "Web", checks the welcome (channel list), the voice connection (offer/answer, `connected`), a message
 from a Go client reaching the page and one from the page reaching it, and the talking indicator from the fake
 microphone (`web/e2e/run.js`).
+`TestWebDmE2E` (same switch) has two browsers exchange end-to-end encrypted private messages and a picture through the
+server and checks the database and the files folder hold no words and no picture (`web/e2e/dm-run.js`).
 
 ## TV (IPTV)
 

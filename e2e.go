@@ -3,7 +3,7 @@ package main
 // End-to-end encrypted private messages. The apps encrypt a private message to every device of both people
 // (ECDH P-256 + HKDF-SHA256 + AES-256-GCM, signed with the sender's identity key) and the server keeps and passes on
 // only that envelope: it never sees the words or what an attachment holds. The scheme is described in docs/E2E.md
-// (apps repo) and implemented in web/e2e.js here and core/E2eCrypto.kt in the apps.
+// and implemented in web/e2e.js here and core/E2eCrypto.kt in the apps.
 //
 //	-> {"t":"e2e-publish","rec":{"v":1,"uid","dev","ik","dk","ts","sig"}}   a device's key, signed by the identity
 //	<- {"t":"e2e-published","dev":…}                                       (everyone else: {"t":"e2e-changed","uid"})
