@@ -442,6 +442,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	pre := h.preEnter()
 	info := h.s.serverInfo()
 	tvFull, tvPub := h.s.tv.state(true), h.s.tv.state(false)
+	sbw := h.s.sb.welcome()
 	pre.wantCh = hello.Ch
 	h.mu.Lock()
 	// The same device again (a dropped Wi-Fi, before the old socket timed out): the old one goes, and doesn't count
@@ -493,6 +494,9 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		welcome["tv"] = tvPub
 		if h.may(ss, pTV) {
 			welcome["tv"] = tvFull
+		}
+		if sbw != nil {
+			welcome["sb"] = sbw
 		}
 	}
 	ss.send(welcome)
@@ -646,6 +650,8 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 		h.p2pOp(ss, t, m)
 	case "tv":
 		h.tvOp(ss, m)
+	case "sb":
+		h.soundboardOp(ss, m)
 	default:
 		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
 			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {

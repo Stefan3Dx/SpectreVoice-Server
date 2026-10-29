@@ -23,26 +23,28 @@ import (
 type perm uint64
 
 const (
-	pAdministrator   perm = 1 << 0  // everything in the community
-	pManageCommunity perm = 1 << 1  // the server's name, description, icon; invites list; bots
-	pManageChannels  perm = 1 << 2  // create, edit, delete channels
-	pManageRoles     perm = 1 << 3  // create, edit roles; give roles below one's own
-	pMove            perm = 1 << 4  // move people between channels
-	pKick            perm = 1 << 5  // kick from the server connection
-	pBan             perm = 1 << 6  // ban from the community
-	pMuteChat        perm = 1 << 7  // stop someone writing for a while
-	pChannelBan      perm = 1 << 8  // keep someone out of a channel
-	pDeleteMessages  perm = 1 << 9  // take back others' channel messages
-	pInvite          perm = 1 << 10 // make invites
-	pStream          perm = 1 << 11 // share the screen / camera
-	pBypassLocks     perm = 1 << 12 // enter locked or full channels, read their chat
-	pMentionAll      perm = 1 << 13 // @everyone notifies everyone
-	pSpeak           perm = 1 << 14 // talk in voice channels
-	pMuteVoice       perm = 1 << 15 // silence someone's voice for everyone; let people talk in moderated channels
-	pFiles           perm = 1 << 16 // manage the channels' files (folders, others' files)
-	pMusic           perm = 1 << 17 // control the music bot for everyone (skip, stop, without a vote)
-	pTV              perm = 1 << 18 // the server's TV: its playlist, who may change the channel, the channel (tv.go)
-	pAll             perm = 1<<19 - 1
+	pAdministrator    perm = 1 << 0  // everything in the community
+	pManageCommunity  perm = 1 << 1  // the server's name, description, icon; invites list; bots
+	pManageChannels   perm = 1 << 2  // create, edit, delete channels
+	pManageRoles      perm = 1 << 3  // create, edit roles; give roles below one's own
+	pMove             perm = 1 << 4  // move people between channels
+	pKick             perm = 1 << 5  // kick from the server connection
+	pBan              perm = 1 << 6  // ban from the community
+	pMuteChat         perm = 1 << 7  // stop someone writing for a while
+	pChannelBan       perm = 1 << 8  // keep someone out of a channel
+	pDeleteMessages   perm = 1 << 9  // take back others' channel messages
+	pInvite           perm = 1 << 10 // make invites
+	pStream           perm = 1 << 11 // share the screen / camera
+	pBypassLocks      perm = 1 << 12 // enter locked or full channels, read their chat
+	pMentionAll       perm = 1 << 13 // @everyone notifies everyone
+	pSpeak            perm = 1 << 14 // talk in voice channels
+	pMuteVoice        perm = 1 << 15 // silence someone's voice for everyone; let people talk in moderated channels
+	pFiles            perm = 1 << 16 // manage the channels' files (folders, others' files)
+	pMusic            perm = 1 << 17 // control the music bot for everyone (skip, stop, without a vote)
+	pTV               perm = 1 << 18 // the server's TV: its playlist, who may change the channel, the channel (tv.go)
+	pSoundboard       perm = 1 << 19 // play the server's sounds into one's voice channel (soundboard.go)
+	pSoundboardManage perm = 1 << 20 // upload, rename and remove the server's sounds
+	pAll              perm = 1<<21 - 1
 )
 
 // The permissions apps may show, by name (role-save takes and gives these).
@@ -52,6 +54,7 @@ var permNames = map[string]perm{
 	"channel_ban": pChannelBan, "delete_messages": pDeleteMessages, "invite": pInvite, "stream": pStream,
 	"bypass_locks": pBypassLocks, "mention_all": pMentionAll, "speak": pSpeak,
 	"mute_voice": pMuteVoice, "files": pFiles, "music": pMusic, "tv": pTV,
+	"soundboard": pSoundboard, "soundboard_manage": pSoundboardManage,
 }
 
 func permList(p perm) []string {
@@ -81,9 +84,9 @@ func permOf(v any) perm {
 }
 
 const (
-	everyonePerms = pInvite | pStream | pSpeak
+	everyonePerms = pInvite | pStream | pSpeak | pSoundboard
 	modPerms      = pMove | pKick | pMuteChat | pChannelBan | pDeleteMessages | pMuteVoice | pFiles | pMusic | everyonePerms
-	adminPerms    = pAdministrator | modPerms | pManageChannels | pManageRoles | pManageCommunity | pBan | pTV
+	adminPerms    = pAdministrator | modPerms | pManageChannels | pManageRoles | pManageCommunity | pBan | pTV | pSoundboardManage
 )
 
 type community struct {

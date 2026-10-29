@@ -88,6 +88,8 @@ type config struct {
 	tvVideo     string // "auto" (VAAPI when it works, else x264), "vaapi", "x264"
 	tvVaapi     string // the VAAPI device
 	tvIdle      int    // seconds the TV plays with nobody watching
+	noSounds    bool   // SV_SOUNDBOARD=false: no server soundboard (soundboard.go)
+	soundsMax   int    // the server's sounds at most (SV_SOUNDS_MAX)
 }
 
 type server struct {
@@ -115,8 +117,9 @@ type server struct {
 	metrics *metrics
 	admin   *adminAuth
 	logs    *logRing
-	conf    serverConf // name and password, as the admins set them (settings.go)
-	tv      *tvManager // the server's TV (tv.go)
+	conf    serverConf  // name and password, as the admins set them (settings.go)
+	tv      *tvManager  // the server's TV (tv.go)
+	sb      *soundboard // the server's sounds (soundboard.go)
 	// testSpaces lets tests open bus spaces besides mainSpace (nil in production)
 	testSpaces func(name string) bool
 }
@@ -192,11 +195,14 @@ func main() {
 	flag.StringVar(&cfg.tvVideo, "tv-video", env("SV_TV_VIDEO", "auto"), "how the TV's picture is encoded: auto (the graphics card through VAAPI when it works, else x264), vaapi, x264 [SV_TV_VIDEO]")
 	flag.StringVar(&cfg.tvVaapi, "tv-vaapi", env("SV_TV_VAAPI", "/dev/dri/renderD128"), "the graphics card for SV_TV_VIDEO vaapi/auto [SV_TV_VAAPI]")
 	flag.IntVar(&cfg.tvIdle, "tv-idle", envInt("SV_TV_IDLE", 90), "seconds the TV keeps playing with nobody watching [SV_TV_IDLE]")
+	sounds := flag.Bool("soundboard", envBool("SV_SOUNDBOARD", true), "the server's soundboard: short sounds uploaded by admins, played into voice channels (needs ffmpeg to upload) [SV_SOUNDBOARD]")
+	flag.IntVar(&cfg.soundsMax, "sounds-max", envInt("SV_SOUNDS_MAX", sbDefaultMax), "the server's sounds at most [SV_SOUNDS_MAX]")
 	tvLoop := flag.Bool("tv-test-loopback", false, "tests only: the TV may open 127.0.0.1 (never on a real server: the server's own ports are there)")
 	flag.StringVar(&cfg.inviteBase, "invite-base", env("SV_INVITE_BASE", ""), "invite links' start, e.g. https://sfu.example.com/i/ (default: this server's address) [SV_INVITE_BASE]")
 	flag.Parse()
 	cfg.udpMin, cfg.udpMax = uint(*udpMin), uint(*udpMax)
 	tvLoopbackOK = *tvLoop
+	cfg.noSounds = !*sounds
 
 	switch flag.Arg(0) {
 	case "version":
@@ -295,6 +301,9 @@ func newServer(cfg config) (*server, error) {
 	}
 	s.voice = newVoice(s)
 	s.tv = newTV(s)
+	if s.sb, err = newSoundboard(s); err != nil {
+		return nil, err
+	}
 	go s.lic.slotsWatch()
 	s.metrics = newMetrics(s)
 	if code := s.claimCode(); code != "" {
@@ -314,6 +323,7 @@ func newServer(cfg config) (*server, error) {
 	s.bus.maxSpaces = cfg.maxSpaces
 	s.bus.store = s.store
 	s.bus.chfiles = s.chfiles
+	s.bus.sb = s.sb
 	if cfg.playCreds != "" {
 		pv, err := newPlayVerifier(cfg.playCreds, cfg.playPkg, s.bus.dir, cfg.playRate, cfg.playTest)
 		if err != nil {
@@ -391,6 +401,8 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("/tv/channels", s.handleTVChannels)
 	mux.HandleFunc("/tv/logo", s.handleTVLogo)
 	mux.HandleFunc("/tv/playlist", s.handleTVPlaylist)
+	mux.HandleFunc("/sb/upload", s.handleSoundUpload)
+	mux.HandleFunc("/sb/f/", s.handleSoundFile)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok\n") })
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

@@ -94,6 +94,20 @@ segments) must be **public**: ffmpeg goes through a small proxy of the server on
 the LAN, link-local and other reserved ranges, checked on the address actually connected to. To play sources on
 your own LAN (a tuner, a home IPTV box), set `SV_TV_LAN=true`. `SV_TV=false` turns the TV off.
 
+Those watching the TV can send reactions (emoji that fly over the picture) and short lines shown over it, to
+everyone watching; the apps show who's watching. Limits: 5 reactions a second a person (30 in all), a line every
+1.5 s, 200 characters; chat mutes apply.
+
+## Soundboard
+
+Short sounds for everyone on the server. Someone with **soundboard_manage** (admins have it) uploads an OGG/Opus,
+MP3 or WAV file with a name and an emoji; the server turns it into mono Opus with **ffmpeg** (loudness evened out,
+at most 10 s: longer ones are cut) and keeps it as `data/sounds/<sha256>.opus`. Anyone with **soundboard**
+(@everyone has it) plays one into their voice channel: the server tells everyone in the channel, and each app plays
+its own copy (fetched once, kept by its hash) unless its person muted soundboard sounds. One sound a person every
+3 s, 12 a minute, one a channel every 0.7 s; uploads 8 MB at most, 10 a person in 10 minutes. `SV_SOUNDS_MAX` (100)
+sounds at most; `SV_SOUNDBOARD=false` turns it off.
+
 ## Privacy
 
 Everything stays on this server: accounts are keys made on the devices (no e-mail, no phone number), chat history,

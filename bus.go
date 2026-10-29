@@ -223,6 +223,7 @@ type bus struct {
 	playV     *playVerifier  // Google Play donations (play.go); nil: not taken
 	store     *store         // the server's database (account deletion wipes chat too)
 	chfiles   *channelFiles  // and the files they put in channels
+	sb        *soundboard    // a wipe takes the person's name off their sounds
 	reports   *reports       // reports and deletion requests (moderation.go)
 }
 

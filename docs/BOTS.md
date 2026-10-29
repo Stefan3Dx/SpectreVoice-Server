@@ -147,6 +147,7 @@ is dropped after 75 s of silence.
 | `{"t":"bans"}` | any of the above | the server's bans and mutes |
 | `{"t":"ch-save",…}`, `{"t":"ch-del","id":…}` | `manage_channels` | create, edit, delete channels (fields: `id?`, `name`, `topic`, `parent`, `pos`, `max`, `default`, `password`, `kind`, `moderated`, `icon`, `pic`, `quality`) |
 | `{"t":"music","cmd":"play","q":"…"}` | | the music bot (`play`, `skip`, `pause`, `resume`, `stop`, `vol`, `queue`); `music` permission steers it for everyone |
+| `{"t":"sb","op":"list"}`, `{"t":"sb","op":"play","id":…}` | `soundboard` (to play) | the server's sounds (`{"t":"sb","items":[{id,hash,name,emoji,ms,…}],"max"}`), and one played in the bot's voice channel (everyone there hears it in their app; one every 3 s, 12 a minute; refused: `error op:"sb" why:"cooldown"\|"rate"\|"busy"\|"channel"\|"role"`) |
 | `{"t":"cf-list","ch":5}` and the other `cf-*` | (`files` for others') | channel files |
 | `{"t":"relay","to":"c:5","data":{…}}` | | an app-to-app message to a chat's readers (≤ 32 KB, 64 KB/s) |
 | `{"t":"rtc",…}`, `{"t":"ice",…}` | `speak` | voice |
