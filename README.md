@@ -177,7 +177,7 @@ every grant is kept (who, to whom, how much, why) and shown in the admin panel.
 The games' Lei move through the bus (`add` on kind `lei`): a delta of at most 1,000,000, never below 0; with
 `"strict": true` an `add` that would take a purse below 0 is refused (`why: "funds"`) instead of stopped at 0, so a
 transfer is all or nothing. What one person's apps give (to any purse) or take from others' purses is at most
-100,000 Lei a minute (`why: "rate"` past it); the server's admins and managers aren't limited.
+1,000,000 Lei a minute (`why: "rate"` past it); the server's admins and managers aren't limited.
 
 ## Free, with donations
 
