@@ -17,7 +17,7 @@ import (
 var webFiles embed.FS
 
 // webCSP: scripts and styles only from this server, connections only to it (its own WebSocket), nothing else.
-const webCSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; " +
+const webCSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: blob:; " +
 	"media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 // GET /app/ (index.html), /app/<module>.js, /app/app.css, /app/i18n-<lang>.json.

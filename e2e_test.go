@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
@@ -10,6 +11,9 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -300,4 +304,60 @@ func TestE2ESayRefusals(t *testing.T) {
 	if !refused {
 		t.Fatal("never slowed down")
 	}
+}
+
+// Two browsers (two identities) exchange end-to-end encrypted private messages and a picture through this server,
+// in headless Chromium (web/e2e/dm-run.js): SV_WEB_E2E=1 go test -run TestWebDmE2E -v . (SV_SHOTS=<dir> keeps two
+// screenshots). Meanwhile the database and the files folder never hold the words or the picture.
+func TestWebDmE2E(t *testing.T) {
+	if os.Getenv("SV_WEB_E2E") != "1" {
+		t.Skip("set SV_WEB_E2E=1 (needs node, playwright and its Chromium)")
+	}
+	s, hs := newTestServer(t, func(c *config) { c.files = true; c.fileMB = 10; c.fileDays = 1 })
+	secret := "meet me at the old mill " + itoa(int(time.Now().UnixNano()%1000000))
+	args := []string{"web/e2e/dm-run.js", hs.URL, secret}
+	if d := os.Getenv("SV_SHOTS"); d != "" {
+		args = append(args, d)
+	}
+	cmd := exec.Command("node", args...)
+	cmd.Stderr = &testWriter{t}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	sc := bufio.NewScanner(out)
+	sent, ok := false, false
+	for sc.Scan() {
+		t.Log("dm e2e:", sc.Text())
+		switch sc.Text() {
+		case "SENT":
+			sent = true
+			var n int
+			_ = s.store.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE text LIKE ? OR enc LIKE ? OR from_name LIKE ?`, "%old mill%", "%old mill%", "%old mill%").Scan(&n)
+			var enc int
+			_ = s.store.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE conv LIKE 'd:%' AND text='' AND enc LIKE '{"v":1,%'`).Scan(&enc)
+			if n != 0 || enc != 1 {
+				t.Errorf("the words are on the server (%d rows), or the envelope isn't (%d)", n, enc)
+			}
+		case "OK":
+			ok = true
+		}
+	}
+	if err := cmd.Wait(); err != nil || !sent || !ok {
+		t.Fatalf("dm e2e: %v (sent %v, ok %v)", err, sent, ok)
+	}
+	// The uploaded picture is ciphertext: no PNG on the disk, and it went up as file.sve
+	_ = filepath.WalkDir(filepath.Join(s.cfg.data, "files"), func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() == spaceMark {
+			return nil
+		}
+		b, _ := os.ReadFile(p)
+		if d.Name() != "file.sve" || strings.HasPrefix(string(b), "\x89PNG") {
+			t.Errorf("a file in the clear: %s", p)
+		}
+		return nil
+	})
 }

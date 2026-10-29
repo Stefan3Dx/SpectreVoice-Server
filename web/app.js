@@ -15,6 +15,7 @@ import { loadChat, openConv, renderChat, updateUnread } from './chat.js';
 import { watchRoom, liveOf } from './streams.js';
 import './tv.js';
 import './files.js';
+import './dm.js';
 import { openSettings } from './settings.js';
 
 function setStatus(phase) {
@@ -356,6 +357,7 @@ function personPop(mem, ev) {
   for (const l of liveOf(mem.uid)) {
     pop.append(el('button', { class: 'primary small', type: 'button', text: '▶ ' + (l.title || t('watch')), onclick: () => { watchRoom(l.room); showPane('stage'); pop.classList.add('hidden'); } }));
   }
+  emit('app:personPop', { mem, pop });
   pop.classList.remove('hidden');
   const r = ev.currentTarget.getBoundingClientRect();
   pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 248)) + 'px';
