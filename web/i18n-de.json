@@ -90,6 +90,7 @@
  "mute": "Stummschalten",
  "mutePerson": "Für mich stummschalten",
  "name": "Dein Name",
+ "needsHttps": "Der Web-Client braucht HTTPS (der Browser gibt Schlüssel und Mikrofon nur sicheren Seiten). Öffne diesen Server über seine https://-Adresse.",
  "newFolder": "Neuer Ordner",
  "noFiles": "Hier gibt es noch keine Dateien.",
  "noMessages": "Noch keine Nachrichten.",

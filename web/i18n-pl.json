@@ -90,6 +90,7 @@
  "mute": "Wycisz",
  "mutePerson": "Wycisz dla mnie",
  "name": "Twoja nazwa",
+ "needsHttps": "Klient webowy wymaga HTTPS (przeglądarka daje klucze i mikrofon tylko bezpiecznym stronom). Otwórz ten serwer przez jego adres https://.",
  "newFolder": "Nowy folder",
  "noFiles": "Nie ma tu jeszcze plików.",
  "noMessages": "Brak wiadomości.",

@@ -411,7 +411,8 @@ async function init() {
     S.id = await loadIdentity();
     $('uidNote').textContent = 'ID: ' + S.id.uid;
   } catch (e) {
-    $('connectError').textContent = 'WebCrypto/IndexedDB: ' + (e?.message || e);
+    // Plain http on a non-local address: no crypto.subtle (nor microphone), whatever the browser
+    $('connectError').textContent = window.isSecureContext ? 'WebCrypto/IndexedDB: ' + (e?.message || e) : t('needsHttps');
     $('connectError').classList.remove('hidden');
     $('go').disabled = true;
   }

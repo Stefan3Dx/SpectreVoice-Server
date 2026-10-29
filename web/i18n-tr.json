@@ -90,6 +90,7 @@
  "mute": "Sustur",
  "mutePerson": "Benim için sustur",
  "name": "Adın",
+ "needsHttps": "Web istemcisi HTTPS gerektirir (tarayıcı anahtarları ve mikrofonu yalnızca güvenli sayfalara verir). Bu sunucuyu https:// adresinden aç.",
  "newFolder": "Yeni klasör",
  "noFiles": "Burada henüz dosya yok.",
  "noMessages": "Henüz mesaj yok.",

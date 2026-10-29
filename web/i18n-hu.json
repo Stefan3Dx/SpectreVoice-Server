@@ -90,6 +90,7 @@
  "mute": "Némítás",
  "mutePerson": "Némítás nekem",
  "name": "A neved",
+ "needsHttps": "A webes kliensnek HTTPS kell (a böngésző csak biztonságos oldalaknak ad kulcsot és mikrofont). Nyisd meg a szervert a https:// címén.",
  "newFolder": "Új mappa",
  "noFiles": "Itt még nincsenek fájlok.",
  "noMessages": "Még nincsenek üzenetek.",

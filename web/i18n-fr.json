@@ -90,6 +90,7 @@
  "mute": "Couper",
  "mutePerson": "Couper pour moi",
  "name": "Ton nom",
+ "needsHttps": "Le client web a besoin de HTTPS (le navigateur ne donne les clés et le micro qu'aux pages sécurisées). Ouvre ce serveur par son adresse https://.",
  "newFolder": "Nouveau dossier",
  "noFiles": "Pas encore de fichiers ici.",
  "noMessages": "Pas encore de messages.",

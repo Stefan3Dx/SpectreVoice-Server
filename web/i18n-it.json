@@ -90,6 +90,7 @@
  "mute": "Silenzia",
  "mutePerson": "Silenzia per me",
  "name": "Il tuo nome",
+ "needsHttps": "Il client web richiede HTTPS (il browser dà chiavi e microfono solo alle pagine sicure). Apri questo server dal suo indirizzo https://.",
  "newFolder": "Nuova cartella",
  "noFiles": "Ancora nessun file qui.",
  "noMessages": "Ancora nessun messaggio.",

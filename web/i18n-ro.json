@@ -90,6 +90,7 @@
  "mute": "Mut",
  "mutePerson": "Mut pentru mine",
  "name": "Numele tău",
+ "needsHttps": "Clientul web are nevoie de HTTPS (browserul dă chei și microfon doar paginilor securizate). Deschide serverul pe adresa lui https://.",
  "newFolder": "Dosar nou",
  "noFiles": "Încă nu sunt fișiere aici.",
  "noMessages": "Niciun mesaj încă.",

@@ -90,6 +90,7 @@
  "mute": "Mute",
  "mutePerson": "Mute for me",
  "name": "Your name",
+ "needsHttps": "The web client needs HTTPS (the browser gives keys and the microphone only to secure pages). Open this server through its https:// address.",
  "newFolder": "New folder",
  "noFiles": "No files here yet.",
  "noMessages": "No messages yet.",
