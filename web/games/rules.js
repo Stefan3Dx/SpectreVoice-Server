@@ -7,6 +7,8 @@ import * as Grid from './grid.js';
 import { Chess, histMoves, positions } from './chess.js';
 import { Barbut, Roulette, Slots } from './casino.js';
 import { Blackjack } from './blackjack.js';
+import { Backgammon } from './backgammon.js';
+import { Poker } from './poker.js';
 
 // GameHub.Kind: every game the apps know (min, max players), in the apps' order
 export const KINDS = {
@@ -23,7 +25,7 @@ export const isParty = (k) => PARTY.has(k);
 export const isChance = (k) => ['BARBUT', 'BLACKJACK', 'POKER', 'ROULETTE', 'SLOTS'].includes(k);
 export const isDuel = (k) => ['CHESS', 'BACKGAMMON', 'TICTACTOE', 'CONNECT4'].includes(k);
 // What this web client can play (and keep)
-export const PLAYABLE = ['TICTACTOE', 'CONNECT4', 'CHESS', 'BARBUT', 'ROULETTE', 'SLOTS', 'BLACKJACK'];
+export const PLAYABLE = ['TICTACTOE', 'CONNECT4', 'CHESS', 'BACKGAMMON', 'BARBUT', 'ROULETTE', 'SLOTS', 'BLACKJACK', 'POKER'];
 export const playable = (k) => PLAYABLE.includes(k);
 
 export function turnBased(k) {
@@ -43,11 +45,32 @@ export function start(kind, ctx, prev, rnd = defaultRnd) {
     case 'CONNECT4': return out(Grid.encode(Grid.connectFour()));
     case 'ROULETTE': return out(Roulette.encode(Roulette.start(n)));
     case 'SLOTS': return out(Slots.encode(Slots.start()));
+    case 'BACKGAMMON': return out(Backgammon.encode(Backgammon.start(rnd.nextInt(2))));
+    case 'POKER': {
+      const small = toInt(prev?.small) ?? Poker.SMALL;
+      const s = Poker.start(n, ctx.players.map((_, i) => ctx.purse(i)), -1, small, small * 2, rnd);
+      return poker(s, null, s.phase === 'done');
+    }
     default: throw new Error('no rules for ' + kind);
   }
 }
 
-const isInt = (x) => typeof x === 'number';
+// Poker's money: what each put in since `before` (their totals then, or null for a new hand) leaves the purse now; at
+// the end of the hand what they won comes back. Each player gets their own cards privately.
+function poker(s, before, ended = false) {
+  const pay = {};
+  for (let i = 0; i < s.total.length; i++) {
+    let d = -(s.total[i] - (before?.[i] ?? 0));
+    if (ended) d += s.result[i] + s.total[i];
+    if (d !== 0) pay[i] = d;
+  }
+  const playing = s.hands.map((_, i) => i).filter((i) => !s.out[i]);
+  const profit = {};
+  if (ended) for (const i of playing) if (s.result[i] !== 0) profit[i] = s.result[i];
+  const privates = {};
+  s.hands.forEach((h, i) => { privates[i] = { hand: s.hand, cards: h.slice() }; });
+  return out(Poker.publicState(s), { secret: Poker.encode(s), pay, profit, over: ended ? playing.filter((i) => s.result[i] > 0) : null, played: playing, privates });
+}
 
 // The state everyone sees is one the views of kind can show for n players (Rules.validState)
 export function validState(kind, st, n) {
@@ -84,6 +107,19 @@ export function validState(kind, st, n) {
         const s = Slots.decode(st);
         return n === 1 && s.reels.length === 3 && s.reels.every((r) => r >= 0 && r < Slots.SYMBOLS.length);
       }
+      case 'BACKGAMMON': {
+        const s = Backgammon.decode(st);
+        const range = (l, a, b) => l.every((x) => x >= a && x <= b);
+        return n === 2 && s.points.length === 24 && range(s.points, -15, 15) && s.bar.length === 2 && s.off.length === 2 && s.score.length === 2 &&
+          range([...s.bar, ...s.off], 0, 15) && s.turn >= 0 && s.turn <= 1 && s.winner >= -1 && s.winner <= 1 && s.gameWinner >= -1 && s.gameWinner <= 1 &&
+          s.dice.length <= 4 && range(s.dice, 1, 6) && s.rolled.length <= 4 && range(s.rolled, 1, 6) &&
+          s.last.length <= 8 && s.last.every(([a, b]) => a >= Backgammon.BAR && a <= 23 && b >= Backgammon.OFF && b <= 23);
+      }
+      case 'POKER': {
+        const s = Poker.decode(st);
+        return sized(s.hands, s.stack, s.bet, s.total, s.folded, s.acted, s.out, s.result, s.shown, s.best) && seat(s.turn) && seat(s.button) &&
+          cards(s.board) && s.board.length <= 5 && s.hands.every((h) => cards(h) && h.length <= 2);
+      }
       case 'TICTACTOE': case 'CONNECT4': {
         const s = Grid.decode(st);
         return n === 2 && s.cols >= 1 && s.cols <= 12 && s.rows >= 1 && s.rows <= 12 && s.cells.length === s.cols * s.rows && s.cells.every((c) => c >= -1 && c <= 1) &&
@@ -103,7 +139,14 @@ export function waitingOn(kind, st, secret) {
     switch (kind) {
       case 'CHESS': r = st.result !== undefined && st.result !== null ? [] : [st.white === true ? 0 : 1]; break;
       case 'TICTACTOE': case 'CONNECT4': r = int('winner') !== -1 ? [] : [int('turn')]; break;
+      case 'BACKGAMMON': r = int('winner') >= 0 || int('gw') >= 0 ? [] : [int('turn')]; break;
       case 'BARBUT': { const s = Barbut.decode(st); r = s.winner >= 0 ? [] : (s.throwers[s.turn] !== undefined ? [s.throwers[s.turn]] : []); break; }
+      case 'POKER': {
+        if (!secret) return [];
+        const s = Poker.decode(secret);
+        r = s.phase === 'done' || s.turn < 0 ? [] : [s.turn];
+        break;
+      }
       case 'BLACKJACK': {
         if (!secret) return [];
         const s = Blackjack.decode(secret);
@@ -124,6 +167,7 @@ export function autoMoves(kind) {
   switch (kind) {
     case 'BARBUT': return [{ op: 'roll' }];
     case 'BLACKJACK': return [{ op: 'skip' }, { op: 'stand' }];
+    case 'POKER': return [{ op: 'check' }, { op: 'fold' }];
     case 'ROULETTE': return [{ op: 'ready' }];
     default: return [];
   }
@@ -146,7 +190,11 @@ export function forfeit(kind, st, seat, n, why) {
 export function committed(kind, st, secret) {
   const r = {};
   try {
-    if (kind === 'BLACKJACK') {
+    if (kind === 'POKER') {
+      if (!secret) return r;
+      const s = Poker.decode(secret);
+      if (s.phase !== 'done') s.total.forEach((v, i) => { if (v > 0) r[i] = v; });
+    } else if (kind === 'BLACKJACK') {
       if (!secret) return r;
       const s = Blackjack.decode(secret);
       if (s.phase !== 'done') s.bets.forEach((b, i) => { if (b > 0) r[i] = b; });
@@ -238,6 +286,35 @@ export function move(kind, st, secret, p, m, ctx, rnd = defaultRnd) {
       const profit = {};
       if (spun) for (const i of playing) if (s.pay[i] !== 0) profit[i] = s.pay[i];
       return out(Roulette.encode(s), { pay, profit, over: spun ? playing.filter((i) => s.pay[i] > 0) : null, played: playing });
+    }
+    case 'BACKGAMMON': {
+      const s = Backgammon.decode(st);
+      const was = s.gameWinner;
+      if (Backgammon.move(s, p, op, int('from'), int('to'), rnd) !== null) return null;
+      const done = was < 0 && s.gameWinner >= 0;
+      return out(Backgammon.encode(s), { over: done ? [s.gameWinner] : null, final: s.winner >= 0 });
+    }
+    case 'POKER': {
+      if (!secret) return null;
+      const s = Poker.decode(secret);
+      const purses = () => ctx.players.map((_, i) => ctx.purse(i));
+      if (op === 'next') {
+        if (s.phase !== 'done') return null;
+        Poker.deal(s, purses(), rnd);
+        return poker(s, null, s.phase === 'done');
+      }
+      if (op === 'blinds') {
+        if (!ctx.host || s.phase !== 'done') return null;
+        const v = Math.min(100000, Math.max(1, int('v')));
+        s.small = v; s.big = v * 2;
+        return poker(s, s.total.slice());
+      }
+      const was = s.phase;
+      const before = s.total.slice();
+      // The stack is the purse when the hand was dealt; chips put on other tables since can't be bet here too
+      if (was !== 'done') for (let i = 0; i < s.stack.length; i++) s.stack[i] = Math.min(s.stack[i], ctx.purse(i));
+      if (Poker.move(s, p, op, int('v')) !== null) return null;
+      return poker(s, was === 'done' ? s.total.slice() : before, was !== 'done' && s.phase === 'done');
     }
     case 'SLOTS': {
       const s = Slots.decode(st);

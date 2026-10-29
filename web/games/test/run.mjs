@@ -7,6 +7,8 @@ import * as Grid from '../grid.js';
 import { Chess, positions, sans, fromFen } from '../chess.js';
 import { Barbut, Roulette, Slots } from '../casino.js';
 import { Blackjack } from '../blackjack.js';
+import { Backgammon } from '../backgammon.js';
+import { Poker } from '../poker.js';
 import * as R from '../rules.js';
 import { createHub, fmtLei, isoWeek } from '../hub.js';
 
@@ -330,6 +332,166 @@ test('blackjack through the rules: the bet leaves the purse, the hole card stays
   assert.ok(!R.validState('BLACKJACK', { ...end.state, dealer: [99] }, 2));
 });
 
+// ====== Poker (MoreGamesTest) ======
+
+const card = (rank, su) => su * 13 + rank - 1;
+
+test('poker: hands rank (MoreGamesTest.pokerHandsRank)', () => {
+  const royal = [card(1, 0), card(13, 0), card(12, 0), card(11, 0), card(10, 0), card(2, 1), card(3, 2)];
+  const quads = [card(9, 0), card(9, 1), card(9, 2), card(9, 3), card(2, 0), card(3, 1), card(4, 2)];
+  const full = [card(5, 0), card(5, 1), card(5, 2), card(8, 3), card(8, 0), card(2, 1), card(3, 2)];
+  const flush = [card(2, 1), card(6, 1), card(9, 1), card(11, 1), card(13, 1), card(3, 0), card(4, 2)];
+  const wheel = [card(1, 0), card(2, 1), card(3, 2), card(4, 3), card(5, 0), card(9, 1), card(12, 2)];
+  const trips = [card(7, 0), card(7, 1), card(7, 2), card(2, 3), card(9, 0), card(11, 1), card(13, 2)];
+  const twoPair = [card(7, 0), card(7, 1), card(9, 2), card(9, 3), card(2, 0), card(11, 1), card(13, 2)];
+  const pairA = [card(1, 0), card(1, 1), card(9, 2), card(4, 3), card(2, 0), card(11, 1), card(13, 2)];
+  const pairK = [card(13, 0), card(13, 1), card(9, 2), card(4, 3), card(2, 0), card(11, 1), card(12, 2)];
+  const order = [royal, quads, full, flush, wheel, trips, twoPair, pairA, pairK].map(Poker.best);
+  assert.deepEqual([...order].sort((a, b) => b - a), order);
+  assert.equal(Poker.handName(Poker.best(royal)), 'Chintă de culoare');
+  assert.equal(Poker.handName(Poker.best(wheel)), 'Chintă');
+  assert.equal(Poker.handName(Poker.best(twoPair)), 'Două perechi');
+});
+
+test('poker: the chips add up, side pots (MoreGamesTest.pokerChipsAddUp, pokerSidePot)', () => {
+  const rnd = seeded(5);
+  for (let k = 0; k < 300; k++) {
+    const np = 2 + rnd.nextInt(5);
+    const purses = Array.from({ length: np }, () => 100 + rnd.nextInt(2900));
+    const s = Poker.start(np, purses, -1, 10, 20, rnd);
+    let guard = 0;
+    while (s.phase !== 'done' && guard++ < 200) {
+      const p = s.turn;
+      const owe = s.current - s.bet[p];
+      const r = rnd.nextInt(6);
+      const op = r === 0 ? 'fold' : r === 1 ? 'allin' : r === 2 ? 'raise' : owe > 0 ? 'call' : 'check';
+      if (Poker.move(s, p, op, s.current + s.minRaise + rnd.nextInt(50)) !== null) assert.equal(Poker.move(s, p, owe > 0 ? 'call' : 'check', 0), null);
+    }
+    assert.equal(s.phase, 'done');
+    assert.equal(s.result.reduce((a, b) => a + b, 0), 0, 'Lei appear or vanish: ' + s.result);
+    for (let i = 0; i < np; i++) assert.ok(s.result[i] >= -purses[i]);
+  }
+  const sp = Poker.start(3, [100, 500, 500], -1, 10, 20, rnd);
+  while (sp.phase !== 'done') { const p = sp.turn; if (Poker.move(sp, p, 'allin', 0) !== null) Poker.move(sp, p, 'call', 0); }
+  assert.equal(sp.result.reduce((a, b) => a + b, 0), 0);
+  assert.ok(sp.result[0] <= 200);
+});
+
+test('poker: a short all-in does not reopen; a raise above the stack is all in; a leaver folds', () => {
+  const s = Poker.start(3, [1000, 1000, 70], -1, 10, 20, seeded(1));
+  const bb = s.bet.findIndex((b) => b === s.big);
+  const order = [s.turn, (s.turn + 1) % 3, (s.turn + 2) % 3];
+  assert.equal(Poker.move(s, order[0], 'raise', 60), null);
+  assert.equal(Poker.move(s, order[1], 'call', 0), null);
+  assert.equal(s.turn, bb);
+  assert.equal(Poker.move(s, bb, 'allin', 0), null);
+  assert.notEqual(Poker.move(s, order[0], 'raise', 300), null);
+  assert.equal(Poker.move(s, order[0], 'call', 0), null);
+  const r = Poker.start(3, [100, 1000, 1000], -1, 10, 20, seeded(2));
+  const p = r.stack.findIndex((x, i) => x + r.bet[i] === 100);
+  while (r.turn !== p) Poker.move(r, r.turn, 'call', 0);
+  assert.equal(Poker.move(r, p, 'raise', 100000), null);
+  assert.equal(r.bet[p], 100);
+  assert.ok(r.minRaise <= 100);
+  const l = Poker.start(3, [1000, 1000, 1000], -1, 10, 20, seeded(3));
+  const gone = (l.turn + 1) % 3;
+  assert.equal(Poker.move(l, gone, 'leave', 0), null);
+  assert.ok(l.folded[gone]);
+  let guard = 0;
+  while (l.phase !== 'done' && guard++ < 50) assert.equal(Poker.move(l, l.turn, l.current > l.bet[l.turn] ? 'call' : 'check', 0), null);
+  Poker.deal(l, [1000, 1000, 1000], seeded(4));
+  assert.ok(l.out[gone]);
+});
+
+test('poker through the rules: blinds leave the purse, the cards go privately, the stack follows the purse', () => {
+  const o = R.start('POKER', ctx(two, 1000), null, seeded(6));
+  const blinds = R.committed('POKER', o.state, o.secret);
+  assert.equal(Object.values(o.pay).reduce((a, b) => a - b, 0), Object.values(blinds).reduce((a, b) => a + b, 0));
+  assert.deepEqual(Object.values(blinds).sort(), [10, 20]);
+  assert.ok(o.state.hands.every((h) => h.every((c) => c === -1)));
+  assert.deepEqual(o.state.deck, []);
+  assert.deepEqual(o.privates[0], { hand: 1, cards: o.secret.hands[0] });
+  assert.ok(R.validState('POKER', clone(o.state), 2));
+  // GameFixesTest.pokerStackFollowsThePurse
+  const turn = o.secret.turn;
+  const m = R.move('POKER', o.state, o.secret, turn, { op: 'allin' }, ctx(two, 200));
+  assert.ok(-(m.pay[turn] || 0) <= 200, JSON.stringify(m.pay));
+});
+
+// ====== Backgammon (MoreGamesTest) ======
+
+function bg(pts, turn, dice) {
+  const s = Backgammon.start(turn);
+  s.points.fill(0);
+  for (const [i, k] of pts) s.points[i] = k;
+  s.off[0] = 15 - s.points.filter((x) => x > 0).reduce((a, b) => a + b, 0);
+  s.off[1] = 15 + s.points.filter((x) => x < 0).reduce((a, b) => a + b, 0);
+  s.dice = dice.slice();
+  s.rolled = dice.slice(0, 2);
+  return s;
+}
+
+test('backgammon: plays to the end, 15 checkers each (MoreGamesTest.backgammonPlaysToTheEnd)', () => {
+  const rnd = seeded(3);
+  for (let k = 0; k < 30; k++) {
+    const s = Backgammon.start(rnd.nextInt(2));
+    let guard = 0;
+    while (s.winner < 0 && guard++ < 5000) {
+      if (s.gameWinner >= 0) { assert.equal(Backgammon.move(s, 1 - s.gameWinner, 'again', 0, 0), null); continue; }
+      const p = s.turn;
+      if (!s.dice.length) { assert.equal(Backgammon.move(s, p, 'roll', 0, 0, rnd), null); continue; }
+      const l = Backgammon.legal(s);
+      const m = l[rnd.nextInt(l.length)];
+      assert.equal(Backgammon.move(s, p, 'move', m[0], m[1]), null);
+      for (const q of [0, 1]) assert.equal(s.points.reduce((a, v) => a + (q === 0 ? Math.max(v, 0) : Math.max(-v, 0)), 0) + s.bar[q] + s.off[q], 15);
+    }
+    assert.ok(s.winner >= 0 && s.score[s.winner] >= Backgammon.TARGET);
+  }
+});
+
+test('backgammon: the rules (MoreGamesTest.backgammonMustUseBothDice, backgammonRules)', () => {
+  const { BAR, OFF } = Backgammon;
+  let s = Backgammon.start(0);
+  s.points.fill(0); s.points[9] = 1; s.points[3] = -2; s.off[0] = 14; s.off[1] = 13; s.dice = [6, 5];
+  let l = Backgammon.legal(s);
+  assert.ok(l.length && l.every((x) => x[2] === 5), JSON.stringify(l));
+  s = bg([[5, 1], [2, 1], [18, -1]], 0, [6, 1]);
+  l = Backgammon.legal(s);
+  assert.ok(l.some((x) => x[0] === 5 && x[1] === OFF && x[2] === 6));
+  assert.ok(!l.some((x) => x[0] === 2 && x[2] === 6));
+  s = bg([[6, 1], [0, 1], [18, -1]], 0, [1, 2]);
+  assert.ok(!Backgammon.legal(s).some((x) => x[1] === OFF && x[0] === 0 && x[2] === 2));
+  s = bg([[10, 3], [18, -2], [19, -2], [20, -2], [21, -2], [22, -2], [23, -2], [5, -1]], 0, [3, 4]);
+  s.bar[0] = 1; s.off[0] = 11;
+  assert.equal(Backgammon.legal(s).length, 0);
+  s.dice = []; s.rolled = [];
+  assert.equal(Backgammon.move(s, 0, 'roll', 0, 0, seeded(1)), null);
+  assert.equal(s.turn, 1);
+  assert.ok(Backgammon.blocked(s));
+  s = bg([[10, 2], [20, -1], [3, -2]], 0, [4, 1]);
+  s.bar[0] = 1; s.off[0] = 12;
+  l = Backgammon.legal(s);
+  assert.ok(l.every((x) => x[0] === BAR));
+  assert.equal(Backgammon.move(s, 0, 'move', BAR, 20), null);
+  assert.equal(s.bar[1], 1);
+  s = bg([[10, 1], [7, -2], [4, -1]], 0, [3, 6]);
+  assert.ok(!Backgammon.legal(s).some((x) => x[1] === 7));
+  s = bg([[12, 1], [4, -2]], 0, [5, 3]);
+  s.off[0] = 14;
+  l = Backgammon.legal(s);
+  assert.ok(l.length && l.every((x) => x[2] === 5));
+  s = bg([[23, 2], [0, -2]], 0, [2, 2, 2, 2]);
+  s.off[0] = 13; s.off[1] = 13;
+  for (let k = 0; k < 4; k++) { const m = Backgammon.legal(s)[0]; assert.equal(Backgammon.move(s, 0, 'move', m[0], m[1]), null); }
+  assert.equal(s.turn, 1);
+  s = bg([[0, 1], [3, -15]], 0, [1, 2]);
+  s.off[1] = 0;
+  const m = Backgammon.legal(s).find((x) => x[1] === OFF);
+  assert.equal(Backgammon.move(s, 0, 'move', m[0], m[1]), null);
+  assert.equal(s.lastPoints, 3);
+  for (let seed = 0; seed < 200; seed++) { const f = Backgammon.start(0); assert.equal(Backgammon.move(f, 0, 'roll', 0, 0, seeded(seed)), null); assert.notEqual(f.rolled[0], f.rolled[1]); }
+});
+
 // ====== The checks of a state from the bus (ReviewFixesTest) ======
 
 test('malformed states are not taken (ReviewFixesTest.malformedTableStatesAreNotTaken)', () => {
@@ -364,6 +526,8 @@ test('real states pass the check, played through (ReviewFixesTest.realStatesPass
         const tries = [];
         if (kind === 'CHESS') { const ch = Chess.decode(st); for (let f = 0; f < 64; f++) for (const t of ch.legal(f)) tries.push({ from: f, to: t, promo: 'q' }); tries.sort(() => rnd.nextInt(3) - 1); }
         else if (kind === 'TICTACTOE' || kind === 'CONNECT4') for (let cell = 0; cell < 42; cell++) tries.push({ cell: (cell * 7 + step) % 42 });
+        else if (kind === 'BACKGAMMON') { tries.push({ op: 'roll' }, { op: 'again' }); for (const [f, t] of Backgammon.legal(Backgammon.decode(st))) tries.push({ op: 'move', from: f, to: t }); }
+        else if (kind === 'POKER') tries.push({ op: 'next' }, { op: 'check' }, { op: 'call' }, { op: ['raise', 'fold', 'allin'][rnd.nextInt(3)], v: 60 }, { op: 'fold' });
         else tries.push({ op: 'roll' }, { op: 'bet', v: 10 }, { op: 'hit' }, { op: 'stand' }, { op: 'next' }, { op: 'bet', type: 'red', value: 0, v: 5 }, { op: 'ready' }, { op: 'spin', v: 10 });
         for (const m of tries) { const r = R.move(kind, st, sec, p, m, c, rnd); if (r) { next = r; break; } }
         if (next) break;

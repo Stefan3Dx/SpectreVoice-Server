@@ -1,6 +1,6 @@
 # Packs the Kotlin recording for the repo: each step's "in" is the last state taken (dropped, rebuilt by the replay),
-# a chess history only its new move ({"push": m}), a blackjack shoe only how many cards are left of the one before
-# ({"keep": n}).
+# a chess history only its new move ({"push": m}), a blackjack shoe or a poker deck only how many cards are left of
+# the one before ({"keep": n}).
 import json, sys
 rec = json.load(open(sys.argv[1]))
 taken = 0
@@ -18,10 +18,11 @@ for g in rec['games']:
         ph = prev['state'].get('hist')
         if g['kind'] == 'CHESS' and isinstance(ph, list) and o['state']['hist'][:-1] == ph:
             o['state'] = dict(o['state'], hist={'push': o['state']['hist'][-1]})
-        if g['kind'] == 'BLACKJACK' and o['secret'] is not None and prev['secret'] is not None:
-            a, b = prev['secret']['shoe'], o['secret']['shoe']
+        deck = {'BLACKJACK': 'shoe', 'POKER': 'deck'}.get(g['kind'])
+        if deck and o['secret'] is not None and prev['secret'] is not None:
+            a, b = prev['secret'][deck], o['secret'][deck]
             if b == a[:len(b)]:
-                o['secret'] = dict(o['secret'], shoe={'keep': len(b)})
+                o['secret'] = dict(o['secret'], **{deck: {'keep': len(b)}})
         prev = nxt
 json.dump(rec, open(sys.argv[2], 'w'), separators=(',', ':'), ensure_ascii=False)
 print('taken', taken)

@@ -111,9 +111,32 @@ public class KotlinOracle {
             if ("play".equals(ph)) return mv("op", r < 6 ? "hit" : r < 11 ? "stand" : "double");
             return mv("op", "next");
         }));
+        for (int g = 0; g < 4; g++) games.add(play(GameHub.Kind.BACKGAMMON, 2, new int[]{1000, 1000}, 600, (k, st, sec, n) -> {
+            Backgammon.State b = Backgammon.INSTANCE.decode(st);
+            int r = rnd.nextInt(20);
+            if (r == 0) return mv("op", new String[]{"again", "roll", "huh"}[rnd.nextInt(3)]);
+            if (r == 1) return mv("op", "move", "from", rnd.nextInt(27) - 2, "to", rnd.nextInt(27) - 3);
+            if (b.getGameWinner() >= 0) return mv("op", "again");
+            if (b.getDice().isEmpty()) return mv("op", "roll");
+            var legal = Backgammon.INSTANCE.legal(b);
+            if (legal.isEmpty()) return mv("op", "roll");
+            var x = legal.get(rnd.nextInt(legal.size()));
+            return mv("op", "move", "from", x.getFirst(), "to", x.getSecond());
+        }));
+        for (int g = 0; g < 4; g++) games.add(play(GameHub.Kind.POKER, 3, new int[]{1000, 300, 15}, 260, (k, st, sec, n) -> {
+            Object ph = sec == null ? null : sec.get("phase");
+            int r = rnd.nextInt(24);
+            if (r == 0) return mv("op", new String[]{"blinds", "next", "leave", "huh", "raise"}[rnd.nextInt(5)], "v", rnd.nextInt(60) - 5);
+            if ("done".equals(ph)) return r < 3 ? mv("op", "blinds", "v", 5 + rnd.nextInt(20)) : mv("op", "next");
+            if (r < 6) return mv("op", "fold");
+            if (r < 11) return mv("op", "check");
+            if (r < 17) return mv("op", "call");
+            if (r < 22) return mv("op", "raise", "v", rnd.nextInt(400));
+            return mv("op", "allin");
+        }));
         // Forfeits as the keeper sends them
         List<Object> forfeits = new ArrayList<>();
-        for (GameHub.Kind k : new GameHub.Kind[]{GameHub.Kind.CHESS, GameHub.Kind.TICTACTOE, GameHub.Kind.CONNECT4, GameHub.Kind.BARBUT}) {
+        for (GameHub.Kind k : new GameHub.Kind[]{GameHub.Kind.CHESS, GameHub.Kind.TICTACTOE, GameHub.Kind.CONNECT4, GameHub.Kind.BARBUT, GameHub.Kind.BACKGAMMON}) {
             Outcome s = Rules.INSTANCE.start(k, new Ctx(players(2), true, i -> 1000), null);
             for (int seat = 0; seat < 2; seat++) forfeits.add(mv("kind", k.name(), "seat", seat, "in", s.getState(), "out", out(Rules.INSTANCE.forfeit(k, s.getState(), seat, 2, "resign"))));
         }

@@ -1,5 +1,6 @@
 // The web client's game boards (DOM): one function per kind, given {t (the table), st (its state), seat (yours, −1
-// watching), host (you keep it), purse (your Lei), play(move), ui (this table's own view state), redraw()}.
+// watching), host (you keep it), purse (your Lei), priv (what the keeper sent only you), play(move), ui (this
+// table's own view state), redraw()}.
 // Only what's on screen lives here; the rules are in rules.js and the others' moves come from the keeper.
 
 import { el } from '../core.js';
@@ -8,6 +9,8 @@ import * as Grid from './grid.js';
 import { Chess, histMoves, sans } from './chess.js';
 import { Barbut, Roulette, Slots } from './casino.js';
 import { Blackjack } from './blackjack.js';
+import { Backgammon } from './backgammon.js';
+import { Poker } from './poker.js';
 import { fmtLei } from './hub.js';
 
 const name = (v, i) => v.t.players[i]?.name ?? '?';
@@ -276,4 +279,116 @@ function blackjack(v) {
   return el('div', { class: 'gm-casino' }, dealer, rows, banner(msg), ctl);
 }
 
-export const views = { TICTACTOE: grid, CONNECT4: grid, CHESS: chess, BARBUT: barbut, ROULETTE: roulette, SLOTS: slots, BLACKJACK: blackjack };
+// ====== Backgammon ======
+
+function backgammon(v) {
+  let s;
+  try { s = Backgammon.decode(v.st); } catch { return banner(t('gBadState'), 'warn'); }
+  const { BAR, OFF } = Backgammon;
+  const ui = v.ui;
+  const myTurn = s.winner < 0 && s.gameWinner < 0 && s.turn === v.seat && v.st.resigned == null;
+  const legal = myTurn && s.dice.length ? Backgammon.legal(s) : [];
+  if (ui._dice !== JSON.stringify([s.dice, s.turn, s.last])) { ui._dice = JSON.stringify([s.dice, s.turn, s.last]); ui.from = null; }
+  const froms = new Set(legal.map((m) => m[0]));
+  const targets = ui.from !== null && ui.from !== undefined ? legal.filter((m) => m[0] === ui.from).map((m) => m[1]) : [];
+  const pick = (from) => {
+    const to = [...new Set(legal.filter((m) => m[0] === from).map((m) => m[1]))];
+    if (to.length === 1) { ui.from = null; v.play({ op: 'move', from, to: to[0] }); return; }
+    ui.from = from; v.redraw();
+  };
+  const go = (to) => { if (ui.from !== null && ui.from !== undefined && targets.includes(to)) { const from = ui.from; ui.from = null; v.play({ op: 'move', from, to }); } };
+  const stack = (n, who, max = 5) => {
+    const k = Math.abs(n);
+    const box = el('span', { class: 'gm-stack' });
+    for (let i = 0; i < Math.min(k, max); i++) box.append(el('i', { class: 'gm-chk ' + who }));
+    if (k > max) box.append(el('b', { class: 'gm-more', text: String(k) }));
+    return box;
+  };
+  const point = (i, top) => {
+    const n = s.points[i];
+    const cls = ['gm-pt', top ? 'gm-up' : 'gm-dn', i % 2 ? 'a' : 'b'];
+    if (froms.has(i) && ui.from == null) cls.push('can');
+    if (ui.from === i) cls.push('sel');
+    if (targets.includes(i)) cls.push('to');
+    if (s.last.some((m) => m[1] === i)) cls.push('last');
+    return el('button', {
+      type: 'button', class: cls.join(' '), dataset: { pt: String(i) }, disabled: !myTurn, attrs: { 'aria-label': String(i + 1) },
+      onclick: () => { if (targets.includes(i)) go(i); else if (froms.has(i)) pick(i); else { ui.from = null; v.redraw(); } },
+    }, el('span', { class: 'gm-ptn', text: String(i + 1) }), n ? stack(n, n > 0 ? 'w' : 'k') : null);
+  };
+  // White's home bottom right; for black the rows swap, black's home then bottom right
+  const upper = [...Array(12).keys()].map((k) => 12 + k);
+  const lower = [...Array(12).keys()].map((k) => 11 - k);
+  const [topRow, botRow] = v.seat === 1 ? [lower, upper] : [upper, lower];
+  const row = (idxs, top) => el('div', { class: 'gm-bg-row' }, ...idxs.slice(0, 6).map((i) => point(i, top)), el('span', { class: 'gm-bg-mid' }), ...idxs.slice(6).map((i) => point(i, top)));
+  const barBtn = (p) => el('button', {
+    type: 'button', class: 'gm-bar' + (myTurn && p === v.seat && froms.has(BAR) ? ' can' : '') + (ui.from === BAR && p === v.seat ? ' sel' : ''), dataset: { bar: String(p) },
+    disabled: !(myTurn && p === v.seat && froms.has(BAR)), onclick: () => pick(BAR),
+  }, s.bar[p] ? stack(s.bar[p], p === 0 ? 'w' : 'k', 3) : null);
+  const offBtn = el('button', {
+    type: 'button', class: 'gm-off' + (targets.includes(OFF) ? ' to' : ''), id: 'gmOff', disabled: !targets.includes(OFF), onclick: () => go(OFF),
+  }, el('span', { text: '⬇ ' + t('bgOff') }), el('small', { text: `${s.off[0]} · ${s.off[1]}` }));
+  const board = el('div', { class: 'gm-bg' }, row(topRow, true), el('div', { class: 'gm-bg-bars' }, barBtn(0), barBtn(1), offBtn), row(botRow, false));
+  const dice = el('div', { class: 'gm-bg-dice' }, ...s.rolled.map((d, i) => el('span', { class: 'gm-die' + (s.dice.includes(d) || (s.rolled[0] === s.rolled[1] && s.dice.length > i) ? '' : ' used'), text: DIE[d] })));
+  let msg, cls = '';
+  if (s.winner >= 0) { msg = t('gWins', { name: name(v, s.winner) }); cls = v.seat < 0 || v.seat === s.winner ? 'good' : 'bad'; }
+  else if (s.gameWinner >= 0) msg = t(s.lastPoints === 3 ? 'bgWonTriple' : s.lastPoints === 2 ? 'bgWonDouble' : 'bgWonGame', { name: name(v, s.gameWinner) });
+  else if (Backgammon.blocked(s)) msg = t('bgBlocked', { name: name(v, 1 - s.turn) });
+  else msg = myTurn ? (s.dice.length ? t('bgMove') : t('gYourTurn')) : t('gTurnOf', { name: name(v, s.turn) });
+  const ctl = el('div', { class: 'row gm-ctl' });
+  if (myTurn && !s.dice.length) ctl.append(el('button', { type: 'button', class: 'primary gm-big', id: 'gmRoll', text: '🎲 ' + t('gRoll'), onclick: () => v.play({ op: 'roll' }) }));
+  if (s.gameWinner >= 0 && s.winner < 0 && v.seat >= 0) ctl.append(el('button', { type: 'button', class: 'primary', id: 'gmNext', text: t('bgNextGame'), onclick: () => v.play({ op: 'again' }) }));
+  const seatInfo = (i) => seatChip(v, i, s.winner < 0 && s.gameWinner < 0 && s.turn === i, `${t('bgScore', { n: s.score[i], of: Backgammon.TARGET })} · ${t('bgPips', { n: Backgammon.pips(s, i) })}`, i === 0 ? '⚪' : '⚫');
+  return el('div', { class: 'gm-casino gm-bg-wrap' }, el('div', { class: 'gm-seats' }, seatInfo(0), seatInfo(1)), board, dice, banner(msg, cls), ctl);
+}
+
+// ====== Poker ======
+
+const PK_NOTE = { 'Ceilalți au renunțat': 'pkFolded', Egalitate: 'bjPush', 'Prea puțini jucători cu bani': 'pkTooFew' };
+const pkHand = (x) => { const i = Poker.NAMES.indexOf(x); return i >= 0 ? t(`pkH${i}`) : x; };
+function poker(v) {
+  let s;
+  try { s = Poker.decode({ ...v.st, deck: [] }); } catch { return banner(t('gBadState'), 'warn'); }
+  const seat = v.seat;
+  const priv = v.priv && v.priv.hand === s.hand && Array.isArray(v.priv.cards) ? v.priv.cards : null;
+  const pot = s.total.reduce((a, b) => a + b, 0);
+  const boardCards = el('div', { class: 'gm-cards gm-board' }, ...Array.from({ length: 5 }, (_, i) => (s.board[i] !== undefined ? card(s.board[i]) : el('span', { class: 'gm-card slot' }))));
+  const rows = el('div', { class: 'gm-rows' }, ...v.t.players.map((p, i) => {
+    const mine = i === seat && priv ? priv : s.hands[i] || [];
+    const tag = s.out[i] ? t('pkOut') : s.folded[i] ? t('pkFoldedTag') : s.stack[i] === 0 && s.phase !== 'done' && s.total[i] > 0 ? 'ALL IN' : '';
+    const under = `${fmtLei(s.stack[i])}${s.bet[i] ? ' · ' + t('pkBet', { amount: fmtLei(s.bet[i]) }) : ''}`;
+    const badge = i === s.button ? 'Ⓓ' : '';
+    return el('div', { class: 'gm-row' + (s.turn === i ? ' on' : '') + (s.folded[i] || s.out[i] ? ' dim' : '') }, seatChip(v, i, s.turn === i, under, badge),
+      el('div', { class: 'gm-cards' }, ...mine.map(card)),
+      tag ? el('span', { class: 'gm-val', text: tag }) : null,
+      s.phase === 'done' && s.best[i] ? el('span', { class: 'gm-val', text: pkHand(s.best[i]) }) : null,
+      s.phase === 'done' && s.result[i] ? el('span', { class: 'gm-pay ' + (s.result[i] > 0 ? 'good' : 'bad'), text: (s.result[i] > 0 ? '+' : '') + fmtLei(s.result[i]) }) : null);
+  }));
+  const ctl = el('div', { class: 'row wrap gm-ctl' });
+  if (s.phase !== 'done' && s.turn === seat && seat >= 0) {
+    const owe = s.current - s.bet[seat];
+    const most = s.bet[seat] + Math.min(s.stack[seat], v.purse);
+    const minTo = s.current + s.minRaise;
+    ctl.append(el('button', { type: 'button', class: 'gm-big', id: 'gmFold', text: t('pkFold'), onclick: () => v.play({ op: 'fold' }) }));
+    if (owe <= 0) ctl.append(el('button', { type: 'button', class: 'primary gm-big', id: 'gmCheck', text: t('pkCheck'), onclick: () => v.play({ op: 'check' }) }));
+    else ctl.append(el('button', { type: 'button', class: 'primary gm-big', id: 'gmCall', text: t('pkCall', { amount: fmtLei(Math.min(owe, s.stack[seat])) }), onclick: () => v.play({ op: 'call' }) }));
+    if (most > s.current) {
+      const inp = stakeInput(v, 'raise', Math.min(Math.max(minTo, Number(v.ui.raise) || 0), most), most);
+      inp.min = Math.min(minTo, most);
+      ctl.append(inp, el('button', { type: 'button', class: 'gm-big', id: 'gmRaise', text: t('pkRaise'), onclick: () => v.play({ op: 'raise', v: readStake(v, 'raise', minTo) }) }),
+        el('button', { type: 'button', class: 'danger gm-big', text: 'ALL IN', onclick: () => v.play({ op: 'allin' }) }));
+    }
+  }
+  if (s.phase === 'done') {
+    if (seat >= 0) ctl.append(el('button', { type: 'button', class: 'primary', id: 'gmNext', text: t('bjNextHand'), onclick: () => v.play({ op: 'next' }) }));
+    if (v.host) ctl.append(el('span', { class: 'muted', text: t('pkBlinds') }), ...[5, 10, 25, 50, 100].map((b) => el('button', { type: 'button', class: 'small' + (s.small === b ? ' on' : ''), text: `${b}/${b * 2}`, onclick: () => v.play({ op: 'blinds', v: b }) })));
+  }
+  const phase = { preflop: 'Preflop', flop: 'Flop', turn: 'Turn', river: 'River' }[s.phase];
+  let msg;
+  if (s.phase === 'done') msg = s.note ? (PK_NOTE[s.note] ? t(PK_NOTE[s.note]) : s.note.split(', ').map(pkHand).join(', ')) : t('bjHandOver');
+  else msg = (s.turn === seat ? t('gYourTurn') : t('gTurnOf', { name: name(v, s.turn) })) + ' · ' + phase;
+  return el('div', { class: 'gm-casino' }, el('div', { class: 'gm-sub', text: t('pkPot', { amount: fmtLei(pot) }) + ' · ' + t('pkBlindsNow', { a: s.small, b: s.big }) + ' · ' + t('pkHandNo', { n: s.hand }) }),
+    boardCards, rows, banner(msg), ctl);
+}
+
+export const views = { TICTACTOE: grid, CONNECT4: grid, CHESS: chess, BACKGAMMON: backgammon, BARBUT: barbut, ROULETTE: roulette, SLOTS: slots, BLACKJACK: blackjack, POKER: poker };

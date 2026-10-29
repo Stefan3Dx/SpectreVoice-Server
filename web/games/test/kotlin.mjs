@@ -25,14 +25,38 @@ function rndFor(kind, step) {
   if (o && kind === 'BARBUT' && o.state.rolls?.[String(step.p)]) queue.push(...o.state.rolls[String(step.p)]);
   if (o && kind === 'ROULETTE') queue.push(o.state.result);
   if (o && kind === 'SLOTS') for (const r of o.state.reels) queue.push(WEIGHTS.slice(0, r).reduce((a, b) => a + b, 0));
+  if (o && kind === 'BACKGAMMON' && step.m.op === 'roll') queue.push(...o.state.rolled);
   return { nextInt: () => { if (!queue.length) throw new Error('the web rules drew more than the Kotlin did'); return queue.shift(); } };
 }
 
-// Blackjack shuffles a new shoe when it runs low: the Kotlin's own draw can't be replayed then (skipped)
-function reshuffled(kind, step) {
-  if (kind !== 'BLACKJACK' || !step.out?.secret || !step.in.secret) return false;
-  const a = step.in.secret.shoe, b = step.out.secret.shoe;
+// Blackjack shuffles a new shoe when it runs low, poker a new deck each hand
+const DECK = { BLACKJACK: 'shoe', POKER: 'deck' };
+function shuffledHere(kind, step) {
+  if (!DECK[kind] || !step.out?.secret || !step.in.secret) return false;
+  const a = step.in.secret[DECK[kind]], b = step.out.secret[DECK[kind]];
   return b.length > a.length || b.some((c, i) => c !== a[i]);
+}
+
+// The answers that make the web's shuffle (Fisher–Yates from the end, util.shuffled) give the deck `target`
+function shuffleAnswers(target) {
+  const a = [...Array(target.length).keys()];
+  const out = [];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = a.indexOf(target[i]);
+    out.push(j);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return out;
+}
+
+// A poker deal: the whole deck as the Kotlin shuffled it, from what's left and the cards dealt off its end (two
+// rounds from the button's left, then any board run out)
+function pokerDeck(sec) {
+  const n = sec.hands.length;
+  const popped = [];
+  for (let r = 0; r < 2; r++) for (let k = 1; k <= n; k++) { const i = (sec.button + k) % n; if (!sec.out[i] && sec.hands[i][r] !== undefined) popped.push(sec.hands[i][r]); }
+  popped.push(...sec.board);
+  return [...sec.deck, ...popped.reverse()];
 }
 
 // The recording is packed (pack.py): each step's "in" is the last state taken, a chess history only its new move,
@@ -44,7 +68,8 @@ function unpack(g) {
     const o = s.out;
     if (!o) continue;
     if (o.state.hist && !Array.isArray(o.state.hist)) o.state.hist = [...prev.state.hist, o.state.hist.push];
-    if (o.secret && o.secret.shoe && !Array.isArray(o.secret.shoe)) o.secret.shoe = prev.secret.shoe.slice(0, o.secret.shoe.keep);
+    const deck = DECK[g.kind];
+    if (deck && o.secret && o.secret[deck] && !Array.isArray(o.secret[deck])) o.secret[deck] = prev.secret[deck].slice(0, o.secret[deck].keep);
     prev = { state: o.final ? { ...o.state, final: true } : o.state, secret: o.secret ?? prev.secret };
   }
 }
@@ -57,15 +82,26 @@ for (const g of rec.games) {
   const players = Array.from({ length: g.n }, (_, i) => ({ uid: 'u' + i, name: 'P' + i }));
   const ctx = (host) => ({ players, host, purse: (i) => g.purses[i] });
   // The start: the same (the shuffled shoe aside)
-  const s = R.start(g.kind, ctx(true), null);
-  if (g.kind === 'BLACKJACK') { if (!same({ ...s.state }, { ...g.start.state }) || s.secret.shoe.length !== g.start.secret.shoe.length) bad.push(`${g.kind} start`); }
-  else if (!same(s.state, g.start.state)) bad.push(`${g.kind} start: ${JSON.stringify(s.state)} vs ${JSON.stringify(g.start.state)}`);
+  // (backgammon: who starts as the Kotlin drew it; the cards: only how many, they're shuffled)
+  const s = R.start(g.kind, ctx(true), null, { nextInt: () => g.start.state.turn });
+  if (DECK[g.kind]) {
+    if (!same(s.state, g.start.state) || s.secret[DECK[g.kind]].length !== g.start.secret[DECK[g.kind]].length) bad.push(`${g.kind} start: ${JSON.stringify(s.state)} vs ${JSON.stringify(g.start.state)}`);
+    for (const f of ['pay', 'profit', 'over', 'played', 'final']) if (!same(s[f] ?? null, g.start[f] ?? null)) bad.push(`${g.kind} start ${f}: ${JSON.stringify(s[f])} vs ${JSON.stringify(g.start[f])}`);
+  } else if (!same(s.state, g.start.state)) bad.push(`${g.kind} start: ${JSON.stringify(s.state)} vs ${JSON.stringify(g.start.state)}`);
   if (!R.validState(g.kind, g.start.state, g.n)) bad.push(`${g.kind} start state refused`);
   for (const [k, step] of g.steps.entries()) {
     moves++;
-    if (reshuffled(g.kind, step)) { skipped++; continue; }
+    let rnd = rndFor(g.kind, step);
+    if (shuffledHere(g.kind, step)) {
+      // Poker deals a new hand from a deck the Kotlin shuffled: the web shuffle is fed the same order. A blackjack
+      // shoe (six decks, cards alike) can't be told apart that way: skipped, the next steps go on from the Kotlin's
+      const sec = step.out.secret;
+      if (g.kind !== 'POKER' || sec.deck.length + sec.board.length + sec.hands.reduce((a, h) => a + h.length, 0) !== 52) { skipped++; continue; }
+      const answers = shuffleAnswers(pokerDeck(sec));
+      rnd = { nextInt: () => { if (!answers.length) throw new Error('shuffled twice'); return answers.shift(); } };
+    }
     let o;
-    try { o = R.move(g.kind, step.in.state, step.in.secret, step.p, step.m, ctx(step.host), rndFor(g.kind, step)); } catch (e) { o = 'threw ' + e.message; }
+    try { o = R.move(g.kind, step.in.state, step.in.secret, step.p, step.m, ctx(step.host), rnd); } catch (e) { o = 'threw ' + e.message; }
     const where = `${g.kind} game ${games} step ${k} seat ${step.p} ${JSON.stringify(step.m)}`;
     if (typeof o === 'string') { bad.push(where + ': ' + o); continue; }
     if (step.out === null) { if (o !== null) bad.push(where + ': taken here, refused by the Kotlin'); continue; }
@@ -88,4 +124,4 @@ if (bad.length) {
   console.error(`${bad.length} differences`);
   process.exit(1);
 }
-console.log(`OK ${games} games, ${moves} moves (${taken} taken, the rest refused by both; ${skipped} reshuffles skipped)`);
+console.log(`OK ${games} games, ${moves} moves (${taken} taken, the rest refused by both; ${skipped} blackjack reshuffles skipped)`);

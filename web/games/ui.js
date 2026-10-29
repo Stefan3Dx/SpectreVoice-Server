@@ -116,7 +116,7 @@ function signature() {
   if (!tb) return JSON.stringify([base, [...hub.tables.values()].map((x) => [x.id, x.kind, x.started, x.players])]);
   const afk = tb.state?.afk ? Math.floor(Date.now() / 1000) : 0;
   // The view's own notes ("_…": what it last drew) aren't part of it
-  return JSON.stringify([base, tb, tableUi.get(tb.id) || null, (hub.talk.get(tb.id) || []).length, afk, hub.betsOpen(tb)], (k, v) => (k.startsWith('_') || k === 'seen' ? undefined : v));
+  return JSON.stringify([base, tb, tableUi.get(tb.id) || null, hub.privates.get(tb.id) || null, (hub.talk.get(tb.id) || []).length, afk, hub.betsOpen(tb)], (k, v) => (k.startsWith('_') || k === 'seen' ? undefined : v));
 }
 let drawn = '';
 
@@ -221,7 +221,7 @@ function tableView(tb) {
   else if (!R.playable(tb.kind)) main = el('div', { class: 'gm-note', text: t('gInAppLong') });
   else if (!host && !R.validState(tb.kind, st, tb.players.length)) main = el('div', { class: 'gm-note warn', text: t('gBadState') });
   else {
-    const v = { t: tb, st, seat, host, purse: purse(), ui, play: (m) => hub.play(tb.id, m), redraw: () => render(true) };
+    const v = { t: tb, st, seat, host, purse: purse(), priv: hub.privates.get(tb.id) || null, ui, play: (m) => hub.play(tb.id, m), redraw: () => render(true) };
     try { main = views[tb.kind](v); } catch (e) { console.error(e); main = el('div', { class: 'gm-note warn', text: t('gBadState') }); }
   }
   const body = el('div', { class: 'gm-play', dataset: { kind: tb.kind } }, ...notes, wagers, main);

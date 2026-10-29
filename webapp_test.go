@@ -58,7 +58,7 @@ func TestWebAppServed(t *testing.T) {
 		}
 	}
 	// The games' modules, one folder down; nothing deeper (their tests) and no way out of it
-	for _, m := range []string{"ui", "hub", "rules", "views", "util", "grid", "chess", "casino", "blackjack"} {
+	for _, m := range []string{"ui", "hub", "rules", "views", "util", "grid", "chess", "casino", "blackjack", "backgammon", "poker"} {
 		if res, _ = get("/app/games/" + m + ".js"); res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
 			t.Fatalf("games/%s.js: %d", m, res.StatusCode)
 		}
