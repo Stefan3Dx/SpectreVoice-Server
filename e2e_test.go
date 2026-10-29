@@ -361,3 +361,31 @@ func TestWebDmE2E(t *testing.T) {
 		return nil
 	})
 }
+
+// A private message's push never carries its words, not even a plaintext one from an older app and not even with
+// SV_PUSH_CONTENT (docs/E2E.md §6): who wrote, nothing more.
+func TestPushNoWordsForPlainPrivate(t *testing.T) {
+	s, hs := newTestServer(t, func(c *config) { c.pushContent = true })
+	p := &pusher{queue: make(chan pushJob, 16)}
+	s.push = p
+	a, _ := dialVWith(t, hs, newKey(t), "Ana", nil)
+	kb := newKey(t)
+	b, _ := dialVWith(t, hs, kb, "Bogdan", nil)
+	buid := b.uid
+	b.ws.Close()
+	time.Sleep(200 * time.Millisecond)
+	a.send(map[string]any{"t": "say", "to": "u:" + buid, "text": "the eagle lands at midnight"})
+	select {
+	case j := <-p.queue:
+		if j.uid != buid || j.data["kind"] != "dm" || j.data["title"] != "Ana" {
+			t.Fatal(j.data)
+		}
+		for k, v := range j.data {
+			if strings.Contains(v, "eagle") {
+				t.Fatalf("the words went in the push: %s=%q", k, v)
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no push")
+	}
+}

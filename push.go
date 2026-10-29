@@ -254,8 +254,9 @@ func (h *hub) pushFor(ss *session, msg *chatMsg, ch int64, other string) {
 		return
 	}
 	text := msg.Text
-	if msg.Enc != "" {
-		// End to end encrypted: the server has no words to send, and says only who wrote (the app: "New message from X")
+	if msg.Enc != "" || other != "" {
+		// A private message: only who wrote (the app: "New message from X"), never the words, even with
+		// SV_PUSH_CONTENT and even a plaintext one from an older app (docs/E2E.md §6)
 		text = ""
 	}
 	if len([]rune(text)) > 180 {
