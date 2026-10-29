@@ -13,6 +13,7 @@ import { loadIdentity, signChallenge } from './identity.js';
 import { voiceStart, applyVolumes, updatePTT } from './voice.js';
 import { loadChat, openConv, renderChat, updateUnread } from './chat.js';
 import { watchRoom, liveOf } from './streams.js';
+import './bus.js';
 import './tv.js';
 import './files.js';
 import './dm.js';
