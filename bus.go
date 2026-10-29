@@ -12,7 +12,7 @@ package main
 //	                                                     than stopped at 0, and Lei moved is rate limited (leiBudget)
 //	<- {"t":"buy","item":…}                              a shop purchase (shop.go)
 //	<- {"t":"anything else", ...}                       passed on to the others, with "from": U and "relay": true
-//	-> {"t":"error","op":…,"why":…,"message":…}          a change that was refused (and why)
+//	-> {"t":"error","op":…,"why":…,"message":…}          a change that was refused (and why), with its "ref" if it had one
 //
 //	PUT/GET /backup/<id>?token=T                          an app's encrypted settings backup (up to 1 MB)
 //
@@ -148,8 +148,9 @@ func (c *busClient) send(v any) {
 // refuse tells the client a change of its wasn't made.
 func (c *busClient) refuse(m map[string]any, op, why, message string) {
 	e := map[string]any{"t": "error", "op": op, "why": why, "message": message}
-	for _, k := range []string{"kind", "id"} {
-		if v, ok := m[k].(string); ok {
+	// "ref": the client's own tag for that change, so it knows which one was refused
+	for _, k := range []string{"kind", "id", "ref"} {
+		if v, ok := m[k].(string); ok && len(v) <= 64 {
 			e[k] = v
 		}
 	}

@@ -726,12 +726,13 @@ func TestBusLeiLimits(t *testing.T) {
 		m := map[string]any{"t": "add", "kind": "lei", "id": id, "d": d, "start": 1000.0}
 		if strict {
 			m["strict"] = true
+			m["ref"] = "g1"
 		}
 		a.write(m)
 		return a.read()
 	}
 	// More than the purse holds: refused when strict, stopped at 0 when not
-	if m := lei("A", -1500, true); m["t"] != "error" || m["why"] != "funds" {
+	if m := lei("A", -1500, true); m["t"] != "error" || m["why"] != "funds" || m["ref"] != "g1" {
 		t.Fatalf("strict overdraw: %v", m)
 	}
 	if m := lei("A", -400, true); m["t"] != "put" || m["v"].(map[string]any)["v"] != 600.0 {
