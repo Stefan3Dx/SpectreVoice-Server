@@ -447,6 +447,8 @@ func (st *store) wipeUser(uid string) (int, error) {
 	for _, q := range []string{
 		`DELETE FROM push_tokens WHERE uid=?`,
 		`DELETE FROM e2e_devices WHERE uid=?`,
+		`DELETE FROM event_rsvp WHERE uid=?`,
+		`DELETE FROM event_mute WHERE uid=?`,
 		`DELETE FROM member_roles WHERE uid=?`,
 		`DELETE FROM memberships WHERE uid=? AND comm NOT IN (SELECT id FROM communities WHERE owner=?1)`,
 		`DELETE FROM user_state WHERE uid=?`,

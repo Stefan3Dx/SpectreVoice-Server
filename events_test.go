@@ -113,3 +113,23 @@ func TestScheduledEvents(t *testing.T) {
 		t.Fatal("moderators can't make events")
 	}
 }
+
+// Erasing a person (wipe) takes their answers to events and their "mute events" with them.
+func TestWipeForgetsEventAnswers(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	if err := s.store.migrateEvents(); err != nil {
+		t.Fatal(err)
+	}
+	const uid = "wipedwipedwipedwiped"
+	_, _ = s.store.db.Exec(`INSERT INTO events(title,start,by,created) VALUES('x',1,'someone',1)`)
+	_, _ = s.store.db.Exec(`INSERT INTO event_rsvp(event,uid,kind,at) VALUES(1,?,'going',1)`, uid)
+	_, _ = s.store.db.Exec(`INSERT INTO event_mute(uid,at) VALUES(?,1)`, uid)
+	if _, err := s.store.wipeUser(uid); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	_ = s.store.db.QueryRow(`SELECT (SELECT COUNT(*) FROM event_rsvp WHERE uid=?1) + (SELECT COUNT(*) FROM event_mute WHERE uid=?1)`, uid).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d rows of theirs stayed", n)
+	}
+}
