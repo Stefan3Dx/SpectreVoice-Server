@@ -217,3 +217,28 @@
   .gm-bg-row { height: 150px; grid-template-columns: repeat(6, 1fr) 8px repeat(6, 1fr); }
   .gm-chk { width: 20px; height: 20px; }
 }
+
+/* Party games: Trivia, Hangman */
+.gm-play[data-kind="TRIVIA"], .gm-play[data-kind="HANGMAN"] { background: radial-gradient(900px 600px at 50% 0%, #3b1f6e, #1a1033 65%, #0d0a1c); border-color: #3d2a6b; }
+.gm-party { max-width: 820px; }
+.gm-clock { position: relative; align-self: stretch; height: 22px; border-radius: 11px; background: #0006; overflow: hidden; }
+.gm-clock i { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, #22d3ee, #7c5cff); transition: width 1s linear; }
+.gm-clock span { position: relative; display: block; text-align: center; font-size: .8rem; font-weight: 700; line-height: 22px; }
+.gm-question { font-size: 1.45rem; font-weight: 800; text-align: center; color: #fff; }
+.gm-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-self: stretch; }
+.gm-opt { min-height: 64px; font-size: 1.05rem; font-weight: 700; color: #fff; border: 0; border-radius: 16px; }
+.gm-opt.o0 { background: #e53935; } .gm-opt.o1 { background: #1e88e5; } .gm-opt.o2 { background: #fdd835; color: #212121; } .gm-opt.o3 { background: #43a047; }
+.gm-opt:disabled { opacity: 1; cursor: default; }
+.gm-opt.mine { box-shadow: 0 0 0 4px #fff; }
+.gm-opt.right { box-shadow: 0 0 0 4px #b9f6ca, 0 0 18px #b9f6ca88; }
+.gm-opt.wrong { opacity: .5; text-decoration: line-through; }
+.gm-final { margin: 0; padding-left: 24px; font-size: 1.05rem; min-width: 240px; }
+.gm-final li { display: flex; justify-content: space-between; gap: 18px; }
+.gm-gallows { font-size: 1.6rem; color: #ff5252; letter-spacing: 4px; }
+.gm-mask { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.gm-mask span { min-width: 38px; height: 50px; border-bottom: 3px solid #fff8; display: grid; place-items: center; font-size: 2rem; font-weight: 800; }
+.gm-mask.good span { color: #b9f6ca; }
+.gm-mask.bad span { color: #ff8a80; }
+.gm-letters { display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; max-width: 640px; }
+.gm-letter { width: 40px; height: 40px; padding: 0; font-weight: 800; }
+.gm-party form input { width: min(340px, 70vw); }

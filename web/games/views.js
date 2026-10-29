@@ -11,6 +11,7 @@ import { Barbut, Roulette, Slots } from './casino.js';
 import { Blackjack } from './blackjack.js';
 import { Backgammon } from './backgammon.js';
 import { Poker } from './poker.js';
+import { Hangman } from './party.js';
 import { fmtLei } from './hub.js';
 
 const name = (v, i) => v.t.players[i]?.name ?? '?';
@@ -391,4 +392,84 @@ function poker(v) {
     boardCards, rows, banner(msg), ctl);
 }
 
-export const views = { TICTACTOE: grid, CONNECT4: grid, CHESS: chess, BACKGAMMON: backgammon, BARBUT: barbut, ROULETTE: roulette, SLOTS: slots, BLACKJACK: blackjack, POKER: poker };
+// ====== Party games: the scores, the clock ======
+
+function scoreRow(v, sc, done = []) {
+  return el('div', { class: 'gm-seats' }, ...v.t.players.map((p, i) => seatChip(v, i, false, String(sc[i] ?? 0), done.includes(i) ? '✓' : '')));
+}
+function countdown(dl, total) {
+  const left = Math.max(0, (Number(dl) || 0) - Date.now());
+  const bar = el('div', { class: 'gm-clock' }, el('i'), el('span', { text: Math.ceil(left / 1000) + ' s' }));
+  bar.firstChild.style.width = Math.max(0, Math.min(100, (left / total) * 100)) + '%';
+  return bar;
+}
+function partyEnd(v, sc) {
+  const best = Math.max(0, ...sc);
+  const winners = best > 0 ? v.t.players.filter((_, i) => sc[i] === best).map((p) => p.name) : [];
+  const order = v.t.players.map((p, i) => [p.name, sc[i] ?? 0]).sort((a, b) => b[1] - a[1]);
+  return el('div', { class: 'gm-casino' }, banner(winners.length ? t('gWins', { name: winners.join(', ') }) : t('gDraw'), 'good'),
+    el('ol', { class: 'gm-final' }, ...order.map(([n, x]) => el('li', {}, el('b', { text: n }), el('span', { text: String(x) })))));
+}
+const arr = (x) => (Array.isArray(x) ? x : []);
+const num = (x, d = 0) => (typeof x === 'number' ? x : d);
+
+// ====== Trivia ======
+
+function trivia(v) {
+  const st = v.st;
+  if (st.ph === 'q' && v.ui._q !== st.q) { v.ui._q = st.q; v.ui.pick = undefined; }
+  const sc = arr(st.sc);
+  if (st.ph === 'end') return partyEnd(v, sc);
+  const done = arr(st.done);
+  const opts = arr(st.opts);
+  const answer = num(st.answer, -1);
+  const res = st.ph === 'res';
+  const picks = arr(st.picks), gain = arr(st.gain);
+  const mine = v.seat >= 0 ? (res ? num(picks[v.seat], -1) : v.ui.pick) : undefined;
+  const grid = el('div', { class: 'gm-opts' }, ...opts.map((o, i) => el('button', {
+    type: 'button', class: 'gm-opt o' + i + (res && i === answer ? ' right' : '') + (res && i === mine && i !== answer ? ' wrong' : '') + (!res && i === mine ? ' mine' : ''),
+    dataset: { opt: String(i) }, disabled: res || v.seat < 0 || done.includes(v.seat), text: (res && i === answer ? '✅ ' : '') + String(o),
+    onclick: () => { v.ui.pick = i; v.play({ op: 'answer', i }); },
+  })));
+  const kids = [scoreRow(v, sc, res ? [] : done),
+    el('div', { class: 'gm-sub', text: t('trQuestion', { n: num(st.rd) + 1, of: num(st.of), cat: String(st.cat ?? '') }) }),
+    countdown(st.dl, res ? 5000 : 15000), el('div', { class: 'gm-question', text: String(st.q ?? '') }), grid];
+  if (res) kids.push(el('div', { class: 'gm-rows' }, ...v.t.players.map((p, i) => el('div', { class: 'gm-row' }, el('b', { text: p.name }),
+    el('span', { text: num(picks[i], -1) < 0 ? '—' : picks[i] === answer ? '✅' : '❌' }), gain[i] ? el('span', { class: 'gm-pay good', text: '+' + gain[i] }) : null))));
+  else if (v.seat >= 0 && done.includes(v.seat)) kids.push(banner(t('trAnswered', { n: done.length, of: v.t.players.length }), 'good'));
+  else if (v.seat < 0) kids.push(banner(t('trWatching')));
+  return el('div', { class: 'gm-casino gm-party' }, ...kids);
+}
+
+// ====== Hangman ======
+
+function hangman(v) {
+  const st = v.st;
+  const sc = arr(st.sc);
+  if (st.ph === 'end') return partyEnd(v, sc);
+  const res = st.ph === 'res';
+  const turn = num(st.turn);
+  const myTurn = !res && v.seat === turn;
+  const miss = num(st.miss);
+  const tried = arr(st.tried).map(String);
+  const kids = [scoreRow(v, sc), el('div', { class: 'gm-sub', text: t('hmWord', { n: num(st.rd) + 1, of: num(st.of), cat: String(st.cat ?? '') }) }),
+    countdown(st.dl, res ? 6000 : 20000),
+    el('div', { class: 'gm-gallows', text: '♥'.repeat(Math.max(0, Hangman.LIVES - miss)) + '♡'.repeat(Math.min(Hangman.LIVES, miss)) }),
+    el('div', { class: 'gm-mask' + (res ? (num(st.solved, -1) >= 0 ? ' good' : ' bad') : '') }, ...String(st.mask ?? '').split('').map((c) => el('span', { class: c === '_' ? 'blank' : '', text: c === '_' ? '' : c.toUpperCase() }))),
+    arr(st.wrong).length ? el('div', { class: 'gm-note', text: t('hmWrong') + ' ' + arr(st.wrong).map((x) => String(x).toUpperCase()).join(' ') }) : null];
+  if (res) kids.push(banner(num(st.solved, -1) >= 0 ? t('hmSolved', { name: name(v, st.solved) }) : t('hmHanged'), num(st.solved, -1) >= 0 ? 'good' : 'bad'));
+  else kids.push(banner(myTurn ? t('hmYourTurn') : t('hmPicks', { name: name(v, turn) })));
+  if (!res) kids.push(el('div', { class: 'gm-letters' }, ...Hangman.LETTERS.map((l) => el('button', {
+    type: 'button', class: 'gm-letter', dataset: { letter: l }, disabled: !myTurn || tried.includes(l), text: l.toUpperCase(), onclick: () => v.play({ op: 'letter', v: l }),
+  }))));
+  if (myTurn) {
+    const inp = el('input', { maxLength: 30, placeholder: t('hmSolveHint'), dataset: { k: v.t.id + ':solve' } });
+    inp.value = v.ui.solve || '';
+    inp.oninput = () => { v.ui.solve = inp.value; };
+    kids.push(el('form', { class: 'row gm-ctl', onsubmit: (ev) => { ev.preventDefault(); const x = inp.value.trim(); if (x) { v.ui.solve = ''; v.play({ op: 'solve', v: x }); } } },
+      inp, el('button', { type: 'submit', class: 'primary', text: t('hmSolve') })));
+  }
+  return el('div', { class: 'gm-casino gm-party' }, ...kids);
+}
+
+export const views = { TICTACTOE: grid, CONNECT4: grid, CHESS: chess, BACKGAMMON: backgammon, BARBUT: barbut, ROULETTE: roulette, SLOTS: slots, BLACKJACK: blackjack, POKER: poker, TRIVIA: trivia, HANGMAN: hangman };

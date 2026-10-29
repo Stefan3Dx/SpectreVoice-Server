@@ -9,6 +9,8 @@ import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import * as R from '../rules.js';
+import { Trivia, Hangman } from '../party.js';
+import { HANGMAN } from '../partydata.js';
 
 const file = process.argv[2] || fileURLToPath(new URL('./kotlin-games.json.gz', import.meta.url));
 const raw = readFileSync(file);
@@ -26,7 +28,15 @@ function rndFor(kind, step) {
   if (o && kind === 'ROULETTE') queue.push(o.state.result);
   if (o && kind === 'SLOTS') for (const r of o.state.reels) queue.push(WEIGHTS.slice(0, r).reduce((a, b) => a + b, 0));
   if (o && kind === 'BACKGAMMON' && step.m.op === 'roll') queue.push(...o.state.rolled);
+  // A new hangman word: its place among the words not used yet
+  if (o && kind === 'HANGMAN' && o.secret.used.length > (step.in.secret.used || []).length) queue.push(hangmanPick(step.in.secret.used || [], o.secret.used.at(-1)));
   return { nextInt: () => { if (!queue.length) throw new Error('the web rules drew more than the Kotlin did'); return queue.shift(); } };
+}
+
+function hangmanPick(used, word) {
+  let pool = HANGMAN.filter((x) => !used.includes(x[0]));
+  if (!pool.length) pool = HANGMAN;
+  return pool.findIndex((x) => x[0] === word);
 }
 
 // Blackjack shuffles a new shoe when it runs low, poker a new deck each hand
@@ -82,9 +92,20 @@ for (const g of rec.games) {
   const players = Array.from({ length: g.n }, (_, i) => ({ uid: 'u' + i, name: 'P' + i }));
   const ctx = (host) => ({ players, host, purse: (i) => g.purses[i] });
   // The start: the same (the shuffled shoe aside)
-  // (backgammon: who starts as the Kotlin drew it; the cards: only how many, they're shuffled)
-  const s = R.start(g.kind, ctx(true), null, { nextInt: () => g.start.state.turn });
-  if (DECK[g.kind]) {
+  // (backgammon: who starts as the Kotlin drew it; the cards: only how many, they're shuffled; trivia's questions in
+  // the Kotlin's order, hangman's first word and player as it drew them)
+  let s;
+  if (g.kind === 'TRIVIA') {
+    const st0 = g.start.state;
+    const r = Trivia.round({ rd: 0, of: g.start.secret.order.length, sc: Array(g.n).fill(0) }, { order: g.start.secret.order.slice() }, g.n, st0.start);
+    s = { state: r.pub, secret: r.sec };
+  } else if (g.kind === 'HANGMAN') {
+    const feed = [g.start.state.turn, hangmanPick([], g.start.secret.used[0])];
+    s = R.start(g.kind, ctx(true), null, { nextInt: () => feed.shift() }, g.start.state.dl - Hangman.TURN_MS);
+  } else s = R.start(g.kind, ctx(true), null, { nextInt: () => g.start.state.turn });
+  if (R.isParty(g.kind)) {
+    if (!same(s.state, g.start.state) || !same(s.secret, g.start.secret)) bad.push(`${g.kind} start: ${JSON.stringify(s)} vs ${JSON.stringify(g.start)}`);
+  } else if (DECK[g.kind]) {
     if (!same(s.state, g.start.state) || s.secret[DECK[g.kind]].length !== g.start.secret[DECK[g.kind]].length) bad.push(`${g.kind} start: ${JSON.stringify(s.state)} vs ${JSON.stringify(g.start.state)}`);
     for (const f of ['pay', 'profit', 'over', 'played', 'final']) if (!same(s[f] ?? null, g.start[f] ?? null)) bad.push(`${g.kind} start ${f}: ${JSON.stringify(s[f])} vs ${JSON.stringify(g.start[f])}`);
   } else if (!same(s.state, g.start.state)) bad.push(`${g.kind} start: ${JSON.stringify(s.state)} vs ${JSON.stringify(g.start.state)}`);
@@ -101,7 +122,7 @@ for (const g of rec.games) {
       rnd = { nextInt: () => { if (!answers.length) throw new Error('shuffled twice'); return answers.shift(); } };
     }
     let o;
-    try { o = R.move(g.kind, step.in.state, step.in.secret, step.p, step.m, ctx(step.host), rnd); } catch (e) { o = 'threw ' + e.message; }
+    try { o = R.move(g.kind, step.in.state, step.in.secret, step.p, step.m, ctx(step.host), rnd, step.now); } catch (e) { o = 'threw ' + e.message; }
     const where = `${g.kind} game ${games} step ${k} seat ${step.p} ${JSON.stringify(step.m)}`;
     if (typeof o === 'string') { bad.push(where + ': ' + o); continue; }
     if (step.out === null) { if (o !== null) bad.push(where + ': taken here, refused by the Kotlin'); continue; }

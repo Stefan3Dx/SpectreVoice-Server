@@ -9,6 +9,7 @@ import { Barbut, Roulette, Slots } from './casino.js';
 import { Blackjack } from './blackjack.js';
 import { Backgammon } from './backgammon.js';
 import { Poker } from './poker.js';
+import { partyStart, partyMove } from './party.js';
 
 // GameHub.Kind: every game the apps know (min, max players), in the apps' order
 export const KINDS = {
@@ -25,7 +26,7 @@ export const isParty = (k) => PARTY.has(k);
 export const isChance = (k) => ['BARBUT', 'BLACKJACK', 'POKER', 'ROULETTE', 'SLOTS'].includes(k);
 export const isDuel = (k) => ['CHESS', 'BACKGAMMON', 'TICTACTOE', 'CONNECT4'].includes(k);
 // What this web client can play (and keep)
-export const PLAYABLE = ['TICTACTOE', 'CONNECT4', 'CHESS', 'BACKGAMMON', 'BARBUT', 'ROULETTE', 'SLOTS', 'BLACKJACK', 'POKER'];
+export const PLAYABLE = ['TICTACTOE', 'CONNECT4', 'CHESS', 'BACKGAMMON', 'BARBUT', 'ROULETTE', 'SLOTS', 'BLACKJACK', 'POKER', 'TRIVIA', 'HANGMAN'];
 export const playable = (k) => PLAYABLE.includes(k);
 
 export function turnBased(k) {
@@ -35,8 +36,9 @@ export function turnBased(k) {
 const out = (state, o = {}) => ({ state, secret: null, pay: {}, profit: null, over: null, played: null, final: false, privates: {}, ...o });
 
 // ctx: {players: [{uid, name}], host: bool, purse: (seat) => Lei}; prev: the table's last state (its stake)
-export function start(kind, ctx, prev, rnd = defaultRnd) {
+export function start(kind, ctx, prev, rnd = defaultRnd, now = Date.now()) {
   const n = ctx.players.length;
+  if (kind === 'TRIVIA' || kind === 'HANGMAN') return partyStart(kind, n, now, rnd);
   switch (kind) {
     case 'CHESS': return out({ ...new Chess().encode(), hist: [] });
     case 'BARBUT': return out(Barbut.encode(Barbut.start(n, toInt(prev?.stake) ?? Barbut.STAKE)));
@@ -208,10 +210,11 @@ export function committed(kind, st, secret) {
 }
 
 // Seat p's move m (as it came on the bus) on state st; null: not allowed
-export function move(kind, st, secret, p, m, ctx, rnd = defaultRnd) {
+export function move(kind, st, secret, p, m, ctx, rnd = defaultRnd, now = Date.now()) {
   const int = (k) => toInt(m[k]) ?? -1;
   const op = typeof m.op === 'string' ? m.op : '';
   const names = ctx.players.map((x) => x.name);
+  if (kind === 'TRIVIA' || kind === 'HANGMAN') return partyMove(kind, st, secret, p, m, ctx.players.length, ctx.host, now, rnd);
   switch (kind) {
     case 'CHESS': {
       const c = Chess.decode(st);

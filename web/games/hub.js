@@ -299,7 +299,7 @@ export function createHub(env) {
     if (!t || t.host !== me().uid || (t.players.length < R.kindMin(t.kind) && !t.tour) || !R.playable(t.kind)) return;
     refund(t);
     const players = shuffle && t.kind !== 'POKER' && t.kind !== 'ROULETTE' ? shuffled(t.players, rnd) : t.players.slice();
-    const o = R.start(t.kind, ctxOf(players, true), t.state, rnd);
+    const o = R.start(t.kind, ctxOf(players, true), t.state, rnd, now());
     if (o.secret) secret.set(id, o.secret); else secret.delete(id);
     forget(id);
     lastMove.set(id, now());
@@ -330,7 +330,7 @@ export function createHub(env) {
       return true;
     }
     let o;
-    try { o = R.move(t.kind, st, secret.get(t.id) || null, p, m, ctxOf(t.players, (from || t.host) === t.host), rnd); } catch (e) { o = null; }
+    try { o = R.move(t.kind, st, secret.get(t.id) || null, p, m, ctxOf(t.players, (from || t.host) === t.host), rnd, now()); } catch (e) { o = null; }
     if (!o) return false;
     if (p >= 0 && o.pay[p] !== undefined && o.pay[p] < 0 && -o.pay[p] > Lei.of(from)) return false;
     if (!auto && p >= 0) afk.get(id)?.delete(from);
@@ -468,6 +468,16 @@ export function createHub(env) {
     update({ ...n, note: text(why === 'time' ? 'gNoteTime' : 'gNoteGone', { name: pl.name }) });
   }
 
+  // Party games move on by the clock: the keeper's "tick" (from no seat) once a round's time is up
+  function partyTick(t0) {
+    const my = me().uid;
+    for (const t of [...tables.values()]) {
+      if (t.host !== my || !t.started || !R.isParty(t.kind) || !t.state) continue;
+      const dl = typeof t.state.dl === 'number' ? t.state.dl : 0;
+      if (t.state.final !== true && dl > 0 && t0 >= dl) move(t.id, '', { op: 'tick' }, '');
+    }
+  }
+
   // ====== Talk at a table ======
 
   function heard(id, line) {
@@ -518,7 +528,7 @@ export function createHub(env) {
     const slow = () => { try { slowTick(); } catch (e) { console.error('games', e); } };
     setTimeout(slow, 5000);
     timers.push(setIntervalFn(slow, 15000));
-    timers.push(setIntervalFn(() => { try { watchTurns(now()); } catch (e) { console.error('games', e); } }, 400));
+    timers.push(setIntervalFn(() => { try { const t0 = now(); partyTick(t0); watchTurns(t0); } catch (e) { console.error('games', e); } }, 400));
   }
   function stop() { for (const t of timers.splice(0)) clearInterval(t); }
 
@@ -530,7 +540,7 @@ export function createHub(env) {
     handle, tableFrom, create, join, leave, startGame, play, again: (id) => startGame(id),
     resign: (id) => play(id, { op: 'resign' }), bet: (id, seat, amount) => play(id, { op: 'wager', on: seat, v: amount }),
     invite: (id, uid) => send({ t: 'g', op: 'invite', id, to: uid, name: me().name }),
-    say, betsOpen, watchTurns, slowTick, leftServer, start, stop, me,
+    say, betsOpen, watchTurns, partyTick, slowTick, leftServer, start, stop, me,
     secretOf: (id) => secret.get(id),
   };
 }

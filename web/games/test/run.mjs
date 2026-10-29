@@ -9,6 +9,7 @@ import { Barbut, Roulette, Slots } from '../casino.js';
 import { Blackjack } from '../blackjack.js';
 import { Backgammon } from '../backgammon.js';
 import { Poker } from '../poker.js';
+import { Trivia, Hangman, fold } from '../party.js';
 import * as R from '../rules.js';
 import { createHub, fmtLei, isoWeek } from '../hub.js';
 
@@ -492,11 +493,94 @@ test('backgammon: the rules (MoreGamesTest.backgammonMustUseBothDice, backgammon
   for (let seed = 0; seed < 200; seed++) { const f = Backgammon.start(0); assert.equal(Backgammon.move(f, 0, 'roll', 0, 0, seeded(seed)), null); assert.notEqual(f.rolled[0], f.rolled[1]); }
 });
 
+// ====== Party games (Party.kt): Trivia and Hangman ======
+
+test('party: guesses compared folded (Party.kt fold)', () => {
+  assert.equal(fold('  Țară-Mare!! ăîșț '), 'tara mare aist');
+  assert.equal(fold('Ştefan cel Mare'), 'stefan cel mare');
+  assert.equal(fold('...'), '');
+});
+
+test('trivia: answers, points for speed, the clock moves it on, ten questions', () => {
+  const t0 = 1_800_000_000_000;
+  let o = R.start('TRIVIA', ctx(two), null, seeded(1), t0);
+  assert.equal(o.state.ph, 'q');
+  assert.equal(o.state.of, 10);
+  assert.equal(o.state.dl, t0 + 15000);
+  assert.equal(o.secret.order.length, 10);
+  assert.equal(typeof o.state.q, 'string');
+  const right = o.secret.answer;
+  // Seat 0 right after 3 s, seat 1 wrong: the round ends when both answered
+  let m = R.move('TRIVIA', o.state, o.secret, 0, { op: 'answer', i: right }, ctx(two), seeded(1), t0 + 3000);
+  assert.deepEqual(m.state.done, [0]);
+  assert.equal(R.move('TRIVIA', m.state, m.secret, 0, { op: 'answer', i: right }, ctx(two), seeded(1), t0 + 3500), null); // once
+  assert.equal(R.move('TRIVIA', m.state, m.secret, 1, { op: 'answer', i: 4 }, ctx(two), seeded(1), t0 + 3500), null); // 0..3
+  m = R.move('TRIVIA', m.state, m.secret, 1, { op: 'answer', i: (right + 1) % 4 }, ctx(two), seeded(1), t0 + 4000);
+  assert.equal(m.state.ph, 'res');
+  assert.deepEqual(m.state.gain, [500 + Math.floor(500 * 12000 / 15000), 0]);
+  assert.deepEqual(m.state.sc, [900, 0]);
+  assert.equal(m.state.answer, right);
+  // Too early for the host's tick; then the next question
+  assert.equal(R.move('TRIVIA', m.state, m.secret, -1, { op: 'tick' }, ctx(two, 1000, true), seeded(1), t0 + 5000), null);
+  let st = m.state, sec = m.secret, now = t0 + 4000, last;
+  for (let k = 0; k < 40 && st.ph !== 'end'; k++) { now += 16000; last = R.move('TRIVIA', st, sec, -1, { op: 'tick' }, ctx(two, 1000, true), seeded(1), now); st = last.state; sec = last.secret; }
+  assert.equal(st.ph, 'end');
+  assert.equal(last.final, true);
+  assert.deepEqual(last.over, [0]);
+  assert.deepEqual(last.played, [0, 1]);
+});
+
+test('hangman: letters, a miss passes the turn, the word solved, six lives', () => {
+  const t0 = 1_800_000_000_000;
+  const o = R.start('HANGMAN', ctx(two), null, { nextInt: (n) => (n === 2 ? 1 : 0) }, t0);
+  assert.equal(o.state.turn, 1);
+  assert.equal(o.secret.word, 'elefant');
+  assert.equal(o.state.mask, 'e_e___t');
+  assert.deepEqual(o.state.tried, ['e', 't']);
+  assert.equal(R.move('HANGMAN', o.state, o.secret, 0, { op: 'letter', v: 'l' }, ctx(two), seeded(1), t0), null); // not their turn
+  let m = R.move('HANGMAN', o.state, o.secret, 1, { op: 'letter', v: 'L' }, ctx(two), seeded(1), t0 + 1000);
+  assert.equal(m.state.mask, 'ele___t');
+  assert.deepEqual(m.state.sc, [0, 10]);
+  assert.equal(m.state.turn, 1); // right: plays on
+  m = R.move('HANGMAN', m.state, m.secret, 1, { op: 'letter', v: 'z' }, ctx(two), seeded(1), t0 + 2000);
+  assert.equal(m.state.miss, 1);
+  assert.equal(m.state.turn, 0);
+  assert.deepEqual(m.state.wrong, ['z']);
+  m = R.move('HANGMAN', m.state, m.secret, 0, { op: 'solve', v: ' ELEFANT ' }, ctx(two), seeded(1), t0 + 3000);
+  assert.equal(m.state.ph, 'res');
+  assert.equal(m.state.solved, 0);
+  assert.equal(m.state.word, 'elefant');
+  assert.deepEqual(m.state.sc, [20 + 10 * 3, 10]); // three letters still hidden (f, a, n)
+  let st = Hangman.start(1, t0, seeded(2));
+  for (let k = 0; k < 6; k++) st = Hangman.act(st.pub, st.sec, 0, 'solve', { v: 'nope' }, 1, false, t0 + k);
+  assert.equal(st.pub.ph, 'res');
+  assert.equal(st.pub.solved, -1);
+});
+
+test('hub: the keeper ticks a party table on by the clock', () => {
+  let clock = 1_800_000_000_000;
+  const msgs = [];
+  const hub = createHub({ send: (m) => { msgs.push(m); return true; }, kept: () => ({ lei: {}, scores: {} }), caps: () => new Set(['add', 'incr']), online: () => true, me: () => ({ uid: 'ana', name: 'Ana' }), present: () => null, now: () => clock, text: (k) => k, rnd: seeded(4) });
+  const id = hub.create('TRIVIA');
+  hub.startGame(id);
+  assert.equal(hub.tables.get(id).state.ph, 'q');
+  hub.partyTick(clock + 1000);
+  assert.equal(hub.tables.get(id).state.ph, 'q');
+  clock += 15000;
+  hub.partyTick(clock);
+  assert.equal(hub.tables.get(id).state.ph, 'res');
+  const sent = msgs.filter((m) => m.t === 'g' && m.op === 'table').at(-1);
+  assert.equal(sent.state.ph, 'res');
+  assert.equal(sent.state.answer, hub.secretOf(id).answer);
+  // The answer never went out before the results
+  assert.ok(msgs.filter((m) => m.t === 'g' && m.op === 'table' && m.state && m.state.ph === 'q').every((m) => m.state.answer === -1));
+});
+
 // ====== The checks of a state from the bus (ReviewFixesTest) ======
 
 test('malformed states are not taken (ReviewFixesTest.malformedTableStatesAreNotTaken)', () => {
   const junk = [{}, { board: 5 }, { hands: 'x' }, { cells: ['a'] }, { turn: 99 }, { hands: [[1]], turn: 7, winner: 9 }];
-  for (const kind of R.PLAYABLE) for (const st of junk) {
+  for (const kind of R.PLAYABLE.filter((k) => !R.isParty(k))) for (const st of junk) {
     const nn = Math.min(Math.max(R.kindMin(kind), 2), R.kindMax(kind));
     assert.equal(R.validState(kind, st, nn), false, kind + ' took ' + JSON.stringify(st));
   }
@@ -510,7 +594,7 @@ test('malformed states are not taken (ReviewFixesTest.malformedTableStatesAreNot
 
 test('real states pass the check, played through (ReviewFixesTest.realStatesPassTheCheck)', () => {
   const rnd = seeded(7);
-  for (const kind of R.PLAYABLE) for (let np = R.kindMin(kind); np <= Math.min(R.kindMax(kind), 5); np++) for (let rep = 0; rep < 3; rep++) {
+  for (const kind of R.PLAYABLE.filter((k) => !R.isParty(k))) for (let np = R.kindMin(kind); np <= Math.min(R.kindMax(kind), 5); np++) for (let rep = 0; rep < 3; rep++) {
     const ps = Array.from({ length: np }, (_, i) => ({ uid: 'u' + i, name: 'P' + i }));
     const c = { players: ps, host: true, purse: () => 1000 };
     let o = R.start(kind, c, null, rnd);

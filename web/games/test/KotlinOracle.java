@@ -72,6 +72,32 @@ public class KotlinOracle {
         return mv("kind", kind.name(), "n", n, "purses", purses, "start", out(o), "steps", rec);
     }
 
+
+    // A party game, played straight on its PartyGame with a clock of our own (Rules.move reads the real one): the host's
+    // ticks once a round's time is up, the players' answers in between
+    static Map<String, Object> party(GameHub.Kind kind, PartyGame g, int n, int steps, Mover mover) {
+        kotlin.random.Random kr = kotlin.random.RandomKt.Random(rnd.nextInt());
+        long now = 1_800_000_000_000L + rnd.nextInt(1_000_000);
+        PartyOut o0 = g.start(n, now, kr);
+        Outcome start = new Outcome(o0.getPub(), o0.getSec(), Map.of(), null, o0.getOver(), null, o0.getFinal(), Map.of());
+        Map<String, Object> st = o0.getPub(), sec = o0.getSec();
+        List<Object> rec = new ArrayList<>();
+        for (int k = 0; k < steps; k++) {
+            now += rnd.nextInt(4) == 0 ? 21_000 : rnd.nextInt(3000);
+            Map<String, Object> m = mover.pick(kind, st, sec, n);
+            int p = "tick".equals(m.get("op")) ? -1 : rnd.nextInt(n);
+            if (kind == GameHub.Kind.HANGMAN && p >= 0 && rnd.nextInt(5) != 0) p = ((Number) st.get("turn")).intValue();
+            PartyOut r = g.act(PartyKt.deepMap(st), PartyKt.deepMap(sec), p, (String) m.get("op"), m, n, p < 0, now, kr);
+            Outcome oc = r == null ? null : new Outcome(r.getPub(), r.getSec(), Map.of(), null, r.getOver(), r.getOver() != null ? java.util.stream.IntStream.range(0, n).boxed().toList() : null, r.getFinal(), r.getPrivates());
+            rec.add(mv("p", p, "m", m, "host", p < 0, "now", now, "in", mv("state", st, "secret", sec), "out", out(oc)));
+            if (r != null) {
+                st = r.getPub(); sec = r.getSec();
+                if (r.getFinal()) { Map<String, Object> f = new LinkedHashMap<>(st); f.put("final", true); st = f; break; }
+            }
+        }
+        return mv("kind", kind.name(), "n", n, "purses", new int[n], "startNow", start.getState().get("dl"), "start", out(start), "steps", rec);
+    }
+
     static final String[] PROMOS = {"q", "r", "b", "n", "x", "Q"};
     static final String[] RTYPES = {"n", "red", "black", "even", "odd", "low", "high", "dozen", "column", "nope"};
 
@@ -133,6 +159,16 @@ public class KotlinOracle {
             if (r < 17) return mv("op", "call");
             if (r < 22) return mv("op", "raise", "v", rnd.nextInt(400));
             return mv("op", "allin");
+        }));
+        for (int g = 0; g < 3; g++) games.add(party(GameHub.Kind.TRIVIA, TriviaGame.INSTANCE, 1 + g, 120, (k, st, sec, n) -> rnd.nextInt(3) == 0 ? mv("op", "tick") : rnd.nextInt(10) == 0 ? mv("op", "answer", "i", rnd.nextInt(7) - 2) : mv("op", "answer", "i", rnd.nextInt(4))));
+        for (int g = 0; g < 3; g++) games.add(party(GameHub.Kind.HANGMAN, HangmanGame.INSTANCE, 1 + g, 260, (k, st, sec, n) -> {
+            int r = rnd.nextInt(12);
+            if (r < 3) return mv("op", "tick");
+            String w = String.valueOf(sec.get("word"));
+            if (r == 3) return mv("op", "solve", "v", rnd.nextBoolean() ? w.toUpperCase() : "nimic");
+            if (r == 4) return mv("op", "letter", "v", new String[]{"", "1", "Ș", "ab", "q"}[rnd.nextInt(5)]);
+            List<Character> L = HangmanGame.INSTANCE.getLETTERS();
+            return mv("op", "letter", "v", String.valueOf(rnd.nextInt(3) == 0 ? w.charAt(rnd.nextInt(w.length())) : L.get(rnd.nextInt(L.size()))));
         }));
         // Forfeits as the keeper sends them
         List<Object> forfeits = new ArrayList<>();
