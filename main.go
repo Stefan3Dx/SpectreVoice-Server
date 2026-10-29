@@ -30,6 +30,7 @@ import (
 	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/intervalpli"
+	"github.com/pion/interceptor/pkg/nack"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 )
@@ -568,6 +569,14 @@ func (s *server) refreshPublicIP() bool {
 	return true
 }
 
+// The receiving side's loss recovery (see buildAPI): SRTP's replay window and the NACK log, in packets (powers of
+// two: about 3.5 s and 1.8 s of a 1440p60 share), and how many times one packet is asked for.
+const (
+	srtpWindow = 4096
+	nackLog    = 2048
+	nackTries  = 6
+)
+
 // buildAPI makes the WebRTC API (codecs, interceptors, ports) announcing ip ("": the machine's own addresses).
 func (s *server) buildAPI(ip string, private bool) (*webrtc.API, error) {
 	m := &webrtc.MediaEngine{}
@@ -579,7 +588,10 @@ func (s *server) buildAPI(ip string, private bool) (*webrtc.API, error) {
 		return nil, err
 	}
 	ir := &interceptor.Registry{}
-	if err := webrtc.RegisterDefaultInterceptors(m, ir); err != nil {
+	// Lost packets asked again (NACK) a few times at most, over a log long enough for a 1440p60 share (~1100
+	// packets a second). Before: asked every 100 ms without end, and a stopped simulcast layer's last gaps for good
+	if err := webrtc.RegisterDefaultInterceptorsWithOptions(m, ir, webrtc.WithNackGeneratorOptions(
+		nack.GeneratorSize(nackLog), nack.GeneratorMaxNacksPerPacket(nackTries))); err != nil {
 		return nil, err
 	}
 	// A key frame now and then, so a stream viewer that missed one doesn't stay grey
@@ -589,6 +601,10 @@ func (s *server) buildAPI(ip string, private bool) (*webrtc.API, error) {
 	}
 	ir.Add(pli)
 	se := webrtc.SettingEngine{}
+	// SRTP's replay window: pion's default is 64 packets, under 60 ms of a 2K60 share, so every retransmission
+	// (a round trip and the queue later) was thrown away as a replay; the streamer kept resending what was never
+	// taken (a storm on its upload), and a share started straight at a high level collapsed on a weak upload
+	se.SetSRTPReplayProtectionWindow(srtpWindow)
 	se.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
 	// Candidates an app may give us: no link-local, multicast or unspecified addresses (no STUN sent to odd
 	// places; loopback stays, for an app on this same machine)

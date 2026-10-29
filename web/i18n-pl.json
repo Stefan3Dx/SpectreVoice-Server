@@ -394,6 +394,7 @@
  "stopSharing": "Zatrzymaj udostępnianie",
  "stopWatching": "Przestań oglądać",
  "streamEnded": "Stream się zakończył.",
+ "streamLeftChannel": "Opuszczono kanał: stream został zatrzymany.",
  "streamFailed": "Połączenie transmisji nie powiodło się.",
  "streamNoConn": "Połączenie z transmisją zostało zamknięte.",
  "streamUdp": "Połączenie transmisji z serwerem nie powstało (jego port UDP może być nieosiągalny).",

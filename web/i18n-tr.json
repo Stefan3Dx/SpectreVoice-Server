@@ -394,6 +394,7 @@
  "stopSharing": "Paylaşımı durdur",
  "stopWatching": "İzlemeyi bırak",
  "streamEnded": "Yayın sona erdi.",
+ "streamLeftChannel": "Kanaldan çıktın: yayın durdu.",
  "streamFailed": "Yayının bağlantısı başarısız oldu.",
  "streamNoConn": "Yayına olan bağlantı kapandı.",
  "streamUdp": "Yayının sunucuyla bağlantısı kurulamadı (UDP portuna erişilemiyor olabilir).",

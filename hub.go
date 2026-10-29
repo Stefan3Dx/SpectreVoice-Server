@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -128,6 +129,8 @@ type liveStream struct {
 	// "p2p": the streamer's app sends it to each viewer itself (p2p.go), asked through its session SID; else the SFU
 	Mode string `json:"mode,omitempty"`
 	SID  int    `json:"sid,omitempty"`
+	// The streamer's voice channel: only those in it may watch (watchch.go); told again when the streamer moves
+	Ch int64 `json:"ch,omitempty"`
 }
 
 func (ss *session) member() member {
@@ -223,10 +226,15 @@ type hub struct {
 	gate     ipGate
 	tempNext int64                  // the last temporary channel's id (tempch.go)
 	tempMade map[string][]time.Time // when each person made their last temporary channels (rate)
+	// Streams watched from the streamer's channel (watchch.go): when each person's last session went, and
+	// whether a look at the channels is on its way
+	leftAt        map[string]time.Time
+	watchGrace    time.Duration
+	followPending atomic.Bool
 }
 
 func newHub(s *server) (*hub, error) {
-	h := &hub{s: s, sessions: map[int]*session{}, chans: map[int64]*channel{}, live: map[string]liveStream{}, acc: map[int64]*commAccess{}, tempMade: map[string][]time.Time{}}
+	h := &hub{s: s, sessions: map[int]*session{}, chans: map[int64]*channel{}, live: map[string]liveStream{}, acc: map[int64]*commAccess{}, tempMade: map[string][]time.Time{}, leftAt: map[string]time.Time{}, watchGrace: watchGrace}
 	cs, err := s.store.channels()
 	if err != nil {
 		return nil, err
@@ -262,6 +270,7 @@ func (h *hub) toComm(comm int64, v any) {
 // memberChanged tells ss's community about it; h.mu held.
 func (h *hub) memberChanged(ss *session) {
 	h.toComm(ss.comm, map[string]any{"t": "member", "m": ss.member()})
+	h.channelsChanged() // a channel may have changed: the streams watched follow (watchch.go)
 }
 
 // defaultChannel is where a newcomer to comm lands; h.mu held.
@@ -555,6 +564,12 @@ func (h *hub) leave(ss *session) {
 	ss.close()
 	h.mu.Lock()
 	delete(h.sessions, ss.sid)
+	if !ss.bot && len(h.channelsOf(ss.uid)) == 0 {
+		// Their last session: their watches stay a while (a reconnect), then end (watchch.go)
+		h.leftAt[ss.uid] = time.Now()
+		time.AfterFunc(h.watchGrace+time.Second, h.channelsChanged)
+	}
+	h.channelsChanged()
 	ch, whisp := ss.ch, ss.whispering
 	h.toComm(ss.comm, map[string]any{"t": "member-left", "sid": ss.sid, "uid": ss.uid})
 	h.mu.Unlock()
@@ -1294,6 +1309,7 @@ func (h *hub) setLive(room, uid, title string, comm int64, on bool) {
 	defer h.mu.Unlock()
 	if on {
 		ls := liveStream{Room: room, UID: uid, Title: title, Since: time.Now().UnixMilli(), Comm: comm}
+		ls.Ch = h.streamChannel(ls)
 		h.live[room] = ls
 		h.toComm(comm, map[string]any{"t": "live", "on": true, "s": ls})
 		return
@@ -1319,16 +1335,17 @@ func (h *hub) streamComm(uid string) (int64, bool) {
 	return 0, false
 }
 
-// mayWatch: uid may watch room (a member of the stream's community).
+// mayWatch: uid may watch room (a member of the stream's community, in the streamer's voice channel: watchch.go).
 func (h *hub) mayWatch(uid, room string) bool {
 	if room == tvRoom {
-		// The server's TV: everyone on the server
+		// The server's TV: everyone on the server, from any channel
 		return h.s.tv.enabled() && h.s.store.isMember(spaceID, uid) && !h.s.mods.banned(uid, spaceID)
 	}
 	h.mu.Lock()
 	ls, ok := h.live[room]
+	in := ok && h.inStreamChannel(uid, ls, false)
 	h.mu.Unlock()
-	return ok && (ls.Comm == 0 || h.s.store.isMember(ls.Comm, uid)) && !h.s.mods.banned(uid, ls.Comm)
+	return ok && in && (ls.Comm == 0 || h.s.store.isMember(ls.Comm, uid)) && !h.s.mods.banned(uid, ls.Comm)
 }
 
 // liveList: comm's streams now, oldest first; h.mu held.

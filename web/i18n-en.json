@@ -394,6 +394,7 @@
  "stopSharing": "Stop sharing",
  "stopWatching": "Stop watching",
  "streamEnded": "The stream ended.",
+ "streamLeftChannel": "Left the channel: the stream stopped.",
  "streamFailed": "The stream's connection failed.",
  "streamNoConn": "The connection to the stream closed.",
  "streamUdp": "The stream's connection to the server didn't come up (its UDP port may not be reachable).",

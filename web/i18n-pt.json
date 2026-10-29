@@ -394,6 +394,7 @@
  "stopSharing": "Parar de partilhar",
  "stopWatching": "Parar de ver",
  "streamEnded": "O stream terminou.",
+ "streamLeftChannel": "Saíste do canal: o stream parou.",
  "streamFailed": "A ligação da transmissão falhou.",
  "streamNoConn": "A ligação à transmissão fechou-se.",
  "streamUdp": "A ligação da transmissão ao servidor não se estabeleceu (a porta UDP pode não estar acessível).",

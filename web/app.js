@@ -7,7 +7,7 @@
 //   core.js (state, events, helpers)  i18n.js (texts)  identity.js (key)  voice.js  chat.js  streams.js  tv.js
 //   files.js (channel files)  settings.js
 
-import { $, S, el, send, toast, on, emit, me, may, SERVER_CHAT, store, openDialog, chLabel } from './core.js';
+import { $, S, el, send, toast, on, emit, me, may, SERVER_CHAT, store, openDialog, chLabel, memberByUid } from './core.js';
 import { t, initLang, applyTexts, errText } from './i18n.js';
 import { loadIdentity, signChallenge } from './identity.js';
 import { voiceStart, applyVolumes, updatePTT } from './voice.js';
@@ -279,7 +279,8 @@ function render() {
   }
   const mine = me()?.ch;
   const liveIn = new Set();
-  for (const mem of S.members.values()) if (liveOf(mem.uid).length) liveIn.add(mem.ch);
+  // Channels with someone live (watched from there: the dot says where to go)
+  for (const l of S.live.values()) if (!l.room.startsWith('tv:')) { const mem = memberByUid(l.uid); if (l.ch || mem) liveIn.add(l.ch || mem.ch); }
   // The PC's tree: text channels first (they open their chat), then the voice channels with their people
   const texts = [...S.channels.values()].filter((c) => c.kind === 'text').sort((a, b) => a.pos - b.pos || a.id - b.id);
   const chRow = (c) => {

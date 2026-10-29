@@ -163,11 +163,17 @@ func TestPickerRule(t *testing.T) {
 	if got := pk.step("h", layers, linkSample{lossPct: 12}, at(33)); got != "m" {
 		t.Fatalf("after 3 s of loss: %s", got)
 	}
-	// Too little bandwidth for m (needs 2400): down after 3 s again
+	// Too little bandwidth for m (its 2000 × 0.7): down after 3 s again; just under its rate × 1.2 is fine
 	pk = picker{}
 	cur := "m"
 	for s := 40.0; s <= 43; s++ {
-		cur = pk.step(cur, layers, linkSample{rembKbps: 2100}, at(s))
+		if got := pk.step(cur, layers, linkSample{rembKbps: 2100}, at(s)); got != "m" {
+			t.Fatalf("moved down with the estimate at its rate: %s", got)
+		}
+	}
+	pk = picker{}
+	for s := 40.0; s <= 43; s++ {
+		cur = pk.step(cur, layers, linkSample{rembKbps: 1200}, at(s))
 	}
 	if cur != "l" {
 		t.Fatalf("bandwidth rule: %s", cur)
@@ -179,8 +185,19 @@ func TestPickerRule(t *testing.T) {
 	if got := pk.step("m", layers, linkSample{}, at(53)); got != "m" {
 		t.Fatalf("trouble forgotten: %s", got)
 	}
-	// Clean for 15 s with room for h: up; without room: not
+	// A fresh viewer on m (h came after it): up after 3 s clean
 	pk = picker{}
+	cur = "m"
+	for s := 56.0; s < 59; s++ {
+		if cur = pk.step(cur, layers, linkSample{rembKbps: 3000}, at(s)); cur != "m" {
+			t.Fatalf("fresh: up too early at %v", s)
+		}
+	}
+	if cur = pk.step(cur, layers, linkSample{rembKbps: 3000}, at(59)); cur != "h" {
+		t.Fatalf("fresh: not up after 3 s clean: %s", cur)
+	}
+	// After a step down: clean for 15 s with room for h: up; without room: not
+	pk = picker{downs: 1}
 	cur = "m"
 	for s := 60.0; s < 75; s++ {
 		cur = pk.step(cur, layers, linkSample{rembKbps: 8000}, at(s))
@@ -191,13 +208,37 @@ func TestPickerRule(t *testing.T) {
 	if cur = pk.step(cur, layers, linkSample{rembKbps: 8000}, at(75)); cur != "h" {
 		t.Fatalf("after 15 s clean: %s", cur)
 	}
-	pk = picker{}
+	pk = picker{downs: 1}
 	cur = "m"
 	for s := 80.0; s <= 100; s++ {
-		cur = pk.step(cur, layers, linkSample{rembKbps: 6500}, at(s)) // under 6000×1.2
+		cur = pk.step(cur, layers, linkSample{rembKbps: 2400}, at(s)) // under 6000×1.2 and 2000×1.3
 	}
 	if cur != "m" {
 		t.Fatalf("went up without bandwidth: %s", cur)
+	}
+	// A receiver's estimate stays near what it gets (here 1.5× m, far under h × 1.2): still tried after 15 s
+	// clean; a try that fails at once makes the next one wait twice as long
+	pk = picker{downs: 1}
+	cur = "m"
+	for s := 200.0; s <= 215; s++ {
+		cur = pk.step(cur, layers, linkSample{rembKbps: 3000}, at(s))
+	}
+	if cur != "h" {
+		t.Fatalf("never tried the layer up: %s", cur)
+	}
+	for s := 216.0; s <= 219; s++ {
+		cur = pk.step(cur, layers, linkSample{lossPct: 15}, at(s))
+	}
+	if cur != "m" {
+		t.Fatalf("the failed try didn't step down: %s", cur)
+	}
+	for s := 220.0; s < 250; s++ {
+		if cur = pk.step(cur, layers, linkSample{rembKbps: 3000}, at(s)); cur != "m" {
+			t.Fatalf("tried again after %v s, not 30", s-220)
+		}
+	}
+	if cur = pk.step(cur, layers, linkSample{rembKbps: 3000}, at(250)); cur != "h" {
+		t.Fatalf("no second try after 30 s: %s", cur)
 	}
 	// NACKs count as loss; a few are fine
 	pk = picker{}

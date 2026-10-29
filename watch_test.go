@@ -16,6 +16,7 @@ type testStream struct {
 	room    string
 	viewers string // the /streams URL of the viewer's person
 	stop    chan struct{}
+	ac, vc  *tclient // the streamer's and the viewer's sessions
 }
 
 func startTestStream(t *testing.T, frames <-chan struct{}) *testStream {
@@ -24,7 +25,7 @@ func startTestStream(t *testing.T, frames <-chan struct{}) *testStream {
 	ac, _ := dialV(t, ts, newKey(t), "Alice", "")
 	vc, _ := dialV(t, ts, newKey(t), "Vio", "")
 	base := "ws" + strings.TrimPrefix(ts.URL, "http") + "/streams?token="
-	st := &testStream{s: s, room: ac.uid + ":screen", viewers: base + url.QueryEscape(s.makeToken(vc.uid)), stop: make(chan struct{})}
+	st := &testStream{s: s, room: ac.uid + ":screen", viewers: base + url.QueryEscape(s.makeToken(vc.uid)), stop: make(chan struct{}), ac: ac, vc: vc}
 	pub := dial(t, base+url.QueryEscape(s.makeToken(ac.uid)))
 	track, _ := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "share")
 	if _, err := pub.pc.AddTrack(track); err != nil {

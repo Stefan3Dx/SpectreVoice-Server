@@ -394,6 +394,7 @@
  "stopSharing": "Megosztás leállítása",
  "stopWatching": "Nézés abbahagyása",
  "streamEnded": "A stream véget ért.",
+ "streamLeftChannel": "Kiléptél a csatornából: a stream leállt.",
  "streamFailed": "A közvetítés kapcsolata nem sikerült.",
  "streamNoConn": "A közvetítés kapcsolata bezárult.",
  "streamUdp": "A közvetítés kapcsolata a szerverrel nem jött létre (lehet, hogy az UDP-portja nem elérhető).",

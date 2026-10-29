@@ -394,6 +394,7 @@
  "stopSharing": "Interrompi condivisione",
  "stopWatching": "Smetti di guardare",
  "streamEnded": "Lo stream è finito.",
+ "streamLeftChannel": "Hai lasciato il canale: lo stream si è fermato.",
  "streamFailed": "La connessione della diretta non è riuscita.",
  "streamNoConn": "La connessione alla diretta si è chiusa.",
  "streamUdp": "La connessione della diretta al server non si è stabilita (la sua porta UDP potrebbe non essere raggiungibile).",

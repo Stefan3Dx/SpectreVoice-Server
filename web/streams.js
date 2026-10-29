@@ -11,7 +11,7 @@
 //   published once to the SFU (room = our uid; in three sizes, simulcast rid l/m/h, as the PC); when the server can't take it (refused, or no connection in 12 s)
 //   it goes peer to peer: p2p-live, then a connection per viewer that joins (at most SHARE_P2P_MAX).
 
-import { $, S, el, send, on, emit, toast, api, wsUrl, rtcConfig, memberByUid, may } from './core.js';
+import { $, S, el, send, on, emit, toast, api, wsUrl, rtcConfig, memberByUid, may, me } from './core.js';
 import { t, errText } from './i18n.js';
 import { applySink } from './voice.js';
 
@@ -27,8 +27,10 @@ const SIMULCAST = [
   { rid: 'h', scaleResolutionDownBy: 1, maxBitrate: SHARE_KBPS * 1000, maxFramerate: 30 },
 ];
 
-// The streams live now by someone (the TV isn't anyone's)
-export const liveOf = (uid) => [...S.live.values()].filter((l) => l.uid === uid && !l.room.startsWith('tv:'));
+// The streams live now by someone (the TV isn't anyone's) that can be watched from here: a stream is watched from
+// its streamer's voice channel ("ch" in the live entry; the server refuses the others)
+export const inMyChannel = (l) => !l || l.room === TV_ROOM || !l.ch || l.ch === me()?.ch;
+export const liveOf = (uid) => [...S.live.values()].filter((l) => l.uid === uid && !l.room.startsWith('tv:') && inMyChannel(l));
 const nameOf = (l) => memberByUid(l.uid)?.name || l.uid?.slice(0, 8) || '?';
 
 // ====== Watching ======
@@ -143,7 +145,7 @@ function watchSfu(w) {
           w.layers = Array.isArray(m.layers) ? m.layers : [];
           updateBar(w);
           break;
-        case 'ended': ended(w, gen, null); break;
+        case 'ended': if (m.why === 'channel') finish(w, t('streamLeftChannel')); else ended(w, gen, null); break;
         case 'error': ended(w, gen, m.message || t('streamFailed')); break;
       }
     } catch (e) {
@@ -242,6 +244,7 @@ async function viewerSignal(m) {
       case 'p2p-bye':
         w.told = true;
         if (m.why === 'full') finish(w, t('p2pFull', { name: w.name }));
+        else if (m.why === 'channel') finish(w, t('streamLeftChannel'));
         else if (m.why === 'moved') follow(w);
         else if (m.why === 'ended' || m.why === 'left') {
           // The streamer's session ended; it may be live again on a new one (the live list says)
@@ -278,7 +281,7 @@ function finish(w, why) {
   w.endedAt = Date.now();
   w.video.srcObject = null;
   w.stream = null;
-  const again = w.room === TV_ROOM || S.live.has(w.room);
+  const again = w.room === TV_ROOM || (S.live.has(w.room) && inMyChannel(S.live.get(w.room)));
   tileMsg(w, why || t('streamEnded'), [again ? { text: t('watchAgain'), onclick: () => restart(w) } : null, { text: t('close'), onclick: () => stopWatching(w.room) }]);
   w.tile.classList.add('ended');
   emit('app:dirty');
@@ -396,7 +399,7 @@ function layoutStage() {
 function renderLive() {
   const box = $('liveList');
   box.textContent = '';
-  const items = [...S.live.values()].filter((l) => !l.room.startsWith('tv:')).sort((a, b) => a.since - b.since);
+  const items = [...S.live.values()].filter((l) => !l.room.startsWith('tv:') && inMyChannel(l)).sort((a, b) => a.since - b.since);
   $('liveBox').classList.toggle('hidden', !items.length);
   for (const l of items) {
     const mine = l.uid === S.uid;
@@ -649,9 +652,19 @@ on('app:down', ({ retry }) => {
 on('app:volumes', () => { for (const w of W.values()) applyVolume(w); });
 on('app:sink', () => { for (const w of W.values()) applySink(w.video); });
 on('app:lang', () => { for (const w of W.values()) updateBar(w); updateShareUi(); renderLive(); });
+// Left the streamer's channel (we moved, or it did): those watches stop here too, saying why (the server ends them)
+function leaveOtherChannels() {
+  for (const w of W.values()) {
+    const l = S.live.get(w.room);
+    if (!w.ended && l && !inMyChannel(l)) finish(w, t('streamLeftChannel'));
+  }
+  renderLive();
+}
+on('member', (m) => { if (m.m?.sid === S.sid) leaveOtherChannels(); });
 on('live', (m) => {
   const room = m.s?.room;
   const w = W.get(room);
+  if (m.on && !inMyChannel(m.s)) { leaveOtherChannels(); return; }
   if (!w) return;
   // Ended a moment ago because it went another way (the stream's own connection was faster than the list)
   if (w.ended) { if (m.on && Date.now() - w.endedAt < 5000) restart(w); return; }

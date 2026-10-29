@@ -108,6 +108,16 @@ func (sc *simulcast) nearest(rid string, now time.Time) string {
 	return best
 }
 
+// below: the sending layer next under [rid] ("" none).
+func (sc *simulcast) below(rid string, now time.Time) string {
+	for _, l := range sc.ordered() {
+		if layerRank(l.rid) > layerRank(rid) && l.alive(now) {
+			return l.rid
+		}
+	}
+	return ""
+}
+
 // ====== The switcher: one layer at a time into a viewer's track ======
 
 // switcher copies one layer's packets into a viewer's track, continuously numbered across layer changes.
@@ -126,6 +136,41 @@ type switcher struct {
 	lastInTS   uint32 // the current layer's own last timestamp (to learn the frame spacing)
 	frameDelta uint32 // RTP ticks between frames (90 kHz), learned; 3000 = 30 fps
 	switches   int
+	wantAt     time.Time // when [want] was set (a switch whose key frame doesn't come is given up, autoTick)
+	// What the viewer's own link lost, apart from what the streamer's upload did: the numbers sent lately (a NACK
+	// for one never sent is a packet the server never had), and the numbers skipped since the last tick
+	sentLog [1024]uint32 // seq+1 at seq%1024 (0: none)
+	fwd     int
+	gaps    int
+}
+
+// wasSent: the viewer's sequence number [seq] went out to it lately.
+func (w *switcher) wasSent(seq uint16) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.sentLog[seq%1024] == uint32(seq)+1
+}
+
+// upstreamLoss: the share of the numbers since the last call that never came from the streamer (0–100); resets.
+func (w *switcher) upstreamLoss() float64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	f, g := w.fwd, w.gaps
+	w.fwd, w.gaps = 0, 0
+	if f+g == 0 {
+		return 0
+	}
+	return float64(g) * 100 / float64(f+g)
+}
+
+// pendingFor: how long a switch has waited for its key frame (0: none pending).
+func (w *switcher) pendingFor(now time.Time) time.Duration {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.want == w.cur || w.wantAt.IsZero() {
+		return 0
+	}
+	return now.Sub(w.wantAt)
 }
 
 func newSwitcher(track *webrtc.TrackLocalStaticRTP, mime string) *switcher {
@@ -136,6 +181,9 @@ func newSwitcher(track *webrtc.TrackLocalStaticRTP, mime string) *switcher {
 func (w *switcher) choose(rid string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if rid != w.want {
+		w.wantAt = time.Now()
+	}
 	w.want = rid
 	return rid != w.cur
 }
@@ -176,8 +224,15 @@ func (w *switcher) push(rid string, p *rtp.Packet) bool {
 	p.SequenceNumber += w.seqOff
 	p.Timestamp += w.tsOff
 	if !w.started || int16(p.SequenceNumber-w.lastSeq) > 0 {
+		if w.started && !switched {
+			w.gaps += int(p.SequenceNumber-w.lastSeq) - 1
+		}
 		w.lastSeq = p.SequenceNumber
+	} else if w.gaps > 0 {
+		w.gaps-- // a late one (a retransmission) fills a gap
 	}
+	w.fwd++
+	w.sentLog[p.SequenceNumber%1024] = uint32(p.SequenceNumber) + 1
 	if !w.started || int32(p.Timestamp-w.lastTS) > 0 {
 		w.lastTS = p.Timestamp
 	}
@@ -261,20 +316,34 @@ type layerInfo struct {
 
 // The automatic rule's thresholds.
 const (
-	autoLossPct   = 8.0             // more loss than this: the layer is too much
-	autoCleanPct  = 2.0             // less than this (and few NACKs): the link is clean
-	autoHeadroom  = 1.2             // a layer needs its rate × this of estimated bandwidth
-	autoStepDown  = 3 * time.Second // bad for this long: one layer down
-	autoStepUp    = 15 * time.Second
-	autoNackBad   = 10 // NACKs a second that count as loss
-	autoNackClean = 2
+	autoLossPct  = 8.0 // more loss than this: the layer is too much
+	autoCleanPct = 2.0 // less than this (and few NACKs): the link is clean
+	autoHeadroom = 1.2 // going up: the next layer needs its rate × this of estimated bandwidth
+	autoRoom     = 1.3 // or the estimate this far over the current layer's rate (see step)
+	// Staying: the estimate must not fall under the layer's rate × this. A receiver's estimate follows what comes
+	// in (and the streamer's own upload's jitter), so the layer's rate × 1.2 was missed now and then on a link
+	// with room to spare, and a 1440p viewer was moved down for nothing
+	autoKeep     = 0.7
+	autoStepDown = 3 * time.Second // bad for this long: one layer down
+	autoStepUp   = 15 * time.Second
+	// A viewer that never had trouble yet (on a smaller layer only because the best wasn't there when it came)
+	autoStepUpFirst = 3 * time.Second
+	autoNackBad     = 10 // NACKs a second that count as loss
+	autoNackClean   = 2
 )
 
 // picker decides a viewer's layer in auto mode: down after 3 s of trouble, up after 15 s clean.
 type picker struct {
 	badSince  time.Time
 	goodSince time.Time
+	upAt      time.Time     // the last step up (one undone soon after makes the next try wait longer)
+	upWait    time.Duration // how long clean before stepping up (autoStepUp, doubled after a failed try)
+	downs     int           // steps down so far: before any, a viewer that started under the best (it wasn't
+	// sending yet when the viewer came) goes up after autoStepUpFirst, not autoStepUp
 }
+
+// upWaitMax: the longest a viewer waits, clean, before trying the next layer up again.
+const upWaitMax = 2 * time.Minute
 
 // step gives the layer to send next, among [layers] (best first), being on [cur].
 func (pk *picker) step(cur string, layers []layerInfo, s linkSample, now time.Time) string {
@@ -293,7 +362,7 @@ func (pk *picker) step(cur string, layers []layerInfo, s linkSample, now time.Ti
 		return layers[0].rid
 	}
 	tooMuch := s.lossPct > autoLossPct || s.nacks > autoNackBad ||
-		(s.rembKbps > 0 && layers[i].kbps > 0 && float64(s.rembKbps) < float64(layers[i].kbps)*autoHeadroom)
+		(s.rembKbps > 0 && layers[i].kbps > 0 && float64(s.rembKbps) < float64(layers[i].kbps)*autoKeep)
 	if tooMuch {
 		pk.goodSince = time.Time{}
 		if pk.badSince.IsZero() {
@@ -301,6 +370,12 @@ func (pk *picker) step(cur string, layers []layerInfo, s linkSample, now time.Ti
 		}
 		if now.Sub(pk.badSince) >= autoStepDown && i+1 < len(layers) {
 			pk.badSince = time.Time{}
+			// Just went up and it didn't hold: the next try waits twice as long
+			if !pk.upAt.IsZero() && now.Sub(pk.upAt) < autoStepUp {
+				pk.upWait = min(upWaitMax, 2*pk.wait())
+			}
+			pk.upAt = time.Time{}
+			pk.downs++
 			return layers[i+1].rid
 		}
 		return cur
@@ -311,8 +386,12 @@ func (pk *picker) step(cur string, layers []layerInfo, s linkSample, now time.Ti
 		return cur
 	}
 	up := layers[i-1]
-	clean := s.lossPct <= autoCleanPct && s.nacks <= autoNackClean &&
-		(s.rembKbps == 0 || up.kbps == 0 || float64(s.rembKbps) >= float64(up.kbps)*autoHeadroom)
+	// Room for the next layer: its rate × 1.2 of estimate, or (the estimate of a receiver follows what it gets, up
+	// to about 1.5 times that, so a layer four times bigger could never be "estimated") clearly more than this
+	// layer takes. A try that doesn't hold steps down again in 3 s and waits longer before the next
+	room := s.rembKbps == 0 || up.kbps == 0 || float64(s.rembKbps) >= float64(up.kbps)*autoHeadroom ||
+		(layers[i].kbps > 0 && float64(s.rembKbps) >= float64(layers[i].kbps)*autoRoom)
+	clean := s.lossPct <= autoCleanPct && s.nacks <= autoNackClean && room
 	if !clean {
 		pk.goodSince = time.Time{}
 		return cur
@@ -320,11 +399,22 @@ func (pk *picker) step(cur string, layers []layerInfo, s linkSample, now time.Ti
 	if pk.goodSince.IsZero() {
 		pk.goodSince = now
 	}
-	if now.Sub(pk.goodSince) >= autoStepUp {
+	if now.Sub(pk.goodSince) >= pk.wait() {
 		pk.goodSince = time.Time{}
+		pk.upAt = now
 		return up.rid
 	}
 	return cur
+}
+
+func (pk *picker) wait() time.Duration {
+	if pk.downs == 0 {
+		return autoStepUpFirst
+	}
+	if pk.upWait < autoStepUp {
+		return autoStepUp
+	}
+	return pk.upWait
 }
 
 // validLayer: what a viewer may ask for.

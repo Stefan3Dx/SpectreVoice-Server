@@ -394,6 +394,7 @@
  "stopSharing": "Oprește partajarea",
  "stopWatching": "Nu mă mai uit",
  "streamEnded": "Stream-ul s-a terminat.",
+ "streamLeftChannel": "Ai ieșit din canal: stream-ul s-a oprit.",
  "streamFailed": "Conexiunea stream-ului a eșuat.",
  "streamNoConn": "Conexiunea la stream s-a închis.",
  "streamUdp": "Conexiunea stream-ului la server nu s-a făcut (portul UDP poate nu e accesibil).",

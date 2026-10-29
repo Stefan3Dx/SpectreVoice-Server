@@ -194,7 +194,7 @@ func (h *hub) p2pStart(ss *session, room, title string) {
 	if was, ok := h.live[room]; ok && was.Mode == "p2p" && was.UID == ss.uid {
 		since = was.Since
 	}
-	ls := liveStream{Room: room, UID: ss.uid, Title: title, Since: since, Comm: comm, Mode: "p2p", SID: ss.sid}
+	ls := liveStream{Room: room, UID: ss.uid, Title: title, Since: since, Comm: comm, Mode: "p2p", SID: ss.sid, Ch: ss.ch}
 	h.live[room] = ls
 	h.toComm(comm, map[string]any{"t": "live", "on": true, "s": ls})
 	h.mu.Unlock()
@@ -247,7 +247,13 @@ func (h *hub) p2pJoin(ss *session, room string, sid int) {
 		return
 	}
 	if !h.mayWatch(ss.uid, room) {
-		ss.send(map[string]any{"t": "p2p-bye", "from": sid, "room": room, "why": "ended"})
+		why := "ended"
+		h.mu.Lock()
+		if ls, ok := h.live[room]; ok && !h.inStreamChannel(ss.uid, ls, false) {
+			why = "channel" // live, but in another channel: join it to watch
+		}
+		h.mu.Unlock()
+		ss.send(map[string]any{"t": "p2p-bye", "from": sid, "room": room, "why": why})
 		return
 	}
 	p := h.s.p2p

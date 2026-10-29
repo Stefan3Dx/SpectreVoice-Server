@@ -58,6 +58,8 @@ type message struct {
 	SFUBytes *int64 `json:"sfuBytes,omitempty"`
 	Mode     string `json:"mode,omitempty"`
 	P2P      *int   `json:"p2p,omitempty"`
+	// "ended" / "error": why, for the apps ("channel": the viewer isn't in the streamer's voice channel)
+	Why string `json:"why,omitempty"`
 }
 
 // statStreamIn: media bytes the SFU got from streamers (all rooms, since it started).
@@ -268,7 +270,11 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				rm = s.tv.ensure()
 			}
 			if rm == nil || (s.hub != nil && !s.hub.mayWatch(uid, m.Room)) {
-				c.send(message{Type: "ended"})
+				end := message{Type: "ended"}
+				if rm != nil && s.hub != nil && !s.hub.inChannelOf(uid, m.Room) {
+					end.Why = "channel" // live, but in another channel
+				}
+				c.send(end)
 				return
 			}
 			sub, err = s.subscribe(rm, c, uid, clip(m.Dev, 64))
@@ -609,6 +615,9 @@ func (rm *room) dropReplaced(o *subscriber, sim *simulcast) {
 	}()
 }
 
+// switchGiveUp: a layer switch whose key frame hasn't come in this long goes to a smaller layer (or stays).
+var switchGiveUp = 2500 * time.Millisecond
+
 // viewerConnectWait: a viewer must be connected this long after its first offer, else it's let go.
 const viewerConnectWait = 30 * time.Second
 
@@ -676,10 +685,15 @@ func (rm *room) forwardRTCP(sub *subscriber, sender *webrtc.RTPSender) {
 					sub.linkMu.Unlock()
 				}
 			case *rtcp.TransportLayerNack:
-				if sub.sw.Load() != nil {
+				if sw := sub.sw.Load(); sw != nil {
+					// Only what the viewer's link lost: a packet the streamer's upload lost never reached us
 					n := 0
 					for _, pair := range p.Nacks {
-						n += len(pair.PacketList())
+						for _, seq := range pair.PacketList() {
+							if sw.wasSent(seq) {
+								n++
+							}
+						}
 					}
 					sub.linkMu.Lock()
 					sub.link.nacks += n
@@ -954,12 +968,15 @@ func (rm *room) autoTick(sim *simulcast, now time.Time, dt float64) {
 	}
 	sim.mu.RUnlock()
 	for _, sub := range views {
+		sw := sub.sw.Load()
+		up := sw.upstreamLoss()
 		sub.linkMu.Lock()
 		s := sub.link
 		asked := sub.asked
 		sub.link.nacks = 0
 		sub.linkMu.Unlock()
-		sw := sub.sw.Load()
+		// The viewer's reports count the streamer's own losses too (gaps the server passed on): only the rest is its link's
+		s.lossPct = max(0, s.lossPct-up)
 		if asked != "auto" {
 			// A layer asked for that wasn't sending yet: taken as soon as it is
 			if cur, _ := sw.current(); cur != asked {
@@ -970,7 +987,23 @@ func (rm *room) autoTick(sim *simulcast, now time.Time, dt float64) {
 		cur, want := sw.current()
 		if want != "" && want != cur {
 			if sim.sending(want, now) {
-				continue // a switch is on its way: judge it once it's done
+				wait := sw.pendingFor(now)
+				if wait < switchGiveUp {
+					// On its way: asked again (the key frame may have been lost on the streamer's upload)
+					if l := rm.layerOf(want); l != nil && wait > time.Second {
+						rm.keyFrameOn(l.ssrc)
+					}
+					continue
+				}
+				// Its key frame isn't coming through (that layer too much for the streamer's upload): a smaller one,
+				// so a viewer with nothing yet gets a picture instead of waiting
+				if lower := sim.below(want, now); lower != "" && (cur == "" || !sim.sending(cur, now)) {
+					log.Printf("[%s] viewer %s: no key frame of %s in %s, taking %s", rm.name, sub.uid, want, wait.Round(time.Millisecond), lower)
+					rm.switchTo(sub, lower)
+				} else if cur != "" && sim.sending(cur, now) {
+					rm.switchTo(sub, cur)
+				}
+				continue
 			}
 			// The layer it waits for stopped (the encoder dropped it, short of bandwidth or CPU) before its key
 			// frame came: back to what is sending, or a viewer that has nothing yet would stay black for good

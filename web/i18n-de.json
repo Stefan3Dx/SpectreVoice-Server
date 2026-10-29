@@ -394,6 +394,7 @@
  "stopSharing": "Teilen beenden",
  "stopWatching": "Zuschauen beenden",
  "streamEnded": "Der Stream ist beendet.",
+ "streamLeftChannel": "Kanal verlassen: Der Stream wurde beendet.",
  "streamFailed": "Die Verbindung des Streams ist fehlgeschlagen.",
  "streamNoConn": "Die Verbindung zum Stream wurde geschlossen.",
  "streamUdp": "Die Verbindung des Streams zum Server kam nicht zustande (sein UDP-Port ist vielleicht nicht erreichbar).",
