@@ -152,7 +152,7 @@ export async function verifyRecord(r) {
   if (!ik || !same(await uidOf(ik.spki), r.uid)) return null;
   if (!(await verify(ik.key, cat(te.encode(DEVICE_PREFIX), recordSigned(r)), r.sig))) return null;
   const dk = await importPublic(r.dk, 'ecdh');
-  return dk ? { uid: r.uid, dev: r.dev, key: dk.key, raw: dk.raw, ik: r.ik } : null;
+  return dk ? { uid: r.uid, dev: r.dev, key: dk.key, raw: dk.raw, ik: r.ik, dk: r.dk } : null;
 }
 
 // ====== Messages ======

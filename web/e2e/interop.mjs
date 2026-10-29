@@ -35,7 +35,7 @@ out.opened = o.text;
 out.tampered = [];
 for (const t of v.tampered) out.tampered.push((await E.open(t, v.bob.uid, v.bobDev.dev, bobDev, v.ana.uid, v.ana.uid)).why || 'OPENED');
 const rec = await E.verifyRecord(v.anaRecord);
-if (!rec || rec.dev !== v.anaDev.dev || E.b64.enc(E.b64.dec(v.anaRecord.dk)) !== v.anaDev.spki) fail('Kotlin device record refused');
+if (!rec || rec.dev !== v.anaDev.dev || rec.dk !== v.anaRecord.dk || E.b64.enc(E.b64.dec(v.anaRecord.dk)) !== v.anaDev.spki) fail('Kotlin device record refused');
 if (await E.verifyRecord({ ...v.anaRecord, ts: v.anaRecord.ts + 1 })) fail('a changed device record passed');
 const plain = await E.decryptFile(E.b64.dec(v.file.data), v.file.k, v.file.np);
 if (E.b64.enc(plain) !== v.file.plain) fail('file differs');

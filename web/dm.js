@@ -101,7 +101,8 @@ on('e2e-keys', async (m) => {
   D.devices.set(uid, { list: good, ik, at: Date.now() });
   if (uid !== S.uid) {
     const p = pin(uid);
-    const now = await Promise.all(good.map(async (g) => g.dev + '=' + (await E.sha256b64(dkSpkiOf(m, g.dev)))));
+    // The verified record's own key (not the first one the server listed under that device id)
+    const now = await Promise.all(good.map(async (g) => g.dev + '=' + (await E.sha256b64(g.dk))));
     now.sort();
     if (good.length) {
       if (!p.devs) p.devs = now;
@@ -117,7 +118,6 @@ on('e2e-keys', async (m) => {
   await flush();
   if (D.open === uid) render();
 });
-const dkSpkiOf = (m, dev) => (m.devices || []).find((r) => r?.dev === dev)?.dk || '';
 on('e2e-changed', (m) => { D.devices.delete(m.uid); D.asked.delete(m.uid); if (D.open === m.uid) ask(m.uid); });
 on('error', (m) => {
   if (m.op === 'e2e-publish') { m.handled = true; console.warn('e2e: device key not published:', m.why); }
