@@ -94,13 +94,14 @@ type tvManager struct {
 	idleTick time.Duration
 	kick     chan struct{}
 	logos    *tvLogos
+	party    *tvParty // reactions and lines over the picture (tvparty.go)
 
 	modeOnce            sync.Once
 	mode, vaProf, vaDev string
 }
 
 func newTV(s *server) *tvManager {
-	tm := &tvManager{s: s, idle: time.Duration(max(s.cfg.tvIdle, 10)) * time.Second, idleTick: 5 * time.Second, kick: make(chan struct{}, 1)}
+	tm := &tvManager{s: s, idle: time.Duration(max(s.cfg.tvIdle, 10)) * time.Second, idleTick: 5 * time.Second, kick: make(chan struct{}, 1), party: newTVParty()}
 	tm.fetch = func(u string) ([]tvChannel, bool, error) { return fetchM3U(u, s.cfg.tvLAN) }
 	tm.logos = newTVLogos(s.cfg.tvLAN)
 	st := s.store
@@ -182,9 +183,11 @@ func (tm *tvManager) state(manage bool) map[string]any {
 	if tm == nil {
 		return map[string]any{"on": false, "why": "off"}
 	}
+	// Who watches (the room's lock, before the TV's)
+	watching, watchers := tm.watchers()
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	st := map[string]any{"on": tm.s.cfg.tv, "open": tm.open, "set": tm.src != nil, "n": 0, "rev": int64(0)}
+	st := map[string]any{"on": tm.s.cfg.tv, "open": tm.open, "set": tm.src != nil, "n": 0, "rev": int64(0), "watching": watching, "watchers": watchers}
 	switch {
 	case !tm.s.cfg.tv:
 		st["why"] = "off"
@@ -661,6 +664,9 @@ func (h *hub) tvOp(ss *session, m map[string]any) {
 	}
 	if op == "state" {
 		ss.send(map[string]any{"t": "tv", "tv": tm.state(manage)})
+		return
+	}
+	if h.tvPartyOp(ss, op, m) {
 		return
 	}
 	if !tm.enabled() {

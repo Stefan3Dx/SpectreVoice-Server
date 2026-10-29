@@ -83,7 +83,7 @@ func newTVPlayer(tm *tvManager) (*tvPlayer, error) {
 		return nil, err
 	}
 	rm := &room{name: tvRoom, subs: map[*subscriber]bool{}, local: true, tracks: []*webrtc.TrackLocalStaticRTP{video, audio},
-		keyAt: map[webrtc.SSRC]time.Time{}, stop: make(chan struct{})}
+		keyAt: map[webrtc.SSRC]time.Time{}, stop: make(chan struct{}), onViewers: tm.changed}
 	s.mu.Lock()
 	old := s.rooms[rm.name]
 	if old == nil && len(s.rooms) >= s.cfg.maxRooms {

@@ -119,6 +119,7 @@ type room struct {
 	bytes     atomic.Int64              // media the streamer sent us
 	local     bool                      // the server's own TV (tv.go): no streamer, ffmpeg sends a key frame every 2 s
 	localLive atomic.Bool               // the TV's picture is coming
+	onViewers func()                    // told when a viewer comes or goes (the TV: who's watching, tvparty.go)
 }
 
 func (s *server) handleStreamStatus(w http.ResponseWriter, r *http.Request) {
@@ -382,6 +383,9 @@ func (s *server) endRoom(rm *room, only *webrtc.PeerConnection) {
 	if pub != nil && pub != only {
 		_ = pub.Close()
 	}
+	if rm.onViewers != nil && len(subs) > 0 {
+		rm.onViewers()
+	}
 	log.Printf("[%s] ended", rm.name)
 }
 
@@ -564,6 +568,9 @@ func (s *server) subscribe(rm *room, c *conn, uid, dev string) (*subscriber, err
 	n = len(rm.subs)
 	roomSim := rm.sim
 	rm.mu.Unlock()
+	if rm.onViewers != nil {
+		rm.onViewers()
+	}
 	for _, o := range replaced {
 		rm.dropReplaced(o, roomSim)
 	}
@@ -995,6 +1002,9 @@ func (rm *room) removeSub(sub *subscriber) {
 	if was {
 		_ = sub.pc.Close()
 		log.Printf("[%s] viewer out (%d)", rm.name, n)
+		if rm.onViewers != nil {
+			rm.onViewers()
+		}
 	}
 }
 
