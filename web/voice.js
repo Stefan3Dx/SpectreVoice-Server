@@ -230,8 +230,16 @@ document.addEventListener('keyup', (ev) => {
 });
 window.addEventListener('blur', () => { S.pressing = false; updatePTT(); });
 $('openMic').onchange = () => { S.open = $('openMic').checked; store.set('sv.open', S.open ? '1' : ''); updatePTT(); };
-$('mute').onclick = () => { S.mic = !S.mic; send({ t: 'state', mic: S.mic }); updatePTT(); emit('app:selfstate'); };
-$('deafen').onclick = () => { S.snd = !S.snd; send({ t: 'state', snd: S.snd }); applyVolumes(); emit('app:selfstate'); };
+// Like the apps: deafening mutes the mic too, undeafening gives it back as it was (still off if you'd muted it
+// first), and mute while deafened undeafens and turns the mic on
+let micBeforeDeaf = false;
+function setSelf(mic, snd) {
+  S.mic = mic; S.snd = snd;
+  send({ t: 'state', mic, snd });
+  updatePTT(); applyVolumes(); emit('app:selfstate');
+}
+$('mute').onclick = () => setSelf(S.snd ? false : !S.mic, false);
+$('deafen').onclick = () => { if (S.snd) setSelf(micBeforeDeaf, false); else { micBeforeDeaf = S.mic; setSelf(true, true); } };
 
 on('rtc', voiceSignal);
 on('ice', voiceSignal);
