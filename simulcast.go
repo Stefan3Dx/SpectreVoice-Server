@@ -392,8 +392,10 @@ func (pk *picker) step(cur string, layers []layerInfo, s linkSample, now time.Ti
 	up := layers[i-1]
 	// Room for the next layer: its rate × 1.2 of estimate, or (the estimate of a receiver follows what it gets, up
 	// to about 1.5 times that, so a layer four times bigger could never be "estimated") clearly more than this
-	// layer takes. A try that doesn't hold steps down again in 3 s and waits longer before the next
-	room := s.rembKbps == 0 || up.kbps == 0 || float64(s.rembKbps) >= float64(up.kbps)*autoHeadroom ||
+	// layer takes. A try that doesn't hold steps down again in 3 s and waits longer before the next. A viewer that
+	// never had trouble (on a smaller layer only because the best wasn't sending when it came) needs no room: its
+	// receiver's estimate is still ramping up from far under what it gets, and auto starts everyone else at the best
+	room := pk.downs == 0 || s.rembKbps == 0 || up.kbps == 0 || float64(s.rembKbps) >= float64(up.kbps)*autoHeadroom ||
 		(layers[i].kbps > 0 && float64(s.rembKbps) >= float64(layers[i].kbps)*autoRoom)
 	clean := s.lossPct <= autoCleanPct && s.nacks <= autoNackClean && room
 	if !clean {

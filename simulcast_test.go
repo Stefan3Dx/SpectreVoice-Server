@@ -163,8 +163,9 @@ func TestPickerRule(t *testing.T) {
 	if got := pk.step("h", layers, linkSample{lossPct: 12}, at(33)); got != "m" {
 		t.Fatalf("after 3 s of loss: %s", got)
 	}
-	// Too little bandwidth for m (its 2000 × 0.7): down after 3 s again; just under its rate × 1.2 is fine
-	pk = picker{}
+	// Too little bandwidth for m (its 2000 × 0.7): down after 3 s again; just under its rate × 1.2 is fine (a viewer
+	// that had trouble before: a fresh one would try h, TestPickerFreshViewerUpWhileEstimateRamps)
+	pk = picker{downs: 1}
 	cur := "m"
 	for s := 40.0; s <= 43; s++ {
 		if got := pk.step(cur, layers, linkSample{rembKbps: 2100}, at(s)); got != "m" {
@@ -514,5 +515,36 @@ func TestPickerBackoffResets(t *testing.T) {
 	}
 	if cur != "h" {
 		t.Fatalf("still waiting the doubled time after a try that held: %s", cur)
+	}
+}
+
+// A viewer that came before the best layer was sending (it started lower, never had trouble) goes up after 3 s clean
+// even while its receiver's estimate is still ramping up (it follows what comes in, and grows from far under it):
+// auto starts from the best for everyone else, and a try that doesn't hold steps down again in 3 s.
+func TestPickerFreshViewerUpWhileEstimateRamps(t *testing.T) {
+	layers := []layerInfo{{"h", 6000}, {"m", 2000}, {"l", 600}}
+	t0 := time.Now()
+	at := func(s float64) time.Time { return t0.Add(time.Duration(s * float64(time.Second))) }
+	var pk picker
+	cur := "m"
+	for s := 0.0; s < 3; s++ {
+		if cur = pk.step(cur, layers, linkSample{rembKbps: 1800}, at(s)); cur != "m" {
+			t.Fatalf("up too early at %v", s)
+		}
+	}
+	if cur = pk.step(cur, layers, linkSample{rembKbps: 1800}, at(3)); cur != "h" {
+		t.Fatalf("a fresh viewer stayed under the best while its estimate ramped: %s", cur)
+	}
+	// It doesn't hold: down in 3 s, and from then on the next try needs room (and waits longer)
+	for s := 4.0; s <= 7; s++ {
+		cur = pk.step(cur, layers, linkSample{lossPct: 15}, at(s))
+	}
+	if cur != "m" {
+		t.Fatalf("no step down: %s", cur)
+	}
+	for s := 8.0; s <= 60; s++ {
+		if cur = pk.step(cur, layers, linkSample{rembKbps: 1800}, at(s)); cur != "m" {
+			t.Fatalf("tried again without room at %v: %s", s, cur)
+		}
 	}
 }
