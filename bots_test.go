@@ -264,6 +264,19 @@ func TestBotRateLimit(t *testing.T) {
 	t.Cleanup(func() { botRatePerSec, botRateBurst = oldR, oldB })
 	anaKey, own := ownerKeyCfg(t)
 	s, hs := newTestServer(t, own)
+	// Before the budget goes back (the cleanup above runs last): the sessions, which read it on every message,
+	// have ended (the clients' sockets close first). Else the race detector sees the reset and fails the run.
+	t.Cleanup(func() {
+		for i := 0; i < 200; i++ {
+			s.hub.mu.Lock()
+			n := len(s.hub.sessions)
+			s.hub.mu.Unlock()
+			if n == 0 {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 	ana, _ := dialV(t, hs, anaKey, "Ana", "")
 	botKey := newKey(t)
 	ana.send(map[string]any{"t": "bot-add", "uid": uidOfKey(botKey), "name": "Fast", "perms": []string{}})
