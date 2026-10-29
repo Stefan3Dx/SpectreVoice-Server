@@ -42,10 +42,10 @@ Update: `sudo bash install.sh --update`. Restore a backup: `sudo bash install.sh
 
 At home behind a router: forward these to the server and set `SV_PUBLIC_IP` to your public IP or DDNS name.
 
-Behind a reverse proxy: one on the same machine (Caddy from install.sh) needs nothing; one on another machine
-(e.g. Nginx Proxy Manager on the LAN) goes in `SV_TRUSTED_PROXIES` (its address or CIDR), else everyone seems to
-come from its address (the sign-in limits are per address). Only the last `X-Forwarded-For` hop is believed, the one
-the proxy appended; `X-Real-IP` never.
+Behind a reverse proxy: one on the same machine (Caddy from install.sh) or on the LAN (e.g. Nginx Proxy Manager on
+another machine) works as it is: a peer on loopback or a private network counts as the proxy. To believe only
+particular proxies, list them in `SV_TRUSTED_PROXIES` (addresses or CIDRs). Only the last `X-Forwarded-For` hop is
+believed, the one the proxy appended; `X-Real-IP` never.
 
 ## Web client
 

@@ -872,7 +872,7 @@ const (
 
 // busLeiPerMin: Lei one person's apps may give (to any purse) or take from others' purses a minute, in "add"s
 // (leiBudget). A var so tests can make it small.
-var busLeiPerMin float64 = 100_000
+var busLeiPerMin float64 = 1_000_000
 
 func applyAdd(cur map[string]any, m map[string]any) map[string]any {
 	set, _ := m["set"].(map[string]any)

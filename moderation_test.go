@@ -291,7 +291,9 @@ func TestRequestIP(t *testing.T) {
 		want   string
 	}{
 		{"203.0.113.9:5000", map[string]string{"X-Forwarded-For": "127.0.0.1"}, "203.0.113.9"},
-		{"192.168.1.5:5000", map[string]string{"X-Forwarded-For": "1.2.3.4"}, "192.168.1.5"},
+		// Nothing set: a LAN proxy is believed (its last hop only), as before
+		{"192.168.1.5:5000", map[string]string{"X-Forwarded-For": "6.6.6.6, 1.2.3.4"}, "1.2.3.4"},
+		{"192.168.1.5:5000", map[string]string{"X-Real-IP": "1.2.3.4"}, "192.168.1.5"},
 		{"127.0.0.1:5000", map[string]string{"X-Real-IP": "127.0.0.1"}, "127.0.0.1"},
 		{"127.0.0.1:5000", map[string]string{"X-Real-IP": "9.9.9.9", "X-Forwarded-For": "127.0.0.1, 198.51.100.7"}, "198.51.100.7"},
 		{"[::1]:5000", map[string]string{"X-Forwarded-For": "garbage"}, "::1"},

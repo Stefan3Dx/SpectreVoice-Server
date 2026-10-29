@@ -470,6 +470,12 @@ func viaProxy(r *http.Request) (string, bool) {
 	if ip.IsLoopback() {
 		return host, true
 	}
+	// Not set: a proxy on the LAN (Nginx Proxy Manager on another machine, the docker bridge) is believed, as before:
+	// otherwise everyone behind it would share its address (one password limiter for all, invite links in http).
+	// Only its own last X-Forwarded-For hop counts, never X-Real-IP. Set: only those.
+	if len(trustedProxies) == 0 {
+		return host, ip.IsPrivate()
+	}
 	for _, n := range trustedProxies {
 		if n.Contains(ip) {
 			return host, true
