@@ -219,7 +219,8 @@ func (h *hub) tempEdit(ss *session, m map[string]any) {
 func (h *hub) tempDelete(id int64, why string) {
 	h.mu.Lock()
 	c := h.chans[id]
-	if c == nil || !c.Temp {
+	// The sweep's "empty" is checked again under the lock: someone may have come in since it looked
+	if c == nil || !c.Temp || (why == "empty" && h.countIn(id) > 0) {
 		h.mu.Unlock()
 		return
 	}
