@@ -1,0 +1,142 @@
+/* The chat panel as the PC draws it (MainScreen ChatPanel, ChatLine; ChatViews, ChatExtras): tabs on top, lines
+   with the person's ghost, grouped, a toolbar when pointing at one, reactions, replies, the writing line. */
+.chat { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; position: relative; }
+.chat.drop { box-shadow: inset 0 0 0 2px var(--accent); }
+.chat-head { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--edge-soft); flex: none; min-width: 0; }
+.chat-tabs { display: flex; gap: 6px; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; }
+.chat-tabs::-webkit-scrollbar { display: none; }
+.chat-tabs button { border: 0; background: transparent; color: var(--muted); border-radius: 10px; padding: 6px 12px; white-space: nowrap; font-size: 13px; }
+.chat-tabs button:hover { background: var(--glass); color: var(--text); }
+.chat-tabs button.on { background: var(--accent-soft); color: var(--bright); }
+.chat-tabs button.unread:not(.on) { color: var(--text); }
+/* Other modules' tools (soundboard, games…): buttons in a row at the right of the tabs */
+.moduletools { display: flex; gap: 6px; align-items: center; flex: none; flex-wrap: nowrap; }
+.moduletools:empty { display: none; }
+.moduletools > button { height: 32px; min-width: 32px; padding: 0 10px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; background: var(--glass); border: 1px solid var(--edge-soft); }
+.moduletools > button:hover { background: var(--glass-hover); }
+
+.messages { flex: 1; overflow: auto; padding: 10px 16px; min-height: 0; }
+.chat[data-view="files"] .messages, .chat[data-view="files"] .say, .chat[data-view="files"] .typing, .chat[data-view="files"] .replybar, .chat[data-view="files"] .mentions { display: none !important; }
+.chat[data-view="dm"] .typing, .chat[data-view="dm"] .replybar, .chat[data-view="dm"] .mentions { display: none !important; }
+.chat:not([data-view="files"]) .filesview { display: none; }
+#older { display: block; margin: 0 auto 8px; }
+
+.day { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 11px; font-weight: 700; padding: 10px 0; }
+.day::before, .day::after { content: ""; flex: 1; height: 1px; background: rgba(107, 107, 136, .35); }
+
+.msg { display: flex; gap: 10px; padding: 6px 4px 2px; border-radius: 10px; position: relative; word-break: break-word; }
+.msg.grouped { padding-top: 1px; }
+.msg:hover, .msg.sel { background: var(--glass); }
+.msg.pending { opacity: .6; }
+.mgut { width: 30px; flex: none; display: flex; justify-content: flex-end; }
+.gtime { color: var(--faint); font-size: 9.5px; padding-top: 4px; visibility: hidden; white-space: nowrap; }
+.msg:hover .gtime, .msg.sel .gtime { visibility: visible; }
+.mbody { flex: 1; min-width: 0; }
+.mhead { display: flex; align-items: baseline; gap: 8px; }
+.msg .who { font-weight: 600; font-size: 13.5px; color: var(--bright); }
+.msg.own .who { color: var(--accent); }
+.msg .when { font-size: 11px; color: var(--faint); }
+.msg .edit { font-size: 10.5px; color: var(--faint); }
+.msg .floatedit { float: right; }
+.msg .text { font-size: 14px; line-height: 19px; color: var(--text); white-space: pre-wrap; }
+.msg .text.onlyfile { display: none; }
+.msg .text a { color: var(--talk); }
+.msg.mention .text { background: rgba(251, 191, 36, .12); border-radius: 8px; padding: 2px 6px; margin-left: -6px; display: inline-block; }
+
+/* A reply's quote (the PC's QuoteBlock) */
+.quote { display: flex; flex-direction: column; border-left: 3px solid var(--accent); background: var(--glass); border-radius: 8px; padding: 3px 10px 3px 8px; margin: 2px 0 3px; max-width: 100%; width: fit-content; }
+.qwho { color: var(--accent); font-size: 11.5px; font-weight: 600; }
+.qwhat { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 460px; }
+
+/* Pictures and files shared on this server */
+.picwrap { margin-top: 6px; display: inline-flex; flex-direction: column; gap: 3px; max-width: 100%; }
+.picbox { display: block; }
+.pic { max-width: min(420px, 100%); max-height: 300px; border-radius: 12px; display: block; background: rgba(0, 0, 0, .2); }
+.picname { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11.5px; }
+.picname .fname { max-width: 300px; }
+.picdl { color: var(--muted); display: inline-flex; }
+.picdl svg.ic { width: 16px; height: 16px; }
+.filecard { display: flex; gap: 10px; align-items: center; margin-top: 6px; padding: 10px; max-width: 420px; border: 1px solid var(--edge); border-radius: 12px; text-decoration: none; color: var(--text); background: var(--glass-strong); }
+.filecard .ficon { color: var(--accent); }
+.filecard .ficon svg.ic { width: 28px; height: 28px; }
+.filecard .fmeta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.filecard .fname { color: var(--bright); font-weight: 600; font-size: 13.5px; }
+.filecard .fsub { color: var(--faint); font-size: 11.5px; }
+.filecard .fdl { width: 34px; height: 34px; border-radius: 50%; background: rgba(124, 92, 255, .8); color: #fff; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* Reactions under a line (the PC's MessageReactionsRow) */
+.reacts { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 3px; }
+.react { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 10px; background: var(--glass); border: 1px solid var(--edge-soft); font-size: 12px; font-weight: 500; color: var(--text); }
+.react.mine { background: rgba(124, 92, 255, .3); border-color: var(--accent); color: var(--bright); }
+.react .remo { font-size: 13px; }
+
+/* The line's tools, when pointing at it (or after a tap) */
+.mtools { position: absolute; top: -14px; right: 8px; display: none; align-items: center; gap: 1px; padding: 2px; border-radius: 10px; background: var(--surface); border: 1px solid var(--edge); box-shadow: 0 6px 20px rgba(0, 0, 0, .45); z-index: 2; }
+.msg:hover .mtools, .msg.sel .mtools, .mtools:focus-within { display: flex; }
+.msg:first-child .mtools { top: 2px; }
+.mtools button { border: 0; background: transparent; border-radius: 8px; padding: 3px 5px; line-height: 1; font-size: 15px; color: var(--muted); }
+.mtools button:hover { background: var(--glass-hover); color: var(--bright); }
+.mtools .tb svg.ic { width: 16px; height: 16px; }
+.mtools .tdel:hover { color: var(--red); }
+
+/* Editing a line in place */
+.editwrap { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; }
+.editbox { padding: 7px 10px; border-radius: 10px; }
+.edithint { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11px; }
+.edithint span { flex: 1; }
+
+.empty { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 60px 20px; }
+.emptyt { color: var(--bright); font-weight: 600; }
+.emptyghost .av { opacity: .8; }
+
+/* Who's typing; replying to; @names to complete */
+.typing { height: 18px; padding: 0 18px; flex: none; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; font-style: italic; overflow: hidden; }
+.tdots { display: inline-flex; gap: 3px; }
+.tdots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: dot 1s ease-in-out infinite alternate; }
+.tdots i:nth-child(2) { animation-delay: .33s; }
+.tdots i:nth-child(3) { animation-delay: .66s; }
+@keyframes dot { from { opacity: .2; } to { opacity: 1; } }
+.replybar { display: flex; align-items: center; gap: 8px; margin: 0 14px; padding: 4px 6px 4px 12px; border-radius: 10px; background: rgba(124, 92, 255, .12); color: var(--accent); font-size: 12px; flex: none; min-width: 0; }
+.replybar svg.ic { width: 15px; height: 15px; }
+.replybar .rwho { font-weight: 600; white-space: nowrap; }
+.replybar .rwhat { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.replybar .iconbtn { width: 26px; height: 26px; color: var(--faint); background: transparent; border: 0; }
+.mentions { display: flex; gap: 6px; padding: 6px 12px 0; flex: none; flex-wrap: wrap; }
+.mchip { padding: 4px 8px; border-radius: 8px; border: 0; background: rgba(124, 92, 255, .25); color: var(--bright); font-size: 12.5px; }
+.mchip:first-child { box-shadow: inset 0 0 0 1px var(--accent); }
+
+.uploads { flex: none; }
+.upload { display: flex; gap: 8px; align-items: center; padding: 3px 14px; font-size: 12px; color: var(--muted); }
+.upload progress { width: 140px; accent-color: var(--accent); }
+.upload .fname { flex: 1; }
+
+/* The writing line (the PC's ChatInput) */
+.say { display: flex; gap: 6px; padding: 12px; flex: none; align-items: center; }
+.say .iconbtn { width: 40px; height: 40px; }
+.say input:not([type=file]) { flex: 1; min-width: 0; height: 46px; border-radius: 12px; background: rgba(255, 255, 255, .04); color: var(--text); font-size: 14px; }
+.say input:not([type=file]):focus { background: rgba(255, 255, 255, .063); color: var(--bright); }
+.say input::placeholder { color: var(--faint); }
+.say .send { width: 44px; height: 44px; margin-left: 2px; }
+.say:has(#say:not(:placeholder-shown)) .send { background: rgba(124, 92, 255, .8); border-color: transparent; color: #fff; }
+
+/* The emoji picker */
+.emojipop { position: fixed; z-index: 40; display: grid; grid-template-columns: repeat(8, 36px); gap: 2px; padding: 6px; border-radius: 14px; background: rgba(21, 21, 42, .97); border: 1px solid var(--edge); box-shadow: 0 12px 40px rgba(0, 0, 0, .55); }
+.emojipop .emo { width: 36px; height: 36px; padding: 0; border: 0; background: transparent; border-radius: 8px; font-size: 20px; line-height: 36px; font-weight: 400; }
+.emojipop .emo:hover { background: var(--glass-hover); }
+
+@media (max-width: 800px) {
+  .messages { padding: 8px 10px; }
+  .say { padding: 8px; gap: 4px; }
+  .say .iconbtn { width: 38px; height: 38px; }
+  .qwhat { max-width: 220px; }
+  .emojipop { grid-template-columns: repeat(8, 1fr); left: 8px !important; right: 8px; width: auto; }
+  .emojipop .emo { width: auto; }
+  .chat-head { padding: 8px; }
+}
+@media (hover: none) { .msg:hover:not(.sel) .mtools { display: none; } .msg:hover:not(.sel) { background: transparent; } }
+
+/* Private messages (dm.js) draw their own simpler lines: kept as blocks */
+.dmlist .msg { display: block; padding: 6px 8px; }
+.dmlist .msg .who { margin-right: 8px; }
+.dmlist .msg .text { margin-top: 1px; }

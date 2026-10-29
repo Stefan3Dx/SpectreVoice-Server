@@ -12,13 +12,15 @@ import { t, initLang, applyTexts, errText } from './i18n.js';
 import { loadIdentity, signChallenge } from './identity.js';
 import { voiceStart, applyVolumes, updatePTT } from './voice.js';
 import { loadChat, openConv, renderChat, updateUnread } from './chat.js';
-import { watchRoom, liveOf } from './streams.js';
+import { watchRoom, liveOf, watching, stopWatching } from './streams.js';
 import './bus.js';
 import './tv.js';
 import './files.js';
 import './dm.js';
 import './soundboard.js'; import './music.js';
 import { openSettings } from './settings.js';
+import { icon, setIcon } from './icons.js';
+import { avatar, avatarPath, hueOf, initials } from './avatar.js';
 
 function setStatus(phase) {
   S.phase = phase;
@@ -65,6 +67,7 @@ function failed(msg) {
   S.wasOn = false;
   S.retry = 0;
   $('app').classList.add('hidden');
+  document.body.classList.remove('inapp');
   $('leave').classList.add('hidden');
   $('connect').classList.remove('hidden');
   const e = $('connectError');
@@ -124,6 +127,7 @@ async function handle(m) {
     case 'server-info':
       S.server = m.server?.name || S.server;
       $('serverName').textContent = S.server || 'Spectre Voice';
+      $('srvIcon').textContent = initials(S.server || 'Spectre Voice');
       $('commName').textContent = S.server;
       updateUnread();
       break;
@@ -176,11 +180,13 @@ function welcome(m) {
   S.files = !!m.server?.files;
   S.live = new Map((m.live || []).map((l) => [l.room, l]));
   $('serverName').textContent = S.server || 'Spectre Voice';
+  $('srvIcon').textContent = initials(S.server || 'Spectre Voice');
   $('motd').textContent = m.server?.motd || '';
   $('motd').classList.toggle('hidden', !m.server?.motd);
   setStatus('on');
   $('connect').classList.add('hidden');
   $('app').classList.remove('hidden');
+  document.body.classList.add('inapp');
   $('leave').classList.remove('hidden');
   entered(m);
   if (S.mic || S.snd) send({ t: 'state', mic: S.mic, snd: S.snd });
@@ -271,67 +277,158 @@ function render() {
     byCh.get(mem.ch).push(mem);
   }
   const mine = me()?.ch;
+  const liveIn = new Set();
+  for (const mem of S.members.values()) if (liveOf(mem.uid).length) liveIn.add(mem.ch);
+  // The PC's tree: text channels first (they open their chat), then the voice channels with their people
+  const texts = [...S.channels.values()].filter((c) => c.kind === 'text').sort((a, b) => a.pos - b.pos || a.id - b.id);
+  const chRow = (c) => {
+    const open = S.cur === 'c:' + c.id;
+    const unread = S.unread.get('c:' + c.id) || 0;
+    const row = el('div', {
+      class: 'ch' + (c.kind === 'text' ? ' text' : ' voice') + (c.locked ? ' locked' : '') + (c.id === mine ? ' mine' : '') + (open ? ' cur' : '') + (c.temp ? ' temp' : '') + (unread ? ' unread' : ''),
+      title: c.topic || (c.temp ? t('temp') : ''), dataset: { id: c.id },
+    }, el('span', { class: 'chname', text: (c.icon ? c.icon + ' ' : '') + c.name }));
+    const badge = unreadBadge('c:' + c.id);
+    if (badge) row.appendChild(badge);
+    if (!c.kind) {
+      if (liveIn.has(c.id)) row.appendChild(el('span', { class: 'chflag', text: '📺', title: t('liveNow') }));
+      const n = (byCh.get(c.id) || []).length;
+      if (n) row.appendChild(el('span', { class: 'cnt', text: n + (c.max ? '/' + c.max : '') }));
+      if (c.locked) row.appendChild(el('span', { class: 'chlock', title: t('chPass') }, icon('lock')));
+      if (c.id !== mine) row.appendChild(el('button', { class: 'joinbtn', type: 'button', text: t('join'), onclick: (ev) => { ev.stopPropagation(); joinChannel(c.id); openConv('c:' + c.id); } }));
+      row.onclick = () => { joinChannel(c.id); openConv('c:' + c.id); };
+    } else {
+      row.onclick = () => { openConv('c:' + c.id); showPane('chat'); };
+    }
+    return row;
+  };
+  if (texts.length) {
+    tree.append(el('div', { class: 'group', text: t('textChannels') }));
+    for (const c of texts) tree.append(chRow(c));
+    tree.append(el('div', { class: 'group', text: t('voiceChannels') }));
+  }
   const draw = (parent, into, depth) => {
     for (const c of kids.get(parent) || []) {
       if (c.kind === 'spacer') {
-        into.appendChild(el('div', { class: 'spacer', text: c.name }));
-      } else {
-        const row = el('div', {
-          class: 'ch' + (c.kind === 'text' ? ' text' : '') + (c.locked ? ' locked' : '') + (c.id === mine ? ' mine' : '') + (S.cur === 'c:' + c.id ? ' cur' : ''),
-          title: c.topic || (c.temp ? t('temp') : ''), dataset: { id: c.id },
-        }, el('span', { class: 'chname', text: (c.temp ? '⏳ ' : '') + (c.icon ? c.icon + ' ' : '') + c.name }));
-        const badge = unreadBadge('c:' + c.id);
-        if (badge) row.appendChild(badge);
-        if (!c.kind) {
-          const n = (byCh.get(c.id) || []).length;
-          if (n) row.appendChild(el('span', { class: 'cnt', text: n + (c.max ? '/' + c.max : '') }));
-          row.onclick = () => { joinChannel(c.id); openConv('c:' + c.id); };
-        } else {
-          row.onclick = () => { openConv('c:' + c.id); showPane('chat'); };
-        }
-        into.appendChild(row);
-        for (const mem of (byCh.get(c.id) || []).sort((a, b) => a.name.localeCompare(b.name))) into.appendChild(memberRow(mem));
+        into.appendChild(el('div', { class: 'spacer', text: c.name.replace(/^[─\-—\s]+|[─\-—\s]+$/g, '') }));
+      } else if (c.kind !== 'text') {
+        into.appendChild(chRow(c));
+        const people = (byCh.get(c.id) || []).sort((a, b) => a.name.localeCompare(b.name));
+        if (people.length) into.appendChild(el('div', { class: 'mems' }, people.map((mem) => memberRow(mem))));
       }
       if (kids.has(c.id) && depth < 10) {
         const box = el('div', { class: 'kids' });
         draw(c.id, box, depth + 1);
-        into.appendChild(box);
+        if (box.childNodes.length) into.appendChild(box);
       }
     }
   };
   draw(0, tree, 0);
   const cur = S.channels.get(+S.cur.slice(2));
-  $('tabChannel').textContent = S.cur.startsWith('c:') && cur ? '#' + cur.name : (S.channels.get(mine)?.name ? '#' + S.channels.get(mine).name : t('chat'));
+  $('tabChannel').textContent = S.cur.startsWith('c:') && cur ? '# ' + cur.name : (S.channels.get(mine)?.name ? '# ' + S.channels.get(mine).name : t('chat'));
   const view = $('chat').dataset.view || 'chat';
   $('tabChannel').classList.toggle('on', view === 'chat' && S.cur.startsWith('c:'));
   $('tabComm').classList.toggle('on', view === 'chat' && S.cur.startsWith('g:'));
-  $('mute').classList.toggle('muted-on', S.mic);
-  $('deafen').classList.toggle('muted-on', S.snd);
+  renderMe();
+  renderPeople();
   updatePTT();
   emit('app:render');
 }
 on('app:selfstate', render);
 on('app:conv', render);
 on('app:view', render);
+on('app:rtc', renderMe);
 
-function memberRow(mem) {
+// You, at the bottom of the channel list: your ghost (lit while you talk), name, channel, the voice's state, buttons
+function renderMe() {
+  const m = me();
+  const box = $('meAvatar');
+  const uid = S.uid;
+  if (box.dataset.uid !== uid || box.dataset.v !== avatarPath(uid) + hueOf(uid, S.name)) {
+    box.textContent = '';
+    box.append(avatar(S.name, uid, 38));
+    box.dataset.uid = uid;
+    box.dataset.v = avatarPath(uid) + hueOf(uid, S.name);
+  }
+  box.classList.toggle('talking', !!m?.talk);
+  box.classList.toggle('mic-off', S.mic);
+  $('meName').textContent = m?.name || S.name;
+  $('meWhere').textContent = S.channels.get(m?.ch)?.name ? '# ' + S.channels.get(m.ch).name : '';
+  const rtc = document.body.dataset.rtc || 'new';
+  const up = rtc === 'connected';
+  const down = rtc === 'failed' || rtc === 'disconnected';
+  $('voiceDot').className = 'vdot' + (up ? ' up' : down ? ' down' : '');
+  $('voiceText').textContent = t(up ? 'voiceOn' : down ? 'voiceDown' : 'voiceConnecting');
+  const mute = $('mute');
+  setIcon(mute, S.mic ? 'micOff' : 'mic');
+  mute.classList.toggle('muted-on', S.mic);
+  mute.setAttribute('aria-pressed', S.mic ? 'true' : 'false');
+  const deaf = $('deafen');
+  setIcon(deaf, S.snd ? 'headsetOff' : 'headset');
+  deaf.classList.toggle('muted-on', S.snd);
+  deaf.setAttribute('aria-pressed', S.snd ? 'true' : 'false');
+}
+
+// The right column: who talks now, who's live, the people in your channel
+function renderPeople() {
+  const ch = me()?.ch;
+  const here = [...S.members.values()].filter((x) => x.ch === ch).sort((a, b) => a.name.localeCompare(b.name));
+  renderTalkers(here);
+  const live = $('peopleLive');
+  live.textContent = '';
+  const lives = here.flatMap((mem) => liveOf(mem.uid).map((l) => [mem, l]));
+  if (lives.length) live.append(el('div', { class: 'section', text: t('liveTab') }));
+  for (const [mem, l] of lives) {
+    const self = mem.sid === S.sid;
+    live.append(el('div', { class: 'liverow' }, icon('tv'),
+      el('span', { class: 'lname', text: self ? t('youShare') : mem.name + (l.title ? ' · ' + l.title : '') }),
+      self ? null : watching(l.room)
+        ? el('button', { class: 'small', type: 'button', text: t('stopWatching'), onclick: () => { stopWatching(l.room); emit('app:dirty'); } })
+        : el('button', { class: 'small primary', type: 'button', text: t('watch'), onclick: () => { watchRoom(l.room); showPane('stage'); emit('app:dirty'); } })));
+  }
+  $('hereTitle').textContent = t('inChannel', { ch: S.channels.get(ch)?.name || t('channel'), n: here.length });
+  const list = $('hereList');
+  list.textContent = '';
+  for (const mem of here) list.append(memberRow(mem, true));
+}
+function renderTalkers(here) {
+  const box = $('talkers');
+  box.textContent = '';
+  const talking = (here || [...S.members.values()].filter((x) => x.ch === me()?.ch)).filter((x) => x.talk);
+  if (!talking.length) box.append(el('span', { class: 'quiet', text: t('quiet') }));
+  for (const mem of talking) box.append(el('div', { class: 'talker' }, avatar(mem.name, mem.uid, 44), el('span', { class: 'tn', text: mem.name })));
+}
+
+function memberRow(mem, big) {
   const lives = liveOf(mem.uid);
-  const row = el('div', { class: 'mem' + (mem.talk ? ' talking' : '') + (mem.sid === S.sid ? ' me' : '') + (mem.away ? ' away' : ''), dataset: { sid: mem.sid } },
-    el('span', { class: 'dot' }),
-    el('span', { class: 'mname', text: mem.name }),
-    el('span', { class: 'ic', text: (mem.bot ? ' 🤖' : '') + (mem.mic ? ' 🎙️✕' : '') + (mem.snd ? ' 🔇' : '') + (mem.vmuted ? ' 🚫' : '') + (mem.away ? ' 💤' : '') + (S.muted[mem.uid] ? ' 🔕' : '') }));
+  const self = mem.sid === S.sid;
+  const row = el('div', { class: 'mem' + (big ? ' big' : '') + (mem.talk ? ' talking' : '') + (self ? ' me' : '') + (mem.away ? ' away' : ''), dataset: { sid: mem.sid } },
+    avatar(mem.name, mem.uid, big ? 34 : 24),
+    el('span', { class: 'mname', text: mem.name + (self ? t('youSuffix') : '') }));
+  const flags = el('span', { class: 'flags' });
+  const flag = (cls, title, kid) => flags.append(el('span', { class: cls, title }, kid));
+  if (mem.bot) flag('f-emo', t('bot'), '🤖');
+  if (mem.vmuted) flag('f-vm', t('cantBeHeard'), icon('micOff'));
+  if (mem.away) flag('f-away', t('away') + (mem.awayMsg ? ': ' + mem.awayMsg : ''), icon('moon'));
   for (const l of lives) {
-    row.append(el('button', {
+    flags.append(el('button', {
       class: 'livebadge', type: 'button', text: t('liveBadge'), title: t('watchName', { name: mem.name }),
       onclick: (ev) => { ev.stopPropagation(); watchRoom(l.room); showPane('stage'); },
     }));
   }
-  if (mem.client) row.appendChild(el('span', { class: 'cli', text: mem.client.split('/')[0] }));
-  if (mem.sid !== S.sid && !mem.bot) row.onclick = (ev) => personPop(mem, ev);
+  if (S.muted[mem.uid]) flag('f-lm', t('mutedForYou'), icon('volOff'));
+  if (mem.mic) flag('f-mic', t('micOffFlag'), icon('micOff'));
+  if (mem.snd) flag('f-snd', t('soundOffFlag'), icon('headsetOff'));
+  if (mem.client?.startsWith('web/')) flag('cli', mem.client, 'web');
+  if (flags.childNodes.length) row.append(flags);
+  if (!self && !mem.bot) row.onclick = (ev) => personPop(mem, ev);
   return row;
 }
 function renderTalk(sid, onv) {
   for (const e of document.querySelectorAll(`.mem[data-sid="${sid}"]`)) e.classList.toggle('talking', onv);
+  if (sid === S.sid) $('meAvatar').classList.toggle('talking', onv);
+  const mem = S.members.get(sid);
+  if (mem && mem.ch === me()?.ch) renderTalkers();
 }
 
 // A person's card: volume and mute (kept per uid in this browser), and their streams
@@ -353,7 +450,7 @@ function personPop(mem, ev) {
     applyVolumes();
     render();
   };
-  pop.append(el('div', { class: 'popname', text: mem.name }),
+  pop.append(el('div', { class: 'popname' }, avatar(mem.name, mem.uid, 40), el('span', { text: mem.name })),
     el('div', { class: 'row' }, el('span', { class: 'small', text: t('volume') }), label), v,
     el('label', { class: 'chk' }, mute, el('span', { text: t('mutePerson') })));
   for (const l of liveOf(mem.uid)) {
@@ -379,6 +476,10 @@ for (const b of document.querySelectorAll('.mobile-tabs button')) b.onclick = ()
 
 on('app:lang', () => { setStatus(S.phase); if (S.phase === 'on') { render(); renderChat(); } });
 $('settings').onclick = () => openSettings();
+$('settingsPre').onclick = () => openSettings();
+setIcon($('settings'), 'settings');
+setIcon($('leave'), 'power');
+setIcon($('shareBtn'), 'share');
 $('leave').onclick = () => { S.phase = 'off'; failed(''); };
 $('form').onsubmit = async (ev) => {
   ev.preventDefault();

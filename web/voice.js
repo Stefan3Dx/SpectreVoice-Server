@@ -70,6 +70,7 @@ export async function voiceStart() {
   pc.onconnectionstatechange = () => {
     if (V.pc !== pc) return;
     document.body.dataset.rtc = pc.connectionState;
+    emit('app:rtc');
     if (pc.connectionState === 'connected') toast(t('voiceOn') + (V.track ? '' : ' (' + t('listenOnly') + ')'));
     if (pc.connectionState === 'failed') { toast(t('voiceOff'), true); voiceStart(); }
   };
@@ -89,6 +90,7 @@ export function voiceStop() {
   for (const { el } of V.audios.values()) { el.pause(); el.srcObject = null; }
   V.audios.clear();
   document.body.dataset.rtc = 'new';
+  emit('app:rtc');
 }
 
 export async function voiceSignal(m) {

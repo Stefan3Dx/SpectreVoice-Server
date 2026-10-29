@@ -617,7 +617,8 @@ function updateShareUi() {
   const b = $('shareBtn');
   b.classList.toggle('hidden', !navigator.mediaDevices?.getDisplayMedia || (!SH.on && !may('stream')));
   b.classList.toggle('live', SH.on);
-  b.textContent = SH.on ? t('stopSharing') : t('shareScreen');
+  b.title = SH.on ? t('stopSharing') : t('shareScreen');
+  b.setAttribute('aria-label', b.title);
   const info = SH.on ? (SH.mode === 'p2p' ? 'P2P' : SH.up ? t('viaServer') : t('connecting')) + ' · ' + t('viewers', { n: SH.count }) : '';
   $('shareInfo').textContent = info;
   $('shareInfo').classList.toggle('hidden', !SH.on);
