@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 // Moving people: who may (move, ranking above), only into voice channels, past a password and a limit,
@@ -111,5 +112,59 @@ func TestMovePeople(t *testing.T) {
 	mia.send(map[string]any{"t": "move", "sid": cara.sid, "ch": afk})
 	if mv := cara.wait(isT("moved")); int64(mv["ch"].(float64)) != afk || mv["by"] != "Mia" {
 		t.Fatal(mv)
+	}
+}
+
+// Moving oneself is a join: a mover without bypass_locks doesn't get past a channel's password or limit that way
+// (the move permission is for bringing others in, not for entering locked channels oneself).
+func TestMoveSelfIsJoin(t *testing.T) {
+	s, hs := newTestServer(t, nil)
+	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
+	bob, _ := dialV(t, hs, newKey(t), "Bob", "")
+	_ = s.store.setRole(ana.uid, roleOwner)
+	s.hub.mu.Lock()
+	s.hub.forget(1)
+	s.hub.mu.Unlock()
+	ana.ws.Close()
+	ana, _ = dialV(t, hs, ana.key, "Ana", "")
+	ana.send(map[string]any{"t": "role-save", "name": "Mover", "pos": 5, "perms": []string{"move"}})
+	r := ana.wait(func(m map[string]any) bool { return m["t"] == "roles" })
+	var rid float64
+	for _, x := range r["items"].([]any) {
+		if x.(map[string]any)["name"] == "Mover" {
+			rid = x.(map[string]any)["id"].(float64)
+		}
+	}
+	ana.send(map[string]any{"t": "member-roles", "uid": bob.uid, "roles": []any{rid}})
+	bob.wait(func(m map[string]any) bool { return m["t"] == "role" && hasPerm(m, "move") })
+	ana.send(map[string]any{"t": "ch-save", "name": "Locked", "password": "pw"})
+	locked := int64(ana.wait(func(m map[string]any) bool {
+		return m["t"] == "channel" && m["c"].(map[string]any)["name"] == "Locked"
+	})["c"].(map[string]any)["id"].(float64))
+
+	bob.send(map[string]any{"t": "move", "sid": bob.sid, "ch": locked})
+	if e := bob.wait(isErrOp("join")); e["why"] != "password" {
+		t.Fatal(e)
+	}
+	s.hub.mu.Lock()
+	in := s.hub.sessions[bob.sid].ch
+	s.hub.mu.Unlock()
+	if in == locked {
+		t.Fatal("a mover got into a locked channel by moving itself")
+	}
+	// The owner (bypass_locks) still may
+	ana.send(map[string]any{"t": "move", "sid": ana.sid, "ch": locked})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		s.hub.mu.Lock()
+		in = s.hub.sessions[ana.sid].ch
+		s.hub.mu.Unlock()
+		if in == locked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the owner didn't get in")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

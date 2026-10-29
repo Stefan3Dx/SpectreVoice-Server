@@ -743,6 +743,12 @@ func (h *hub) join(ss *session, ch int64, pass string) {
 }
 
 func (h *hub) move(ss *session, sid int, ch int64) {
+	if sid == ss.sid {
+		// Moving oneself (dragging oneself) is a join, with its rules: the password and the limit only staff
+		// with bypass_locks get past (move is for bringing others in)
+		h.join(ss, ch, "")
+		return
+	}
 	h.mu.Lock()
 	if !h.may(ss, pMove) {
 		h.mu.Unlock()
@@ -762,7 +768,7 @@ func (h *hub) move(ss *session, sid int, ch int64) {
 		h.mu.Unlock()
 		ss.refuse("move", "bad", "not a voice channel")
 		return
-	case o != ss && !h.outranks(ss, o.uid):
+	case !h.outranks(ss, o.uid):
 		h.mu.Unlock()
 		ss.refuse("move", "role", "they rank as high as you")
 		return
@@ -780,10 +786,8 @@ func (h *hub) move(ss *session, sid int, ch int64) {
 	h.memberChanged(o)
 	name := c.Name
 	h.mu.Unlock()
-	if o != ss {
-		// Told who and where ("X moved you to Y"); moving oneself (dragging oneself) is just a join
-		o.send(map[string]any{"t": "moved", "ch": ch, "by": ss.name, "name": name})
-	}
+	// Told who and where ("X moved you to Y")
+	o.send(map[string]any{"t": "moved", "ch": ch, "by": ss.name, "name": name})
 	h.s.voice.sync(old, ch)
 	h.s.music.joined(o, ch)
 }
