@@ -43,6 +43,8 @@ func constEq(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []
 func newMods(s *server) *mods {
 	m := &mods{s: s}
 	_, _ = s.store.db.Exec(`CREATE TABLE IF NOT EXISTS mods(uid TEXT NOT NULL, kind TEXT NOT NULL, ch INTEGER NOT NULL DEFAULT 0, until INTEGER NOT NULL DEFAULT 0, why TEXT NOT NULL DEFAULT '', by TEXT NOT NULL DEFAULT '', PRIMARY KEY(uid,kind,ch))`)
+	// Channel bans in temporary channels (tempch.go) end with them, and with a restart
+	_, _ = s.store.db.Exec(`DELETE FROM mods WHERE kind='ch-ban' AND ch >= ?`, tempBase)
 	// Before communities, "ban" and "mute" were for the whole server, which was the first community
 	_, _ = s.store.db.Exec(`UPDATE mods SET ch=1 WHERE ch=0 AND kind IN ('ban','mute')`)
 	// Ended bans and mutes aren't kept (with their reasons) for ever

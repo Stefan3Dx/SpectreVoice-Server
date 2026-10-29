@@ -93,10 +93,10 @@ func (h *hub) mayLandIn(ss *session, ch int64) bool {
 	if c == nil || c.Comm != ss.comm || c.Kind != "" {
 		return false
 	}
-	if c.pass != "" && !h.may(ss, pBypassLocks) {
+	if c.pass != "" && !h.may(ss, pBypassLocks) && !h.tempAdmin(ss, c) {
 		return false
 	}
-	if c.MaxUsers > 0 && h.countIn(ch) >= c.MaxUsers && !h.may(ss, pBypassLocks) {
+	if c.MaxUsers > 0 && h.countIn(ch) >= c.MaxUsers && !h.may(ss, pBypassLocks) && !h.tempAdmin(ss, c) {
 		return false
 	}
 	return !h.s.mods.channelBanned(ss.uid, ch) || h.may(ss, pChannelBan)
@@ -131,7 +131,7 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 		comm := ss.comm
 		id := i64(m, "id")
 		r, ok := h.access(comm).roles[id]
-		allowed := ok && h.may(ss, pManageRoles) && !r.Everyone && r.Pos < h.rank(comm, ss.uid)
+		allowed := ok && h.may(ss, pManageRoles) && !r.Everyone && r.Pos < h.rank(comm, ss.uid) && (r.p&ownerOnly == 0 || h.isOwner(comm, ss.uid))
 		h.mu.Unlock()
 		if !allowed {
 			ss.refuse(t, "role", "not allowed")
@@ -191,6 +191,7 @@ func (h *hub) saveRole(ss *session, m map[string]any) {
 	}
 	a := h.access(comm)
 	mine := h.permsOf(comm, ss.uid)
+	owner := h.isOwner(comm, ss.uid)
 	top := h.rank(comm, ss.uid)
 	id := i64(m, "id")
 	r := crole{Comm: comm}
@@ -225,8 +226,12 @@ func (h *hub) saveRole(ss *session, m map[string]any) {
 		return
 	}
 	if v, ok := m["perms"]; ok {
-		// Nobody gives what they don't have
-		r.p = permOf(v) & mine
+		// Nobody gives what they don't have; what only the owner gives (give_lei) stays as it was for anyone else
+		np := permOf(v) & mine
+		if !owner {
+			np = np&^ownerOnly | r.p&ownerOnly
+		}
+		r.p = np
 	}
 	if err := h.s.store.saveRole(&r); err != nil {
 		ss.refuse(t, "server", err.Error())
@@ -264,15 +269,18 @@ func (h *hub) setMemberRoles(ss *session, uid string, v any) {
 	}
 	a := h.access(comm)
 	top := h.rank(comm, ss.uid)
-	// Roles at or above one's own place stay as they are; the rest are what was asked
+	owner := h.isOwner(comm, ss.uid)
+	// Roles at or above one's own place stay as they are, and so do roles that carry what only the owner gives
+	// (give_lei) for anyone but the owner; the rest are what was asked
+	fixed := func(r crole) bool { return r.Pos >= top || (!owner && r.p&ownerOnly != 0) }
 	var next []int64
 	for _, id := range a.member[uid] {
-		if r, ok := a.roles[id]; ok && r.Pos >= top {
+		if r, ok := a.roles[id]; ok && fixed(r) {
 			next = append(next, id)
 		}
 	}
 	for _, id := range want {
-		if r, ok := a.roles[id]; ok && !r.Everyone && r.Pos < top {
+		if r, ok := a.roles[id]; ok && !r.Everyone && !fixed(r) {
 			next = append(next, id)
 		}
 	}

@@ -47,8 +47,12 @@ type channel struct {
 	// "": a voice channel (with its own chat); "text": a chat channel, nobody joins; "spacer": a line between channels
 	Kind string `json:"kind,omitempty"`
 	// Moderated: only those allowed (mute_voice) and those they let talk are heard
-	Moderated bool   `json:"moderated,omitempty"`
-	pass      string // bcrypt
+	Moderated bool `json:"moderated,omitempty"`
+	// A temporary channel (tempch.go): only in memory, made by Owner (its channel admin), gone once empty a while
+	Temp       bool   `json:"temp,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+	pass       string // bcrypt
+	emptySince time.Time
 }
 
 type chatMsg struct {

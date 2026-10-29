@@ -43,6 +43,7 @@ const T = {
     errFull: 'E plin.', errMany: 'Ești conectat din prea multe locuri.', errName: 'Alege un nume.', errAuth: 'Semnătura nu e pentru acest server.',
     errRate: 'Prea multe mesaje, mai încet.', errInvite: 'Invitația nu mai e valabilă.', errMuted: 'Nu poți scrie aici acum.',
     errRole: 'Nu ai voie.', errGone: 'Nu mai există.', errServer: 'Eroare pe server.', errWs: 'Nu pot ajunge la server.',
+    temp: 'Canal temporar', evSoon: '📅 {title}: începe în curând', evStart: '📅 {title}: începe acum', leiGift: '💰 {by}: {amount} Lei',
   },
   en: {
     off: 'Disconnected', connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…', leave: 'Leave',
@@ -60,6 +61,7 @@ const T = {
     errFull: "It's full.", errMany: "You're connected from too many places.", errName: 'Choose a name.', errAuth: 'The signature is not for this server.',
     errRate: 'Too many messages, slow down.', errInvite: 'This invite is no longer valid.', errMuted: "You can't write here for now.",
     errRole: "You aren't allowed to.", errGone: "It's gone.", errServer: 'Server error.', errWs: "Can't reach the server.",
+    temp: 'Temporary channel', evSoon: '📅 {title}: starting soon', evStart: '📅 {title}: starting now', leiGift: '💰 {by}: {amount} Lei',
   },
 };
 let lang = store.get('sv.lang', (navigator.language || 'ro').toLowerCase().startsWith('ro') ? 'ro' : 'en');
@@ -262,6 +264,8 @@ async function handle(m) {
     case 'rtc': case 'ice': case 'rtc-reset': voiceSignal(m); break;
     case 'poke': toast('👉 ' + m.name + ': ' + (m.text || '')); break;
     case 'announce': toast('📢 ' + m.text); break;
+    case 'event-notice': toast(t(m.kind === 'soon' ? 'evSoon' : 'evStart', { title: m.e?.title || '' })); break;
+    case 'lei-gift': toast(t('leiGift', { by: m.byName || '', amount: (m.amount > 0 ? '+' : '') + m.amount }) + (m.reason ? ' · ' + m.reason : '')); break;
   }
 }
 
@@ -357,8 +361,8 @@ function render() {
       } else {
         const el = document.createElement('div');
         el.className = 'ch' + (c.kind === 'text' ? ' text' : '') + (c.locked ? ' locked' : '') + (c.id === mine ? ' mine' : '') + (S.cur === 'c:' + c.id ? ' cur' : '');
-        el.textContent = (c.icon ? c.icon + ' ' : '') + c.name;
-        el.title = c.topic || '';
+        el.textContent = (c.temp ? '⏳ ' : '') + (c.icon ? c.icon + ' ' : '') + c.name;
+        el.title = c.topic || (c.temp ? t('temp') : '');
         if (!c.kind) {
           const n = (byCh.get(c.id) || []).length;
           if (n) {

@@ -59,7 +59,9 @@ func (h *hub) featureOp(ss *session, t string, m map[string]any) bool {
 	case "ch-kick":
 		h.mu.Lock()
 		o := h.sessions[int(i64(m, "sid"))]
-		if o == nil || o.comm != ss.comm || !h.may(ss, pKick) || !h.outranks(ss, o.uid) {
+		// A temporary channel's maker takes people out of it (not those who may kick)
+		tempOut := o != nil && o.uid != ss.uid && h.tempAdmin(ss, h.chans[o.ch]) && !h.may(o, pKick)
+		if o == nil || o.comm != ss.comm || (!tempOut && (!h.may(ss, pKick) || !h.outranks(ss, o.uid))) {
 			h.mu.Unlock()
 			ss.refuse(t, "role", "not allowed")
 			return true

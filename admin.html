@@ -92,6 +92,8 @@
       <div class="row" style="margin-top:8px"><button class="btn primary" id="annb">Trimite</button><span class="muted" id="anns"></span></div>
     </div>
     <div class="card" style="margin-top:14px"><h3>Banuri pe tot serverul</h3><table id="bant"></table></div>
+    <div class="card" style="margin-top:14px"><h3>Backup</h3><div id="bak" class="muted"></div></div>
+    <div class="card" style="margin-top:14px"><h3>Lei dați de proprietar</h3><table id="leit"></table></div>
   </section>
   <section id="logs" class="hide"><pre id="logp"></pre></section>
 </main>
@@ -153,6 +155,7 @@ async function dash() {
     kpi(o.users, "oameni · " + o.active7d + " activi în 7 zile"), kpi(o.messages, "mesaje păstrate"),
     kpi(fmtDur(o.uptime), "pornit de"), kpi(fmtBytes(o.disk), "pe disc"), kpi((n.cpu ?? 0).toFixed(1) + "%", "CPU"), kpi((n.rssMB ?? 0).toFixed(0) + " MB", "RAM"),
     kpi(lic.lic || "—", "licența" + (lic.exp ? " până la " + new Date(lic.exp).toLocaleDateString() : "")),
+    kpi(o.backup && o.backup.last ? "acum " + ago(o.backup.last) : "niciunul", "ultimul backup" + (o.backup && o.backup.error ? " · eroare" : "")),
   ].join("");
   const box = $("charts");
   if (!box.children.length) box.innerHTML = CHARTS.map((c) => `<div class="card"><h3><em style="font-style:normal">${esc(c.t)}${c.s.length > 1 ? c.s.map(([, n], i) => `<i class="dot" style="background:${css(c.c[i])}"></i>${esc(n)}`).join("") : ""}</em> <span id="${c.id}-v"></span></h3><svg id="${c.id}" viewBox="0 0 400 150" preserveAspectRatio="none"></svg></div>`).join("");
@@ -180,6 +183,12 @@ async function people() {
 }
 
 async function tools() {
+  const [b, lei] = await Promise.all([api("backup"), api("lei")]);
+  $("bak").innerHTML = (b.last ? `Ultimul: <b>${esc(new Date(b.last).toLocaleString())}</b> (${fmtBytes(b.size)}) · ${b.count} păstrate în ${esc(b.dir)}` : "Niciun backup încă.") +
+    (b.next ? `<br>Următorul: ${esc(new Date(b.next).toLocaleString())}` : "<br>Backup-ul automat e oprit (SV_BACKUP_HOUR=-1).") +
+    (b.error ? `<br><span style="color:var(--red)">${esc(b.error)}</span>` : "");
+  $("leit").innerHTML = "<tr><th>Când</th><th>Cine</th><th>Cui</th><th>Lei</th><th>Motiv</th><th>Sold</th></tr>" +
+    (lei.map((g) => `<tr><td>${esc(new Date(g.at).toLocaleString())}</td><td>${esc(g.byName || g.by)}</td><td>${esc(g.toName || g.to)}</td><td>${g.amount > 0 ? "+" : ""}${g.amount}</td><td>${esc(g.reason)}</td><td>${g.balance}</td></tr>`).join("") || '<tr><td colspan="6" class="muted">Nimic încă.</td></tr>');
   const l = await api("bans");
   $("bant").innerHTML = "<tr><th>Nume</th><th>Până la</th><th>Motiv</th><th></th></tr>" +
     (l.map((b) => `<tr><td>${esc(b.name || b.uid)}</td><td>${b.until ? new Date(b.until).toLocaleString() : "definitiv"}</td><td>${esc(b.why)}</td><td><button class="btn" data-unban="${esc(b.uid)}">Scoate</button></td></tr>`).join("") || '<tr><td colspan="4" class="muted">Niciun ban.</td></tr>');

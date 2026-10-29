@@ -5,6 +5,8 @@
 //
 //	spectrevoice-server                     run
 //	spectrevoice-server role <uid> <role>   name an owner, admin or mod ("" to take it back), then exit
+//	spectrevoice-server backup [dir]        a backup now (backup.go), into dir or SV_BACKUP_DIR
+//	spectrevoice-server restore <file>      put a backup back (the server must be stopped)
 //	spectrevoice-server version
 package main
 
@@ -90,6 +92,14 @@ type config struct {
 	tvIdle      int    // seconds the TV plays with nobody watching
 	noSounds    bool   // SV_SOUNDBOARD=false: no server soundboard (soundboard.go)
 	soundsMax   int    // the server's sounds at most (SV_SOUNDS_MAX)
+	tempEmpty   int    // seconds a temporary channel stays empty before it goes (tempch.go)
+	tempPerUser int    // temporary channels one person has at once
+	tempMax     int    // temporary channels on the server at once
+	eventLead   int    // minutes before an event starts that people are told (events.go)
+	backupDir   string // where the daily backups go (backup.go); "" : <data>/backups
+	backupKeep  int    // daily backups kept
+	backupHour  int    // the hour (server's local time) of the daily backup; -1: none
+	leiMax      int    // the most Lei one grant may add or take (lei.go)
 }
 
 type server struct {
@@ -197,6 +207,14 @@ func main() {
 	flag.IntVar(&cfg.tvIdle, "tv-idle", envInt("SV_TV_IDLE", 90), "seconds the TV keeps playing with nobody watching [SV_TV_IDLE]")
 	sounds := flag.Bool("soundboard", envBool("SV_SOUNDBOARD", true), "the server's soundboard: short sounds uploaded by admins, played into voice channels (needs ffmpeg to upload) [SV_SOUNDBOARD]")
 	flag.IntVar(&cfg.soundsMax, "sounds-max", envInt("SV_SOUNDS_MAX", sbDefaultMax), "the server's sounds at most [SV_SOUNDS_MAX]")
+	flag.IntVar(&cfg.tempEmpty, "temp-empty", envInt("SV_TEMP_EMPTY", 60), "seconds a temporary channel stays empty before it is deleted [SV_TEMP_EMPTY]")
+	flag.IntVar(&cfg.tempPerUser, "temp-per-user", envInt("SV_TEMP_PER_USER", 1), "temporary channels one person may have at once [SV_TEMP_PER_USER]")
+	flag.IntVar(&cfg.tempMax, "temp-max", envInt("SV_TEMP_MAX", 20), "temporary channels on the server at once [SV_TEMP_MAX]")
+	flag.IntVar(&cfg.eventLead, "event-lead", envInt("SV_EVENT_LEAD", 15), "minutes before a scheduled event that people are told (0: only at the start) [SV_EVENT_LEAD]")
+	flag.StringVar(&cfg.backupDir, "backup-dir", env("SV_BACKUP_DIR", ""), "folder for the daily backups (default: <data>/backups) [SV_BACKUP_DIR]")
+	flag.IntVar(&cfg.backupKeep, "backup-keep", envInt("SV_BACKUP_KEEP", 14), "daily backups kept [SV_BACKUP_KEEP]")
+	flag.IntVar(&cfg.backupHour, "backup-hour", envInt("SV_BACKUP_HOUR", 3), "hour of the day (0-23, server time) of the automatic backup; -1: none [SV_BACKUP_HOUR]")
+	flag.IntVar(&cfg.leiMax, "lei-max", envInt("SV_LEI_MAX", 100000), "the most Lei one grant by the owner may add or take [SV_LEI_MAX]")
 	tvLoop := flag.Bool("tv-test-loopback", false, "tests only: the TV may open 127.0.0.1 (never on a real server: the server's own ports are there)")
 	flag.StringVar(&cfg.inviteBase, "invite-base", env("SV_INVITE_BASE", ""), "invite links' start, e.g. https://sfu.example.com/i/ (default: this server's address) [SV_INVITE_BASE]")
 	flag.Parse()
@@ -222,10 +240,36 @@ func main() {
 		st.close()
 		fmt.Printf("%s: %q (applies when they next connect)\n", flag.Arg(1), flag.Arg(2))
 		return
+	case "backup":
+		if flag.NArg() > 2 {
+			log.Fatal("usage: spectrevoice-server backup [dir]")
+		}
+		if cfg.backupDir == "" {
+			cfg.backupDir = filepath.Join(cfg.data, "backups")
+		}
+		if err := backupCLI(cfg, flag.Arg(1)); err != nil {
+			log.Fatalf("backup: %v", err)
+		}
+		return
+	case "restore":
+		if flag.NArg() != 2 {
+			log.Fatal("usage: spectrevoice-server restore <file> (with the server stopped)")
+		}
+		aside, err := restoreBackup(cfg.data, cfg.backupDir, flag.Arg(1))
+		if err != nil {
+			log.Fatalf("restore: %v", err)
+		}
+		fmt.Printf("restored %s into %s\nwhat was there before: %s (delete it once all is well)\n", flag.Arg(1), cfg.data, aside)
+		return
 	case "":
 	default:
 		log.Fatalf("unknown command %q", flag.Arg(0))
 	}
+	unlock, err := lockData(cfg.data)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer unlock()
 
 	runPlusIfPresent(cfg)
 	s, err := newServer(cfg)
@@ -239,6 +283,8 @@ func main() {
 	log.Printf("Spectre Voice Server %s on %s (%s%s), data in %s", version, cfg.listen, udp,
 		map[bool]string{true: ", announced as " + cfg.publicIP, false: ""}[cfg.publicIP != ""], cfg.data)
 	go s.watchdog(cfg.listen)
+	go s.eventLoop()
+	go s.backupLoop()
 	// Idle keep-alive connections close; uploads set their own longer deadline (files.go, chfiles.go)
 	srv := &http.Server{Addr: cfg.listen, Handler: s.handler(), ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second}
 	log.Fatal(srv.ListenAndServe())
@@ -247,6 +293,24 @@ func main() {
 func newServer(cfg config) (*server, error) {
 	if err := os.MkdirAll(cfg.data, 0o750); err != nil {
 		return nil, err
+	}
+	if cfg.tempEmpty <= 0 {
+		cfg.tempEmpty = 60
+	}
+	if cfg.tempPerUser <= 0 {
+		cfg.tempPerUser = 1
+	}
+	if cfg.tempMax <= 0 {
+		cfg.tempMax = 20
+	}
+	if cfg.leiMax <= 0 {
+		cfg.leiMax = 100000
+	}
+	if cfg.backupKeep <= 0 {
+		cfg.backupKeep = 14
+	}
+	if cfg.backupDir == "" {
+		cfg.backupDir = filepath.Join(cfg.data, "backups")
 	}
 	s := &server{cfg: cfg, rooms: map[string]*room{}, p2p: newP2P(), admin: newAdminAuth(), logs: newLogRing(500)}
 	log.SetOutput(io.MultiWriter(os.Stderr, s.logs))
@@ -271,6 +335,14 @@ func newServer(cfg config) (*server, error) {
 	}
 	if err := s.store.migrateBots(); err != nil {
 		return nil, fmt.Errorf("bots: %w", err)
+	}
+	s.store.dropTempLeftovers()
+	s.store.migrateNewPerms()
+	if err := s.store.migrateEvents(); err != nil {
+		return nil, fmt.Errorf("events: %w", err)
+	}
+	if err := s.store.migrateLei(); err != nil {
+		return nil, fmt.Errorf("lei: %w", err)
 	}
 	// A server older than text channels gets one "general" per community, once
 	if !s.store.hasColumnValue("channels", "kind", "text") {

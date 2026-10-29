@@ -170,6 +170,10 @@ func (s *server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		out = list
 	case "logs":
 		out = s.logs.last()
+	case "backup":
+		out = s.backupStatus()
+	case "lei":
+		out = s.store.leiLog(200)
 	case "kick", "announce", "unban":
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST", http.StatusMethodNotAllowed)
@@ -215,7 +219,7 @@ func (s *server) adminOverview() map[string]any {
 	return map[string]any{
 		"name": s.serverName(), "version": version, "uptime": int64(time.Since(started).Seconds()), "license": s.lic.statusMsg(),
 		"now": now, "users": users, "active7d": active7, "messages": msgs,
-		"disk": dirSize(s.cfg.data), "maxUsers": s.maxUsers(), "music": s.music.enabled(),
+		"disk": dirSize(s.cfg.data), "maxUsers": s.maxUsers(), "music": s.music.enabled(), "backup": s.backupStatus(),
 	}
 }
 

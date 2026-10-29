@@ -326,6 +326,8 @@ func (s *server) pushData(d map[string]string) map[string]string {
 	if !s.cfg.pushContent {
 		if d["kind"] == "dm" {
 			out = map[string]string{"kind": "dm"} // not even who wrote (conv names them): the app asks its server
+		} else if d["kind"] == "event" {
+			out = map[string]string{"kind": "event", "ev": d["ev"], "when": d["when"]} // not the title
 		} else {
 			out = map[string]string{"kind": d["kind"], "conv": d["conv"], "comm": d["comm"]}
 		}

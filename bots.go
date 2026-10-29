@@ -31,7 +31,7 @@ var (
 
 // botNever: what a bot is never given, whoever registers it: the permissions that change who may what, and the
 // administrator bit (it expands to everything).
-const botNever = pAdministrator | pManageCommunity | pManageRoles
+const botNever = pAdministrator | pManageCommunity | pManageRoles | pGiveLei
 
 // botRank: where a bot stands for kicks and moves: above people with no role, below every role.
 const botRank = 1

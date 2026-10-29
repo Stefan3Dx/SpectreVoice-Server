@@ -44,7 +44,10 @@ const (
 	pTV               perm = 1 << 18 // the server's TV: its playlist, who may change the channel, the channel (tv.go)
 	pSoundboard       perm = 1 << 19 // play the server's sounds into one's voice channel (soundboard.go)
 	pSoundboardManage perm = 1 << 20 // upload, rename and remove the server's sounds
-	pAll              perm = 1<<21 - 1
+	pTempChannel      perm = 1 << 21 // make a temporary voice channel (tempch.go)
+	pEvents           perm = 1 << 22 // make, edit and cancel the server's scheduled events (events.go)
+	pGiveLei          perm = 1 << 23 // add or take Lei on anyone's purse (lei.go); only the owner gives it, administrator doesn't imply it
+	pAll              perm = 1<<24 - 1
 )
 
 // The permissions apps may show, by name (role-save takes and gives these).
@@ -55,6 +58,7 @@ var permNames = map[string]perm{
 	"bypass_locks": pBypassLocks, "mention_all": pMentionAll, "speak": pSpeak,
 	"mute_voice": pMuteVoice, "files": pFiles, "music": pMusic, "tv": pTV,
 	"soundboard": pSoundboard, "soundboard_manage": pSoundboardManage,
+	"temp_channel": pTempChannel, "events": pEvents, "give_lei": pGiveLei,
 }
 
 func permList(p perm) []string {
@@ -84,8 +88,8 @@ func permOf(v any) perm {
 }
 
 const (
-	everyonePerms = pInvite | pStream | pSpeak | pSoundboard
-	modPerms      = pMove | pKick | pMuteChat | pChannelBan | pDeleteMessages | pMuteVoice | pFiles | pMusic | everyonePerms
+	everyonePerms = pInvite | pStream | pSpeak | pSoundboard | pTempChannel
+	modPerms      = pMove | pKick | pMuteChat | pChannelBan | pDeleteMessages | pMuteVoice | pFiles | pMusic | pEvents | everyonePerms
 	adminPerms    = pAdministrator | modPerms | pManageChannels | pManageRoles | pManageCommunity | pBan | pTV | pSoundboardManage
 )
 
@@ -186,6 +190,17 @@ func (st *store) migrateOneSpace() {
 			log.Printf("one space per server: community %d %q (%d channels, %d members) is kept in the database, hidden", id, name, chans, members)
 		}
 	}
+}
+
+// migrateNewPerms: roles from before temp_channel and events get them once: @everyone makes temporary channels,
+// moderators and those who managed the server make events (the settings table is there by now).
+func (st *store) migrateNewPerms() {
+	if _, ok := st.setting("perm_temp_events"); ok {
+		return
+	}
+	_, _ = st.db.Exec(`UPDATE roles SET perms = perms | ? WHERE everyone=1`, int64(pTempChannel))
+	_, _ = st.db.Exec(`UPDATE roles SET perms = perms | ? WHERE everyone=0 AND perms & ? != 0`, int64(pEvents), int64(pMuteChat|pManageCommunity|pAdministrator))
+	_ = st.setSetting("perm_temp_events", "1")
 }
 
 func (st *store) hasColumn(table, col string) bool {
@@ -389,21 +404,34 @@ func (h *hub) forget(comm int64) { delete(h.acc, comm) }
 // staff: the server's own owners and admins.
 func (h *hub) staff(uid string) bool { return h.s.store.role(uid).atLeast(roleAdmin) }
 
+// isOwner: the server's owner (users.role owner, SV_OWNERS, or the space's owner who claimed it); h.mu held.
+func (h *hub) isOwner(comm int64, uid string) bool {
+	if h.s.store.role(uid) == roleOwner {
+		return true
+	}
+	a := h.access(comm)
+	return a.comm.Owner != "" && a.comm.Owner == uid
+}
+
+// ownerOnly: what being an administrator (or the server's admin) doesn't give by itself: only the owner, or a role
+// the owner gave, holds these.
+const ownerOnly = pGiveLei
+
 // permsOf: uid's permissions in comm; h.mu held.
 func (h *hub) permsOf(comm int64, uid string) perm {
 	a := h.access(comm)
 	if p, ok := a.bots[uid]; ok {
 		return p // exactly what its manager gave it, roles or not
 	}
-	if h.staff(uid) || (a.comm.Owner != "" && a.comm.Owner == uid) {
+	if h.isOwner(comm, uid) {
 		return pAll
 	}
 	p := a.every.p
 	for _, id := range a.member[uid] {
 		p |= a.roles[id].p
 	}
-	if p&pAdministrator != 0 {
-		return pAll
+	if h.staff(uid) || p&pAdministrator != 0 {
+		return pAll&^ownerOnly | p&ownerOnly
 	}
 	return p
 }
@@ -435,7 +463,7 @@ func (h *hub) legacyRole(comm int64, uid string) role {
 	switch p := h.permsOf(comm, uid); {
 	case h.staff(uid) && h.s.store.role(uid) == roleOwner, a.comm.Owner != "" && a.comm.Owner == uid:
 		return roleOwner
-	case p&pAdministrator != 0 || p == pAll:
+	case p&pAdministrator != 0 || p|ownerOnly == pAll:
 		return roleAdmin
 	case p&(pMove|pKick|pMuteChat|pChannelBan|pDeleteMessages) != 0:
 		return roleMod

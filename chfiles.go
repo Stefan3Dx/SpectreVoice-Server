@@ -65,7 +65,7 @@ func (cf *channelFiles) readable(uid string, ch int64) (int64, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	c := h.chans[ch]
-	if c == nil {
+	if c == nil || c.Temp { // a temporary channel keeps nothing
 		return 0, false
 	}
 	for _, o := range h.sessions {

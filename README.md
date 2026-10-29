@@ -30,7 +30,7 @@ them in without the password*); who came in that way comes back without it, unti
 Without questions: `sudo bash install.sh --yes` (LAN) or
 `sudo bash install.sh --domain voice.example.com --email you@example.com --yes` (public); `--password PASS` sets the
 server password.
-Update: `sudo bash install.sh --update`.
+Update: `sudo bash install.sh --update`. Restore a backup: `sudo bash install.sh --restore <file>` (see Backups).
 
 ### Ports
 
@@ -127,6 +127,43 @@ files and settings are here and nowhere else. What leaves it, and only when you 
 
 `/etc/spectrevoice/server.env` (see [deploy/server.env.example](deploy/server.env.example)), then
 `systemctl restart spectrevoice`.
+
+## Backups
+
+The server backs itself up every day at `SV_BACKUP_HOUR` (3 AM, server time; `-1` turns it off) into
+`SV_BACKUP_DIR` (`/var/lib/spectrevoice/backups`) and keeps the newest `SV_BACKUP_KEEP` (14). Each backup is one
+`spectrevoice-backup-YYYYMMDD-HHMMSS.tar.gz`: a consistent copy of the database (SQLite `VACUUM INTO`, taken while
+the server runs), every file of the data folder (shared files, channel files, Lei and profiles, the TV playlist, the
+server's keys) and `server.env`. It holds the server's secrets: the file is `0600` in a `0700` folder, readable only
+by the `spectrevoice` user; copy it somewhere safe the same way. The update cache and the downloaded Plus program are
+left out. The admin panel shows the last backup (*Tools › Backup*). A folder outside `/var/lib/spectrevoice` needs
+`ReadWritePaths=` for the service (install.sh adds it).
+
+```sh
+sudo -u spectrevoice spectrevoice-server backup [folder]       # one now (the server may be running)
+sudo bash install.sh --restore /var/lib/spectrevoice/backups/spectrevoice-backup-20261029-030000.tar.gz
+```
+
+`--restore` stops the server, checks the archive (its database's checksum and `PRAGMA integrity_check`), moves what
+the data folder held to `before-restore-<time>/` inside it, puts the backup in its place (and `server.env`, the old
+one kept as `server.env.before-restore`), then starts the server. `spectrevoice-server restore <file>` does the same
+for the data folder alone and refuses while the server runs.
+
+## Temporary channels and events
+
+Anyone with *Temporary channels* (on @everyone) makes a voice channel for themselves (a name, optionally a password
+and a limit), lands in it and runs it; it's deleted once empty for `SV_TEMP_EMPTY` seconds (60). One per person
+(`SV_TEMP_PER_USER`), `SV_TEMP_MAX` (20) on the server; they're never saved, so a restart has none.
+
+Those with *Events* (moderators and admins) put events on the server's calendar: everyone sees them, says
+interested or going, and is told `SV_EVENT_LEAD` (15) minutes before and at the start: in the app, or by push where
+the person turned push on. Anyone can mute these notices.
+
+## Lei from the owner
+
+The server's owner, and whoever the owner gives *Give Lei* (an administrator doesn't have it by itself), adds or
+takes Lei on anyone's purse from the app, with a reason, at most `SV_LEI_MAX` (100000) at a time. The person is told;
+every grant is kept (who, to whom, how much, why) and shown in the admin panel.
 
 ## Free, with donations
 

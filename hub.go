@@ -217,10 +217,12 @@ type hub struct {
 	live     map[string]liveStream
 	acc      map[int64]*commAccess
 	gate     ipGate
+	tempNext int64                  // the last temporary channel's id (tempch.go)
+	tempMade map[string][]time.Time // when each person made their last temporary channels (rate)
 }
 
 func newHub(s *server) (*hub, error) {
-	h := &hub{s: s, sessions: map[int]*session{}, chans: map[int64]*channel{}, live: map[string]liveStream{}, acc: map[int64]*commAccess{}}
+	h := &hub{s: s, sessions: map[int]*session{}, chans: map[int64]*channel{}, live: map[string]liveStream{}, acc: map[int64]*commAccess{}, tempMade: map[string][]time.Time{}}
 	cs, err := s.store.channels()
 	if err != nil {
 		return nil, err
@@ -231,6 +233,7 @@ func newHub(s *server) (*hub, error) {
 			h.chans[c.ID] = c
 		}
 	}
+	go h.tempLoop(tempTick)
 	return h, nil
 }
 
@@ -261,7 +264,7 @@ func (h *hub) memberChanged(ss *session) {
 func (h *hub) defaultChannel(comm int64) int64 {
 	var first int64
 	for _, c := range h.sortedChannels(comm) {
-		if c.Kind != "" { // text and spacers: nobody lands in them
+		if c.Kind != "" || c.Temp { // text and spacers: nobody lands in them; temporary ones aren't the server's
 			continue
 		}
 		if c.Default {
@@ -654,7 +657,7 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 		h.soundboardOp(ss, m)
 	default:
 		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
-			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {
+			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.tempOp(ss, t, m) && !h.s.eventOp(ss, t, m) && !h.s.leiOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {
 			ss.refuse(t, "bad", "unknown message")
 		}
 	}
@@ -666,7 +669,7 @@ func (h *hub) join(ss *session, ch int64, pass string) {
 	// everyone up. A few tries a minute per session.
 	h.mu.Lock()
 	var hash string
-	if c := h.chans[ch]; c != nil && c.pass != "" && !h.may(ss, pBypassLocks) {
+	if c := h.chans[ch]; c != nil && c.pass != "" && !h.may(ss, pBypassLocks) && !h.tempAdmin(ss, c) {
 		hash = c.pass
 	}
 	h.mu.Unlock()
@@ -694,12 +697,12 @@ func (h *hub) join(ss *session, ch int64, pass string) {
 		h.mu.Unlock()
 		ss.refuse("join", "bad", "not a voice channel")
 		return
-	case !h.may(ss, pBypassLocks) && c.pass != "" && c.pass != hash:
+	case !h.may(ss, pBypassLocks) && !h.tempAdmin(ss, c) && c.pass != "" && c.pass != hash:
 		// The password changed meanwhile (or was just set): ask again
 		h.mu.Unlock()
 		ss.refuse("join", "password", "wrong channel password")
 		return
-	case !h.may(ss, pBypassLocks) && c.MaxUsers > 0 && h.countIn(ch) >= c.MaxUsers:
+	case !h.may(ss, pBypassLocks) && !h.tempAdmin(ss, c) && c.MaxUsers > 0 && h.countIn(ch) >= c.MaxUsers:
 		h.mu.Unlock()
 		ss.refuse("join", "full", "the channel is full")
 		return
@@ -1020,6 +1023,11 @@ func (h *hub) saveChannel(ss *session, m map[string]any) {
 			ss.refuse("ch-save", "gone", "no such channel")
 			return
 		}
+		if old.Temp {
+			h.mu.Unlock()
+			ss.refuse("ch-save", "bad", "a temporary channel is changed with temp-edit")
+			return
+		}
 		c = *old
 	} else {
 		c.Comm = ss.comm
@@ -1053,12 +1061,12 @@ func (h *hub) saveChannel(ss *session, m map[string]any) {
 	if v, ok := boolOf(m, "moderated"); ok {
 		c.Moderated = v
 	}
-	if c.Parent != 0 && (h.chans[c.Parent] == nil || h.chans[c.Parent].Comm != c.Comm || c.Parent == c.ID || (c.ID != 0 && h.isUnder(c.Parent, c.ID))) {
+	if c.Parent != 0 && (h.chans[c.Parent] == nil || h.chans[c.Parent].Comm != c.Comm || h.chans[c.Parent].Temp || c.Parent == c.ID || (c.ID != 0 && h.isUnder(c.Parent, c.ID))) {
 		h.mu.Unlock()
 		ss.refuse("ch-save", "bad", "bad parent")
 		return
 	}
-	if id == 0 && len(h.sortedChannels(c.Comm)) >= 500 {
+	if id == 0 && h.savedChannels(c.Comm) >= 500 {
 		h.mu.Unlock()
 		ss.refuse("ch-save", "full", "too many channels")
 		return
@@ -1110,6 +1118,17 @@ func (h *hub) saveChannel(ss *session, m map[string]any) {
 	}
 }
 
+// savedChannels: comm's channels in the table (temporary ones aren't); h.mu held.
+func (h *hub) savedChannels(comm int64) int {
+	n := 0
+	for _, c := range h.chans {
+		if c.Comm == comm && !c.Temp {
+			n++
+		}
+	}
+	return n
+}
+
 // isUnder: is ch somewhere below anc; h.mu held.
 func (h *hub) isUnder(ch, anc int64) bool {
 	for i := 0; i < 64 && ch != 0; i++ {
@@ -1130,6 +1149,11 @@ func (h *hub) deleteChannel(ss *session, id int64) {
 	c := h.chans[id]
 	if c == nil || c.Comm != ss.comm {
 		h.mu.Unlock()
+		return
+	}
+	if c.Temp {
+		h.mu.Unlock()
+		h.tempOp(ss, "temp-del", map[string]any{"id": float64(id)})
 		return
 	}
 	if !h.may(ss, pManageChannels) {

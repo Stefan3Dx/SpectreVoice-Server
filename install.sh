@@ -8,6 +8,7 @@
 #   sudo bash install.sh --update        newest version, settings kept
 #   sudo bash install.sh --domain voice.example.com --email you@example.com --yes   public, HTTPS + TURN
 #   sudo bash install.sh --source        build from this folder's source instead of downloading
+#   sudo bash install.sh --restore FILE  put a backup back (stops the server, checks, restores, starts it)
 #
 # Options: --lang en|ro|es|de|pl|fr|it|pt|hu|tr  --name NAME  --password PASS  --domain NAME  --email ADDR  --contact ADDR
 #          --public-ip IP|DDNS  --port N  --no-music  --no-turn  --no-firewall  --no-auto-update
@@ -21,7 +22,7 @@ ETC=/etc/spectrevoice
 DATA=/var/lib/spectrevoice
 ENVF=$ETC/server.env
 
-YES=0 UPDATE=0 SOURCE=0 MUSIC=1 TURN=1 FIREWALL=1 AUTOUPD=1
+YES=0 UPDATE=0 SOURCE=0 MUSIC=1 TURN=1 FIREWALL=1 AUTOUPD=1 RESTORE=""
 NAME="" DOMAIN="" EMAIL="" CONTACT="" PUBLIC="" UDP="" PORT="" LANGSEL="" MODE="" SVPASS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,7 +42,8 @@ while [[ $# -gt 0 ]]; do
     --public-ip) PUBLIC="$2"; shift ;;
     --port) PORT="$2"; shift ;;
     --udp) UDP="$2"; shift ;;
-    -h|--help) sed -n '3,15p' "$0"; exit 0 ;;
+    --restore) RESTORE="$2"; shift ;;
+    -h|--help) sed -n '3,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1"; exit 1 ;;
   esac
   shift
@@ -90,6 +92,14 @@ declare -A L_en=(
   [nothing]="Nothing installed yet: installing with the defaults"
   [root]="Run as root: sudo bash install.sh"
   [enter]="Enter keeps the value in brackets."
+  [r_bak]="Backups"
+  [rs_stop]="Stopping the server"
+  [rs_check]="Checking and restoring %s"
+  [rs_env]="Settings restored (the previous ones kept as %s)"
+  [rs_done]="Restored; the server is starting. What the data folder held before: %s"
+  [rs_fail]="The restore failed (see above); the server is started again as it was."
+  [rs_nofile]="No such file: %s"
+  [rs_nobin]="The server isn't installed here yet: install it first, then restore."
 )
 declare -A L_ro=(
   [q_auto]="Actualizări automate ale serverului (zilnic, pe la 4 dimineața)" [autodone]="Actualizări automate: pornite"
@@ -131,6 +141,14 @@ declare -A L_ro=(
   [nothing]="Nimic instalat încă: instalez cu valorile implicite"
   [root]="Rulează ca root: sudo bash install.sh"
   [enter]="Enter păstrează valoarea din paranteze."
+  [r_bak]="Backup-uri"
+  [rs_stop]="Opresc serverul"
+  [rs_check]="Verific și restaurez %s"
+  [rs_env]="Setările au fost restaurate (cele de dinainte păstrate ca %s)"
+  [rs_done]="Restaurat; serverul pornește. Ce era înainte în folderul de date: %s"
+  [rs_fail]="Restaurarea a eșuat (vezi mai sus); serverul pornește din nou cum era."
+  [rs_nofile]="Nu există fișierul: %s"
+  [rs_nobin]="Serverul nu e încă instalat aici: instalează-l întâi, apoi restaurează."
 )
 declare -A L_es=(
   [q_auto]="Actualizaciones automáticas del servidor (a diario, hacia las 4 de la mañana)" [autodone]="Actualizaciones automáticas: activadas"
@@ -172,6 +190,14 @@ declare -A L_es=(
   [nothing]="Nada instalado aún: instalando con los valores por defecto"
   [root]="Ejecuta como root: sudo bash install.sh"
   [enter]="Enter mantiene el valor entre corchetes."
+  [r_bak]="Copias de seguridad"
+  [rs_stop]="Deteniendo el servidor"
+  [rs_check]="Comprobando y restaurando %s"
+  [rs_env]="Ajustes restaurados (los anteriores guardados como %s)"
+  [rs_done]="Restaurado; el servidor se inicia. Lo que había antes en la carpeta de datos: %s"
+  [rs_fail]="La restauración falló (ver arriba); el servidor se inicia de nuevo como estaba."
+  [rs_nofile]="No existe el archivo: %s"
+  [rs_nobin]="El servidor aún no está instalado aquí: instálalo primero y luego restaura."
 )
 declare -A L_de=(
   [q_auto]="Automatische Server-Updates (täglich, gegen 4 Uhr morgens)" [autodone]="Automatische Updates: an"
@@ -213,6 +239,14 @@ declare -A L_de=(
   [nothing]="Noch nichts installiert: Installation mit Standardwerten"
   [root]="Als root ausführen: sudo bash install.sh"
   [enter]="Enter behält den Wert in Klammern."
+  [r_bak]="Backups"
+  [rs_stop]="Server wird gestoppt"
+  [rs_check]="%s wird geprüft und wiederhergestellt"
+  [rs_env]="Einstellungen wiederhergestellt (die vorherigen als %s behalten)"
+  [rs_done]="Wiederhergestellt; der Server startet. Was vorher im Datenordner war: %s"
+  [rs_fail]="Die Wiederherstellung ist fehlgeschlagen (siehe oben); der Server startet wieder wie zuvor."
+  [rs_nofile]="Datei nicht gefunden: %s"
+  [rs_nobin]="Der Server ist hier noch nicht installiert: zuerst installieren, dann wiederherstellen."
 )
 declare -A L_pl=(
   [q_auto]="Automatyczne aktualizacje serwera (codziennie, około 4 rano)" [autodone]="Automatyczne aktualizacje: włączone"
@@ -254,6 +288,14 @@ declare -A L_pl=(
   [nothing]="Nic jeszcze nie zainstalowano: instalacja z ustawieniami domyślnymi"
   [root]="Uruchom jako root: sudo bash install.sh"
   [enter]="Enter zostawia wartość w nawiasach."
+  [r_bak]="Kopie zapasowe"
+  [rs_stop]="Zatrzymuję serwer"
+  [rs_check]="Sprawdzam i przywracam %s"
+  [rs_env]="Ustawienia przywrócone (poprzednie zachowane jako %s)"
+  [rs_done]="Przywrócono; serwer się uruchamia. Poprzednia zawartość folderu danych: %s"
+  [rs_fail]="Przywracanie nie powiodło się (patrz wyżej); serwer uruchamia się ponownie jak wcześniej."
+  [rs_nofile]="Nie ma takiego pliku: %s"
+  [rs_nobin]="Serwer nie jest tu jeszcze zainstalowany: najpierw go zainstaluj, potem przywróć."
 )
 declare -A L_fr=(
   [q_auto]="Mises à jour automatiques du serveur (chaque jour, vers 4 h du matin)" [autodone]="Mises à jour automatiques : activées"
@@ -295,6 +337,14 @@ declare -A L_fr=(
   [nothing]="Rien d'installé encore : installation avec les valeurs par défaut"
   [root]="Lance-le en root : sudo bash install.sh"
   [enter]="Entrée garde la valeur entre crochets."
+  [r_bak]="Sauvegardes"
+  [rs_stop]="Arrêt du serveur"
+  [rs_check]="Vérification et restauration de %s"
+  [rs_env]="Réglages restaurés (les précédents gardés sous %s)"
+  [rs_done]="Restauré ; le serveur démarre. Ce que contenait le dossier de données avant : %s"
+  [rs_fail]="La restauration a échoué (voir ci-dessus) ; le serveur redémarre tel qu'il était."
+  [rs_nofile]="Fichier introuvable : %s"
+  [rs_nobin]="Le serveur n'est pas encore installé ici : installez-le d'abord, puis restaurez."
 )
 declare -A L_it=(
   [q_auto]="Aggiornamenti automatici del server (ogni giorno, verso le 4 del mattino)" [autodone]="Aggiornamenti automatici: attivi"
@@ -336,6 +386,14 @@ declare -A L_it=(
   [nothing]="Ancora nulla installato: installo con i valori predefiniti"
   [root]="Esegui come root: sudo bash install.sh"
   [enter]="Invio mantiene il valore tra parentesi."
+  [r_bak]="Backup"
+  [rs_stop]="Arresto il server"
+  [rs_check]="Controllo e ripristino %s"
+  [rs_env]="Impostazioni ripristinate (le precedenti tenute come %s)"
+  [rs_done]="Ripristinato; il server si avvia. Il contenuto precedente della cartella dati: %s"
+  [rs_fail]="Il ripristino non è riuscito (vedi sopra); il server riparte com'era."
+  [rs_nofile]="File inesistente: %s"
+  [rs_nobin]="Il server non è ancora installato qui: installalo prima, poi ripristina."
 )
 declare -A L_pt=(
   [q_auto]="Atualizações automáticas do servidor (diariamente, por volta das 4 da manhã)" [autodone]="Atualizações automáticas: ativadas"
@@ -377,6 +435,14 @@ declare -A L_pt=(
   [nothing]="Nada instalado ainda: a instalar com os valores por omissão"
   [root]="Executa como root: sudo bash install.sh"
   [enter]="Enter mantém o valor entre parênteses."
+  [r_bak]="Cópias de segurança"
+  [rs_stop]="A parar o servidor"
+  [rs_check]="A verificar e restaurar %s"
+  [rs_env]="Definições restauradas (as anteriores guardadas como %s)"
+  [rs_done]="Restaurado; o servidor está a arrancar. O que havia antes na pasta de dados: %s"
+  [rs_fail]="O restauro falhou (ver acima); o servidor arranca de novo como estava."
+  [rs_nofile]="Ficheiro inexistente: %s"
+  [rs_nobin]="O servidor ainda não está instalado aqui: instale-o primeiro e depois restaure."
 )
 declare -A L_hu=(
   [q_auto]="Automatikus szerverfrissítések (naponta, hajnali 4 körül)" [autodone]="Automatikus frissítések: bekapcsolva"
@@ -418,6 +484,14 @@ declare -A L_hu=(
   [nothing]="Még nincs semmi telepítve: telepítés alapértékekkel"
   [root]="Futtasd rootként: sudo bash install.sh"
   [enter]="Az Enter megtartja a zárójeles értéket."
+  [r_bak]="Biztonsági mentések"
+  [rs_stop]="A szerver leállítása"
+  [rs_check]="%s ellenőrzése és visszaállítása"
+  [rs_env]="Beállítások visszaállítva (a korábbiak: %s)"
+  [rs_done]="Visszaállítva; a szerver indul. Ami előtte az adatmappában volt: %s"
+  [rs_fail]="A visszaállítás nem sikerült (lásd fent); a szerver úgy indul újra, ahogy volt."
+  [rs_nofile]="Nincs ilyen fájl: %s"
+  [rs_nobin]="A szerver még nincs telepítve itt: előbb telepítsd, aztán állítsd vissza."
 )
 declare -A L_tr=(
   [q_auto]="Otomatik sunucu güncellemeleri (her gün, sabah 4 civarı)" [autodone]="Otomatik güncellemeler: açık"
@@ -459,6 +533,14 @@ declare -A L_tr=(
   [nothing]="Henüz bir şey kurulu değil: varsayılanlarla kuruluyor"
   [root]="root olarak çalıştır: sudo bash install.sh"
   [enter]="Enter köşeli parantezdeki değeri korur."
+  [r_bak]="Yedekler"
+  [rs_stop]="Sunucu durduruluyor"
+  [rs_check]="%s denetleniyor ve geri yükleniyor"
+  [rs_env]="Ayarlar geri yüklendi (öncekiler %s olarak saklandı)"
+  [rs_done]="Geri yüklendi; sunucu başlıyor. Veri klasöründe önceden olanlar: %s"
+  [rs_fail]="Geri yükleme başarısız (yukarıya bak); sunucu eskisi gibi yeniden başlatılıyor."
+  [rs_nofile]="Böyle bir dosya yok: %s"
+  [rs_nobin]="Sunucu burada henüz kurulu değil: önce kur, sonra geri yükle."
 )
 LANGS=(en ro es de pl fr it pt hu tr)
 LANGNAMES=("English" "Română" "Español" "Deutsch" "Polski" "Français" "Italiano" "Português" "Magyar" "Türkçe")
@@ -535,6 +617,41 @@ fi
 [[ " ${LANGS[*]} " == *" ${LANGSEL:-en} "* ]] || LANGSEL=en
 LANGSEL=${LANGSEL:-en}
 interactive && [[ $FIRST -eq 1 ]] && { printf '\n\033[1m%s\033[0m\n' "$(t title)"; echo "  $(t enter)"; }
+
+# ---- --restore FILE: a backup back in place (backup.go), then the server again ----
+envval() { grep -E "^$1=" "$ENVF" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+if [[ -n $RESTORE ]]; then
+  [[ -f $RESTORE ]] || { warn "$(printf "$(t rs_nofile)" "$RESTORE")"; exit 1; }
+  [[ -x $BIN && -f $ENVF ]] || { warn "$(t rs_nobin)"; exit 1; }
+  rdata=$(envval SV_DATA); rdata=${rdata:-$DATA}
+  rbak=$(envval SV_BACKUP_DIR); rbak=${rbak:-$rdata/backups}
+  say "$(t rs_stop)"
+  systemctl stop spectrevoice 2>/dev/null || true
+  say "$(printf "$(t rs_check)" "$RESTORE")"
+  # The server's own user restores (the files stay its own); it reads a copy next to the backups
+  install -d -o spectrevoice -g spectrevoice -m 700 "$rbak"
+  rfile="$rbak/restore-input-$(date +%s).tar.gz"
+  install -o spectrevoice -g spectrevoice -m 600 "$RESTORE" "$rfile"
+  if out=$(runuser -u spectrevoice -- "$BIN" -data "$rdata" -backup-dir "$rbak" restore "$rfile" 2>&1); then
+    echo "$out"
+    # The settings that were in the backup (server.env), the current ones kept beside
+    if tar -tzf "$rfile" etc/server.env >/dev/null 2>&1; then
+      cp -p "$ENVF" "$ENVF.before-restore"
+      tar -xzf "$rfile" -O etc/server.env >"$ENVF.new" && install -o root -g spectrevoice -m 640 "$ENVF.new" "$ENVF" && rm -f "$ENVF.new"
+      say "$(printf "$(t rs_env)" "$ENVF.before-restore")"
+    fi
+    rm -f "$rfile"
+    systemctl start spectrevoice
+    aside=$(printf '%s\n' "$out" | sed -n 's/^what was there before: \([^ ]*\).*/\1/p')
+    say "$(printf "$(t rs_done)" "${aside:-?}")"
+    exit 0
+  fi
+  echo "$out"
+  rm -f "$rfile"
+  warn "$(t rs_fail)"
+  systemctl start spectrevoice 2>/dev/null || true
+  exit 1
+fi
 
 say "$(t pkgs)"
 export DEBIAN_FRONTEND=noninteractive
@@ -700,6 +817,17 @@ fi
 unit=/etc/systemd/system/spectrevoice.service
 if [[ -f "$HERE/deploy/spectrevoice.service" ]]; then cp "$HERE/deploy/spectrevoice.service" "$unit"
 else curl -fsSL "https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/spectrevoice.service" -o "$unit"; fi
+
+# ---- Backups: the server makes them itself, daily (SV_BACKUP_HOUR); a folder only its user reads ----
+BAKDIR=$(envval SV_BACKUP_DIR); BAKDIR=${BAKDIR:-$DATA/backups}
+install -d -o spectrevoice -g spectrevoice -m 700 "$BAKDIR"
+if [[ $BAKDIR != "$DATA"/* ]]; then
+  # The service writes only into its data folder (ProtectSystem=strict): this one too
+  install -d /etc/systemd/system/spectrevoice.service.d
+  printf '[Service]\nReadWritePaths=%s\n' "$BAKDIR" >/etc/systemd/system/spectrevoice.service.d/backup.conf
+else
+  rm -f /etc/systemd/system/spectrevoice.service.d/backup.conf
+fi
 
 # ---- ffmpeg for the TV (SV_TV, on unless set false), even without the music bot ----
 if [[ $MUSIC -eq 0 ]] && ! grep -q "^SV_TV=false" "$ENVF" 2>/dev/null && ! command -v ffmpeg >/dev/null 2>&1; then
@@ -917,3 +1045,4 @@ echo
 row "$(t r_set):" "${ENVF}  (systemctl restart spectrevoice)"
 row "$(t r_logs):" "journalctl -u spectrevoice -f"
 row "$(t r_upd):" "sudo bash install.sh --update"
+row "$(t r_bak):" "${BAKDIR}  (sudo bash install.sh --restore <file>)"
