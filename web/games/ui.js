@@ -3,7 +3,7 @@
 // the apps' own protocol; this file is the dialog: the list, a table's frame (players, notes, bets, talk) and its board
 // (views.js). Opened from the 🎲 button in the module tools (#moduleTools).
 
-import { $, S, el, on, toast, openDialog, me as meMember } from '../core.js';
+import { $, S, el, on, toast, openDialog, me as meMember, wsUrl } from '../core.js';
 import { t, getLang } from '../i18n.js';
 import { bus, busSend } from '../bus.js';
 import { createHub, fmtLei } from './hub.js';
@@ -89,13 +89,37 @@ on('bus:gchat', (m) => hub.handle(m));
 on('bus:open', () => schedule());
 on('bus:down', () => schedule());
 on('bus:kept', (k) => { if (!k || !k.kind || k.kind === 'lei') schedule(); });
-on('app:welcome', () => updateButton());
+// Where the bus was: the closing messages of a page that left go there if its own connection is already down
+let lastBus = null;
+on('app:welcome', (m) => {
+  lastBus = { token: S.token, space: (typeof m?.space === 'string' && m.space) || (typeof m?.server?.space === 'string' && m.server.space) || 'main' };
+  updateButton();
+});
 on('app:down', (m) => {
   if (m && m.retry) { schedule(); return; } // coming back: the tables stay, as the apps' while reconnecting
-  hub.leftServer();
+  // Left the server: our tables close and give back what's on them, we get up from the others' (the bus module
+  // may have closed the page's connection first: then once more on a connection of their own)
+  const late = [];
+  hub.leftServer(bus.online ? undefined : (msg) => { late.push(msg); return true; });
+  if (late.length && lastBus?.token) sendOnce(lastBus, late);
   if (dlg) dlg.close();
   updateButton();
 });
+
+function sendOnce(where, msgs) {
+  let ws;
+  try { ws = new WebSocket(wsUrl('/bus?' + new URLSearchParams({ token: where.token, space: where.space }))); } catch { return; }
+  const stop = setTimeout(() => { try { ws.close(); } catch { /* gone */ } }, 10000);
+  ws.onmessage = (ev) => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch { return; }
+    if (m?.t !== 'state') return;
+    for (const x of msgs) ws.send(JSON.stringify(x));
+    clearTimeout(stop);
+    setTimeout(() => { try { ws.close(); } catch { /* gone */ } }, 1500);
+  };
+  ws.onerror = () => { /* nothing more to do */ };
+}
 on('app:lang', () => { if (button) button.title = t('gGames'); schedule(); });
 // Closing the page closes our tables: the chips and bets on them go back (only the keeper knew them)
 addEventListener('pagehide', () => { try { hub.leftServer(); } catch { /* going */ } });

@@ -7,7 +7,8 @@
 // keeper's shuffle made first wins on the top row) and both pages show the same state and the winner. Then a chess
 // table: the Ruy Lopez to White castling (1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O), clicked square to square,
 // the same board on both sides. Last, Ana spins the slot machine once and her purse on the server moves by what the
-// spin says. Prints a line per step and OK at the end. Screenshots (with a folder): games-list.png, games-ttt.png,
+// spin says; and Ana, keeping a roulette with Bob's chip on it, leaves the server: the table closes and the chip
+// comes back. Prints a line per step and OK at the end. Screenshots (with a folder): games-list.png, games-ttt.png,
 // games-chess-white.png, games-chess-black.png, games-slots.png.
 
 const { chromium } = require('playwright');
@@ -124,6 +125,24 @@ const table = (page, id) => page.evaluate((i) => { const t = window.svGames.hub.
     // Closing a table goes to everyone
     await ana.click('#gmLeave');
     await bob.waitForFunction(() => [...window.svGames.hub.tables.values()].every((t) => t.kind !== 'SLOTS'), null, { timeout: 10000 });
+    // A keeper who leaves the server closes its tables: Bob's chips on Ana's roulette come back
+    const bobUid = await uid(bob);
+    await ana.click('.gm-kind[data-kind="ROULETTE"]');
+    await ana.waitForSelector('.gm-tableview .gm-waiting');
+    const ro = await ana.evaluate(() => window.svGames.hub.open);
+    await bob.click('#gmBack');
+    await bob.waitForSelector(`.gm-table-row[data-table="${ro}"] button`, { timeout: 20000 });
+    await bob.click(`.gm-table-row[data-table="${ro}"] button`);
+    await ana.waitForFunction((i) => window.svGames.hub.tables.get(i)?.players.length === 2, ro, { timeout: 10000 });
+    await ana.click('#gmStart');
+    const bobBefore = await bob.evaluate((u) => window.svGames.hub.Lei.of(u), bobUid);
+    await bob.click('.gm-rc[data-bet="red:0"]:not([disabled])', { timeout: 10000 });
+    await bob.waitForFunction(([u, v]) => window.svGames.bus.kept().lei?.[u]?.v === v, [bobUid, bobBefore - 10], { timeout: 10000 });
+    await ana.keyboard.press('Escape');
+    await ana.click('#leave');
+    await bob.waitForFunction((i) => !window.svGames.hub.tables.has(i), ro, { timeout: 10000 });
+    await bob.waitForFunction(([u, v]) => window.svGames.bus.kept().lei?.[u]?.v === v, [bobUid, bobBefore], { timeout: 10000 });
+    console.log('REFUNDED on leaving');
     console.log('OK');
   } catch (e) {
     console.error('e2e failed:', e.message);

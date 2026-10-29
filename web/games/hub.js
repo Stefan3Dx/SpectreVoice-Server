@@ -48,7 +48,8 @@ export function createHub(env) {
 
   const changed = () => { for (const f of listeners) { try { f(); } catch (e) { console.error(e); } } };
   const me = () => { const m = env.me(); if (m.uid) lastUid = m.uid; return { uid: m.uid || lastUid, name: m.name }; };
-  const send = (msg) => env.send(msg);
+  let sendFn = (msg) => env.send(msg);
+  const send = (msg) => sendFn(msg);
   const title = (k) => text('g_' + k);
 
   // ====== Lei: one purse per player, kept by the server (bus kind "lei"); the keeper pays out and takes in ======
@@ -514,9 +515,14 @@ export function createHub(env) {
   }
 
   // The server is left: our tables close (their chips and bets go back), we get up from the others'
-  function leftServer() {
+  // (sendVia: where those last messages go when the page's bus is already down)
+  function leftServer(sendVia) {
     const my = me().uid;
-    for (const t of [...tables.values()]) if (t.host === my || t.players.some((p) => p.uid === my)) { try { leave(t.id); } catch { /* going anyway */ } }
+    const was = sendFn;
+    if (sendVia) sendFn = sendVia;
+    try {
+      for (const t of [...tables.values()]) if (t.host === my || t.players.some((p) => p.uid === my)) { try { leave(t.id); } catch { /* going anyway */ } }
+    } finally { sendFn = was; }
     tables.clear(); secret.clear(); privates.clear(); talk.clear(); invites = [];
     openId = null;
     changed();
