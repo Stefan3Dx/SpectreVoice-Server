@@ -546,7 +546,10 @@ LANIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="s
 # An update keeps what was chosen: the music bot only if it's on, automatic updates unless they were turned off
 if [[ $FIRST -eq 0 ]]; then
   if grep -q "^SV_MUSIC=true" "$ENVF"; then MUSIC=1; else MUSIC=0; fi
-  grep -q "^SV_AUTO_UPDATE=false" "$ENVF" && AUTOUPD=0
+  if grep -q "^SV_AUTO_UPDATE=false" "$ENVF"; then AUTOUPD=0
+  # Installed before the choice was written down (0.6.x): its "no" is the update timer missing (a "yes" made it)
+  elif ! grep -q "^SV_AUTO_UPDATE=" "$ENVF" && [[ ! -f /etc/systemd/system/spectrevoice-update.timer ]]; then AUTOUPD=0
+  fi
 fi
 
 if [[ $FIRST -eq 1 ]]; then
@@ -820,7 +823,8 @@ if [[ $FIRST -eq 1 && $FIREWALL -eq 1 && -n ${FW:-} ]]; then
 fi
 
 # ---- Automatic updates: the newest release from GitHub, checked (SHA256SUMS), daily around 4 AM ----
-# (on by default, also for servers installed before; SV_AUTO_UPDATE=false in server.env stops them)
+# (on by default for a new install; an update keeps the choice: SV_AUTO_UPDATE in server.env, or for an install
+# from before it was written there, whether the timer exists. SV_AUTO_UPDATE=true then --update turns them on)
 if [[ $AUTOUPD -eq 1 ]]; then
   cat >/usr/local/sbin/spectrevoice-update <<'UPD'
 #!/usr/bin/env bash
