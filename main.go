@@ -117,6 +117,7 @@ type server struct {
 	mu      sync.Mutex
 	rooms   map[string]*room
 	p2p     *p2pState // P2P streams: signalling only (p2p.go)
+	link    *linkHub  // device linking: relay only (link.go)
 	updates []*updater
 	files   *fileStore
 	bus     *bus
@@ -369,6 +370,7 @@ func newServer(cfg config) (*server, error) {
 	}
 	go s.watchPublicIP()
 	s.mods = newMods(s)
+	s.link = newLinkHub()
 	// The hub before the voice: the voice's talk watcher reads s.hub from its own goroutine
 	if s.hub, err = newHub(s); err != nil {
 		return nil, err
@@ -451,6 +453,7 @@ func (s *server) mayUseSpace(name, uid string) bool {
 func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/ws", s.hub.handle)
+	mux.HandleFunc("/v1/link", s.handleLink)
 	mux.HandleFunc("/streams", s.handleStreams)
 	mux.HandleFunc("/streams/status", s.handleStreamStatus)
 	mux.HandleFunc("/health", s.handleHealth)
