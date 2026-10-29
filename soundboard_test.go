@@ -239,7 +239,9 @@ func TestSoundboard(t *testing.T) {
 	}
 	// Removed: the file goes too
 	admin.send(map[string]any{"t": "sb", "op": "del", "id": id})
-	user.wait(func(m map[string]any) bool { return isSB(m) && len(sbItems(m)) == 1 && sbItems(m)[0].(map[string]any)["id"] != id })
+	user.wait(func(m map[string]any) bool {
+		return isSB(m) && len(sbItems(m)) == 1 && sbItems(m)[0].(map[string]any)["id"] != id
+	})
 	if _, err := os.Stat(s.sb.path(hash)); !os.IsNotExist(err) {
 		t.Fatalf("file kept: %v", err)
 	}

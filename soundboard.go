@@ -244,7 +244,8 @@ func (h *hub) soundboardOp(ss *session, m map[string]any) {
 		}
 		h.mu.Lock()
 		may := h.may(ss, pSoundboard)
-		c := h.chans[ss.ch]
+		ch := ss.ch // moves change it under h.mu
+		c := h.chans[ch]
 		heard := h.maySpeak(ss)
 		h.mu.Unlock()
 		switch {
@@ -258,7 +259,7 @@ func (h *hub) soundboardOp(ss *session, m map[string]any) {
 			refuse("mute", nil)
 			return
 		}
-		if why, wait := sb.take(ss.uid, ss.ch, time.Now()); why != "" {
+		if why, wait := sb.take(ss.uid, ch, time.Now()); why != "" {
 			var extra map[string]any
 			if wait > 0 {
 				extra = map[string]any{"wait": wait.Milliseconds(), "message": fmt.Sprintf("wait %.1f s", wait.Seconds())}
@@ -267,9 +268,8 @@ func (h *hub) soundboardOp(ss *session, m map[string]any) {
 			return
 		}
 		out, _ := json.Marshal(map[string]any{"t": "sb-play", "id": snd.ID, "hash": snd.Hash, "name": snd.Name, "emoji": snd.Emoji, "ms": snd.Ms,
-			"by": ss.uid, "byName": ss.name, "sid": ss.sid, "ch": ss.ch})
+			"by": ss.uid, "byName": ss.name, "sid": ss.sid, "ch": ch})
 		h.mu.Lock()
-		ch := ss.ch
 		for _, o := range h.sessions {
 			if o.ch == ch && o.comm == ss.comm && !o.bot {
 				o.queue(out)
