@@ -51,7 +51,7 @@ func TestWebAppServed(t *testing.T) {
 		t.Fatalf("identity.js: %d %s", res.StatusCode, res.Header.Get("Content-Type"))
 	}
 	// Every module app.js imports (and the ones they import) is served
-	for _, m := range []string{"app", "core", "i18n", "voice", "chat", "streams", "tv", "files", "settings"} {
+	for _, m := range []string{"app", "core", "i18n", "voice", "chat", "streams", "tv", "files", "settings", "soundboard", "music"} {
 		if res, _ = get("/app/" + m + ".js"); res.StatusCode != 200 {
 			t.Fatalf("%s.js: %d", m, res.StatusCode)
 		}

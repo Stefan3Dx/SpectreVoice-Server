@@ -17,6 +17,7 @@ import './bus.js';
 import './tv.js';
 import './files.js';
 import './dm.js';
+import './soundboard.js'; import './music.js';
 import { openSettings } from './settings.js';
 
 function setStatus(phase) {
