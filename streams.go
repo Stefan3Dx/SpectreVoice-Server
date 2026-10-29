@@ -889,7 +889,8 @@ func (rm *room) switchTo(sub *subscriber, rid string) {
 	rm.tellLayer(sub, false)
 }
 
-// tellLayer sends the viewer its layer status when it changed ([force]: even if not).
+// tellLayer sends the viewer its layer status (the layer, what it asked, the layers there are) when it changed
+// ([force]: even if not).
 func (rm *room) tellLayer(sub *subscriber, force bool) {
 	rm.mu.Lock()
 	sim := rm.sim
@@ -899,15 +900,18 @@ func (rm *room) tellLayer(sub *subscriber, force bool) {
 		return
 	}
 	cur, _ := sw.current()
+	rids := sim.rids()
 	sub.linkMu.Lock()
 	asked := sub.asked
-	changed := sub.sent != cur+"/"+asked
-	sub.sent = cur + "/" + asked
+	// The layers there are count too: a viewer that came before all of them is told when the others arrive
+	key := cur + "/" + asked + "/" + strings.Join(rids, ",")
+	changed := sub.sent != key
+	sub.sent = key
 	sub.linkMu.Unlock()
 	if !changed && !force {
 		return
 	}
-	sub.c.send(message{Type: "layer", Layer: cur, Q: asked, Layers: sim.rids()})
+	sub.c.send(message{Type: "layer", Layer: cur, Q: asked, Layers: rids})
 }
 
 // autoLoop, once a second: measures each layer's rate and moves the auto viewers by what their links say.

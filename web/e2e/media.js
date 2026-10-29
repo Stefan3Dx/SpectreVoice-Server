@@ -108,7 +108,12 @@ const playing = (page, sel) => page.waitForFunction(async (s) => {
     if (via !== 'server') throw new Error('via ' + via);
     await ana.page.waitForFunction(() => /1 watching/.test(document.querySelector('#shareInfo')?.textContent || ''), null, { timeout: 15000 });
     // Simulcast: the quality picker has the layers; the smallest asked for, the picture gets smaller
+    await bob.page.waitForSelector(tile + ' select.q:not(.hidden) option[value="h"]', { state: 'attached', timeout: 15000 });
     await bob.page.waitForSelector(tile + ' select.q:not(.hidden) option[value="l"]', { state: 'attached', timeout: 15000 });
+    // The full size first (auto may already be on a small layer while the link warms up)
+    await bob.page.selectOption(tile + ' select.q', 'h');
+    await bob.page.waitForFunction((s) => { const v = document.querySelector(s + ' video'); return v.videoWidth > 0 && document.querySelector(s).dataset.layer === 'h'; }, tile, { timeout: 15000 });
+    await bob.page.waitForTimeout(500);
     const full = await bob.page.$eval(tile + ' video', (v) => v.videoWidth);
     await bob.page.selectOption(tile + ' select.q', 'l');
     await bob.page.waitForFunction(([s, w]) => { const v = document.querySelector(s + ' video'); return v.videoWidth > 0 && v.videoWidth <= w / 3 && document.querySelector(s).dataset.layer === 'l'; }, [tile, full], { timeout: 15000 });
