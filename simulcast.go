@@ -361,6 +361,10 @@ func (pk *picker) step(cur string, layers []layerInfo, s linkSample, now time.Ti
 		pk.badSince, pk.goodSince = time.Time{}, time.Time{}
 		return layers[0].rid
 	}
+	if !pk.upAt.IsZero() && now.Sub(pk.upAt) >= autoStepUp {
+		// The last try up held: the next one waits the normal time again (the doubling is for tries that fail)
+		pk.upAt, pk.upWait = time.Time{}, 0
+	}
 	tooMuch := s.lossPct > autoLossPct || s.nacks > autoNackBad ||
 		(s.rembKbps > 0 && layers[i].kbps > 0 && float64(s.rembKbps) < float64(layers[i].kbps)*autoKeep)
 	if tooMuch {

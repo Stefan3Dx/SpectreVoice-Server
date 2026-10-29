@@ -480,3 +480,39 @@ func TestSimulcastRoom(t *testing.T) {
 	_ = pub.pc.Close()
 	_ = sub.pc.Close()
 }
+
+// A try up that held gives back the normal wait: the doubled one (after a failed try) is for back-to-back
+// failures, not for good, else a long watch with a few dips waits up to 2 minutes before every step up.
+func TestPickerBackoffResets(t *testing.T) {
+	layers := []layerInfo{{"h", 6000}, {"m", 2000}, {"l", 600}}
+	t0 := time.Now()
+	at := func(s float64) time.Time { return t0.Add(time.Duration(s * float64(time.Second))) }
+	pk := picker{downs: 1, upWait: upWaitMax}
+	cur := "m"
+	for s := 0.0; s <= 120 && cur == "m"; s++ {
+		cur = pk.step(cur, layers, linkSample{rembKbps: 8000}, at(s))
+	}
+	if cur != "h" {
+		t.Fatalf("no try up in 2 minutes: %s", cur)
+	}
+	// h holds for a minute, then a dip: down
+	for s := 121.0; s < 180; s++ {
+		if cur = pk.step(cur, layers, linkSample{rembKbps: 8000}, at(s)); cur != "h" {
+			t.Fatalf("h didn't hold at %v: %s", s, cur)
+		}
+	}
+	for s := 180.0; s <= 183; s++ {
+		cur = pk.step(cur, layers, linkSample{lossPct: 15}, at(s))
+	}
+	if cur != "m" {
+		t.Fatalf("no step down: %s", cur)
+	}
+	// Clean again: up after the normal 15 s
+	start := 184.0
+	for s := start; s <= start+15; s++ {
+		cur = pk.step(cur, layers, linkSample{rembKbps: 8000}, at(s))
+	}
+	if cur != "h" {
+		t.Fatalf("still waiting the doubled time after a try that held: %s", cur)
+	}
+}
