@@ -713,3 +713,42 @@ func TestAuthV2BoundToHost(t *testing.T) {
 		t.Fatal("ipv6 host refused:", err)
 	}
 }
+
+// Lei: a "strict" add is all or nothing, and what one app moves a minute is bounded (game payouts stay possible).
+func TestBusLeiLimits(t *testing.T) {
+	old := busLeiPerMin
+	busLeiPerMin = 3000
+	defer func() { busLeiPerMin = old }()
+	bt := newBusTest(t, nil, nil)
+	a := bt.dial("lei", "A")
+	lei := func(id string, d float64, strict bool) map[string]any {
+		t.Helper()
+		m := map[string]any{"t": "add", "kind": "lei", "id": id, "d": d, "start": 1000.0}
+		if strict {
+			m["strict"] = true
+		}
+		a.write(m)
+		return a.read()
+	}
+	// More than the purse holds: refused when strict, stopped at 0 when not
+	if m := lei("A", -1500, true); m["t"] != "error" || m["why"] != "funds" {
+		t.Fatalf("strict overdraw: %v", m)
+	}
+	if m := lei("A", -400, true); m["t"] != "put" || m["v"].(map[string]any)["v"] != 600.0 {
+		t.Fatalf("strict: %v", m)
+	}
+	// Taking from someone else's purse counts what was really taken (a new purse: 1000)
+	if m := lei("B", -1e9, false); m["t"] != "put" || m["v"].(map[string]any)["v"] != 0.0 {
+		t.Fatalf("take: %v", m)
+	}
+	// Taking from your own purse costs nothing; giving does
+	if m := lei("A", -100, false); m["t"] != "put" {
+		t.Fatalf("own loss: %v", m)
+	}
+	if m := lei("C", 1500, false); m["t"] != "put" || m["v"].(map[string]any)["v"] != 2500.0 {
+		t.Fatalf("payout: %v", m)
+	}
+	if m := lei("A", 1000, false); m["t"] != "error" || m["why"] != "rate" {
+		t.Fatalf("over the minute's budget: %v", m)
+	}
+}

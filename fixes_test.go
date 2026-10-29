@@ -148,3 +148,19 @@ func TestQuietPlayHidesTitle(t *testing.T) {
 	}
 	s.music.stopIn(1)
 }
+
+// The music bot's yt-dlp and ffmpeg get our proxy (public addresses only) and none of the server's settings.
+func TestBotEnv(t *testing.T) {
+	t.Setenv("SV_TURN_SECRET", "x")
+	t.Setenv("HTTPS_PROXY", "http://zz-other-proxy.invalid:1")
+	env := strings.Join(botEnv("http://sv:p@127.0.0.1:9"), "\n")
+	if strings.Contains(env, "SV_TURN_SECRET") || strings.Contains(env, "zz-other-proxy.invalid") || !strings.Contains(env, "https_proxy=http://sv:p@127.0.0.1:9") {
+		t.Fatal(env)
+	}
+	mb := &musicBots{}
+	u, err := mb.proxyURL()
+	if err != nil || !strings.HasPrefix(u, "http://sv:") {
+		t.Fatal(u, err)
+	}
+	mb.proxy.close()
+}

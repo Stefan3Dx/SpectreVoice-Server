@@ -270,9 +270,11 @@ func (h *hub) setMemberRoles(ss *session, uid string, v any) {
 	a := h.access(comm)
 	top := h.rank(comm, ss.uid)
 	owner := h.isOwner(comm, ss.uid)
+	mine := h.permsOf(comm, ss.uid)
 	// Roles at or above one's own place stay as they are, and so do roles that carry what only the owner gives
-	// (give_lei) for anyone but the owner; the rest are what was asked
-	fixed := func(r crole) bool { return r.Pos >= top || (!owner && r.p&ownerOnly != 0) }
+	// (give_lei) for anyone but the owner, or anything the one giving doesn't have (as role-save: nobody gives what
+	// they don't have, a role made by someone higher included); the rest are what was asked
+	fixed := func(r crole) bool { return r.Pos >= top || (!owner && r.p&ownerOnly != 0) || r.p&^mine != 0 }
 	var next []int64
 	for _, id := range a.member[uid] {
 		if r, ok := a.roles[id]; ok && fixed(r) {

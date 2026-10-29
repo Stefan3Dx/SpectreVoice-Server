@@ -146,6 +146,29 @@ func TestSpaceRolesInvites(t *testing.T) {
 	if e := bob.wait(isT("error")); e["op"] != "server-save" || e["why"] != "role" {
 		t.Fatal(e)
 	}
+	// Nor take a role below his that carries what he hasn't got (made by Ana): it isn't given
+	roleID := func(name string, perms ...string) int64 {
+		t.Helper()
+		ana.send(map[string]any{"t": "role-save", "name": name, "pos": 3, "perms": perms})
+		for _, r := range ana.wait(isT("roles"))["items"].([]any) {
+			if r.(map[string]any)["name"] == name {
+				return int64(r.(map[string]any)["id"].(float64))
+			}
+		}
+		t.Fatal("no role", name)
+		return 0
+	}
+	keeper, banner := roleID("Keeper", "manage_roles"), roleID("Banner", "ban")
+	ana.send(map[string]any{"t": "member-roles", "uid": bob.uid, "roles": []int64{builder, keeper}})
+	bob.wait(func(m map[string]any) bool { return m["t"] == "role" && hasPerm(m, "manage_roles") })
+	bob.send(map[string]any{"t": "member-roles", "uid": bob.uid, "roles": []int64{builder, keeper, banner}})
+	bob.wait(isDone("member-roles"))
+	s.hub.mu.Lock()
+	gotBan := s.hub.permsOf(spaceID, bob.uid)&pBan != 0
+	s.hub.mu.Unlock()
+	if gotBan {
+		t.Fatal("took a role with more than he has")
+	}
 	// The server chat: everyone
 	bob.send(map[string]any{"t": "say", "to": "g:1", "text": "salut server"})
 	carl.wait(func(m map[string]any) bool {

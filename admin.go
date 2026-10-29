@@ -282,9 +282,15 @@ func (s *server) adminAction(by, what string, req map[string]any) map[string]any
 	case "kick":
 		h.mu.Lock()
 		o := h.sessions[int(i64(req, "sid"))]
+		// As in the apps: only someone below; the owner above everyone (the panel's admins rank alike)
+		low := o != nil && o.uid != by && (h.isOwner(spaceID, by) ||
+			(!h.isOwner(spaceID, o.uid) && h.rank(spaceID, by) > h.rank(spaceID, o.uid)))
 		h.mu.Unlock()
 		if o == nil || o.bot {
 			return map[string]any{"ok": false}
+		}
+		if !low {
+			return map[string]any{"ok": false, "why": "rank"}
 		}
 		o.send(map[string]any{"t": "kicked", "by": "admin", "why": clip(str(req, "why"), 200)})
 		time.AfterFunc(300*time.Millisecond, o.close)

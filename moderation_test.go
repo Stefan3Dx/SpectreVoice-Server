@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -268,5 +270,45 @@ func TestBusRateLimit(t *testing.T) {
 	}
 	if m := a.until("error"); m["why"] != "rate" {
 		t.Fatalf("rate: %v", m)
+	}
+}
+
+// A request's address: proxy headers count only from loopback (or SV_TRUSTED_PROXIES), and only the last
+// X-Forwarded-For hop (the one our proxy appended); X-Real-IP never.
+func TestRequestIP(t *testing.T) {
+	defer func(old []*net.IPNet) { trustedProxies = old }(trustedProxies)
+	req := func(remote string, h map[string]string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		for k, v := range h {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+	cases := []struct {
+		remote string
+		h      map[string]string
+		want   string
+	}{
+		{"203.0.113.9:5000", map[string]string{"X-Forwarded-For": "127.0.0.1"}, "203.0.113.9"},
+		{"192.168.1.5:5000", map[string]string{"X-Forwarded-For": "1.2.3.4"}, "192.168.1.5"},
+		{"127.0.0.1:5000", map[string]string{"X-Real-IP": "127.0.0.1"}, "127.0.0.1"},
+		{"127.0.0.1:5000", map[string]string{"X-Real-IP": "9.9.9.9", "X-Forwarded-For": "127.0.0.1, 198.51.100.7"}, "198.51.100.7"},
+		{"[::1]:5000", map[string]string{"X-Forwarded-For": "garbage"}, "::1"},
+	}
+	for _, c := range cases {
+		if got := requestIP(req(c.remote, c.h)); got != c.want {
+			t.Errorf("%s %v: %s, wanted %s", c.remote, c.h, got, c.want)
+		}
+	}
+	trustedProxies = parseTrustedProxies("192.168.1.0/24, 10.0.0.9")
+	if got := requestIP(req("192.168.1.5:5000", map[string]string{"X-Forwarded-For": "6.6.6.6, 1.2.3.4"})); got != "1.2.3.4" {
+		t.Fatal("trusted proxy on the LAN:", got)
+	}
+	if got := requestIP(req("10.0.0.8:5000", map[string]string{"X-Forwarded-For": "1.2.3.4"})); got != "10.0.0.8" {
+		t.Fatal("not the trusted one:", got)
+	}
+	if b := requestBase(req("203.0.113.9:5000", map[string]string{"X-Forwarded-Host": "evil.example", "X-Forwarded-Proto": "https"})); b != "http://example.com" {
+		t.Fatal("requestBase from a stranger:", b)
 	}
 }

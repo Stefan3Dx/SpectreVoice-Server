@@ -217,7 +217,9 @@ func main() {
 	flag.IntVar(&cfg.leiMax, "lei-max", envInt("SV_LEI_MAX", 100000), "the most Lei one grant by the owner may add or take [SV_LEI_MAX]")
 	tvLoop := flag.Bool("tv-test-loopback", false, "tests only: the TV may open 127.0.0.1 (never on a real server: the server's own ports are there)")
 	flag.StringVar(&cfg.inviteBase, "invite-base", env("SV_INVITE_BASE", ""), "invite links' start, e.g. https://sfu.example.com/i/ (default: this server's address) [SV_INVITE_BASE]")
+	proxies := flag.String("trusted-proxies", env("SV_TRUSTED_PROXIES", ""), "reverse proxies besides this machine's own whose X-Forwarded-For counts (a proxy elsewhere on the LAN), addresses or CIDRs, comma separated [SV_TRUSTED_PROXIES]")
 	flag.Parse()
+	trustedProxies = parseTrustedProxies(*proxies)
 	cfg.udpMin, cfg.udpMax = uint(*udpMin), uint(*udpMax)
 	tvLoopbackOK = *tvLoop
 	cfg.noSounds = !*sounds

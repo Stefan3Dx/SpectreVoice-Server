@@ -55,6 +55,7 @@ func newMods(s *server) *mods {
 			var b ban
 			if rows.Scan(&b.UID, &b.Kind, &b.Ch, &b.Until, &b.Why, &b.By) == nil {
 				m.list = append(m.list, b)
+				m.scheduleEnd(b)
 			}
 		}
 		rows.Close()
@@ -112,10 +113,40 @@ func (m *mods) put(b ban) {
 	}
 	m.list = append(kept, b)
 	m.mu.Unlock()
+	m.scheduleEnd(b)
 	_, err := m.s.store.db.Exec(`INSERT OR REPLACE INTO mods(uid,kind,ch,until,why,by) VALUES(?,?,?,?,?,?)`, b.UID, b.Kind, b.Ch, b.Until, b.Why, b.By)
 	if err != nil {
 		log.Printf("mods: %v", err)
 	}
+}
+
+// scheduleEnd: a voice mute for a while ends by itself for those online too (their sessions carry it, set when they
+// came in), and they're heard again. When it fires, the mute is looked at again: one made longer, or lifted by
+// hand meanwhile, is left to that.
+func (m *mods) scheduleEnd(b ban) {
+	if b.Kind != "vmute" || b.Until == 0 {
+		return
+	}
+	d := time.Until(time.UnixMilli(b.Until)) + 50*time.Millisecond
+	time.AfterFunc(max(d, 0), func() {
+		h := m.s.hub
+		if h == nil || m.voiceMuted(b.UID, b.Ch) {
+			return
+		}
+		var chs []int64
+		h.mu.Lock()
+		for _, o := range h.sessions {
+			if o.uid == b.UID && o.comm == b.Ch && o.vmuted {
+				o.vmuted = false
+				h.memberChanged(o)
+				chs = append(chs, o.ch)
+			}
+		}
+		h.mu.Unlock()
+		if len(chs) > 0 && m.s.voice != nil {
+			m.s.voice.sync(chs...)
+		}
+	})
 }
 
 func (m *mods) remove(uid, kind string, scope int64) {

@@ -42,6 +42,11 @@ Update: `sudo bash install.sh --update`. Restore a backup: `sudo bash install.sh
 
 At home behind a router: forward these to the server and set `SV_PUBLIC_IP` to your public IP or DDNS name.
 
+Behind a reverse proxy: one on the same machine (Caddy from install.sh) needs nothing; one on another machine
+(e.g. Nginx Proxy Manager on the LAN) goes in `SV_TRUSTED_PROXIES` (its address or CIDR), else everyone seems to
+come from its address (the sign-in limits are per address). Only the last `X-Forwarded-For` hop is believed, the one
+the proxy appended; `X-Real-IP` never.
+
 ## Web client
 
 The server also serves a small client at **`/app/`** (`https://voice.example.com/app/`): voice and chat in the browser,
@@ -116,7 +121,8 @@ files and settings are here and nowhere else. What leaves it, and only when you 
 - **Push notifications** (`SV_PUSH_CREDENTIALS`): through Google; by default only "there is a message" and which
   server, never who or what (`SV_PUSH_CONTENT=false`). On the phone they're off until the person turns them on.
 - **Music bot**: `!play some words` searches YouTube from this server (the words go there); `!play <link>` plays
-  only that link (public addresses only).
+  only that link (public addresses only: yt-dlp and ffmpeg go through the same kind of proxy as the TV, so
+  redirects and stream segments into the LAN are refused too).
 - **TV**: the server downloads the playlist and plays the channel from the IPTV provider (the provider sees this
   server's address, never the viewers').
 - **Donations for places**: when you redeem one, this server's key fingerprint goes to the donation service.
@@ -164,6 +170,11 @@ the person turned push on. Anyone can mute these notices.
 The server's owner, and whoever the owner gives *Give Lei* (an administrator doesn't have it by itself), adds or
 takes Lei on anyone's purse from the app, with a reason, at most `SV_LEI_MAX` (100000) at a time. The person is told;
 every grant is kept (who, to whom, how much, why) and shown in the admin panel.
+
+The games' Lei move through the bus (`add` on kind `lei`): a delta of at most 1,000,000, never below 0; with
+`"strict": true` an `add` that would take a purse below 0 is refused (`why: "funds"`) instead of stopped at 0, so a
+transfer is all or nothing. What one person's apps give (to any purse) or take from others' purses is at most
+100,000 Lei a minute (`why: "rate"` past it); the server's admins and managers aren't limited.
 
 ## Free, with donations
 

@@ -22,6 +22,7 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -83,6 +84,10 @@ type musicBots struct {
 	bots map[int64]*musicBot
 	ok   bool
 	busy map[string]bool // who has a search running
+	// proxy: yt-dlp and ffmpeg reach the internet only through it (tvnet.go): every address they connect to,
+	// after DNS, redirects and an HLS playlist's segments too, must be a public one (no SSRF into the LAN)
+	proxyMu sync.Mutex
+	proxy   *tvProxy
 	// resolveFn replaces yt-dlp in tests
 	resolveFn func(q string) (song, error)
 }
@@ -101,6 +106,35 @@ func newMusicBots(s *server) *musicBots {
 }
 
 func (mb *musicBots) enabled() bool { return mb != nil && mb.ok }
+
+// proxyURL: the bot's proxy for yt-dlp and ffmpeg (started the first time). Public addresses only, whatever
+// SV_TV_LAN says: a song is never on the server's own network.
+func (mb *musicBots) proxyURL() (string, error) {
+	mb.proxyMu.Lock()
+	defer mb.proxyMu.Unlock()
+	if mb.proxy == nil {
+		p, err := startTVProxy(false)
+		if err != nil {
+			return "", err
+		}
+		mb.proxy = p
+	}
+	return mb.proxy.env, nil
+}
+
+// botEnv: the environment for yt-dlp and ffmpeg: the server's, without its settings (secrets) or any proxy of
+// its own, with ours for http and https.
+func botEnv(proxy string) []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(k, "SV_") || strings.HasSuffix(strings.ToLower(k), "_proxy") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "http_proxy="+proxy, "https_proxy="+proxy, "HTTP_PROXY="+proxy, "HTTPS_PROXY="+proxy, "no_proxy=", "NO_PROXY=")
+}
 
 // joined: someone came into a channel; nothing to do for now (the bot follows !join only).
 func (mb *musicBots) joined(*session, int64) {}
@@ -292,7 +326,12 @@ func (b *musicBot) play(sg *song) error {
 	args = append(args, "-vn", "-af", fmt.Sprintf("volume=%.2f,aresample=48000", float64(vol)/100),
 		"-c:a", "libopus", "-b:a", strconv.Itoa(kbps)+"k", "-ac", "2", "-application", "audio", "-frame_duration", "20",
 		"-f", "ogg", "-page_duration", "20000", "pipe:1")
+	proxy, err := b.mb.proxyURL()
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, s.cfg.ffmpeg, args...)
+	cmd.Env = botEnv(proxy)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -343,7 +382,7 @@ var ffmpegInput = defaultFFmpegInput
 
 func defaultFFmpegInput(u string) []string {
 	// Only web streams: no local files, no other protocols
-	return []string{"-protocol_whitelist", "https,http,tls,tcp,crypto,hls", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4", "-i", u}
+	return []string{"-protocol_whitelist", "https,http,tls,tcp,crypto,hls,httpproxy", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4", "-i", u}
 }
 
 // oggPackets reads Opus packets out of an Ogg stream (the two header packets skipped). One buffer, reused.
@@ -436,16 +475,26 @@ func (mb *musicBots) resolve(q string) (song, error) {
 	} else if !publicURL(q) {
 		return song{}, errors.New("not a public address")
 	}
+	proxy, err := mb.proxyURL()
+	if err != nil {
+		return song{}, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, mb.s.cfg.ytdlp, "--no-playlist", "--no-warnings", "-f", "bestaudio/best",
-		"--print", "%(title)s\n%(webpage_url)s\n%(duration)s\n%(url)s", "--", target).Output()
+	cmd := exec.CommandContext(ctx, mb.s.cfg.ytdlp, "--no-playlist", "--no-warnings", "-f", "bestaudio/best",
+		"--proxy", proxy, "--print", "%(title)s\n%(webpage_url)s\n%(duration)s\n%(url)s", "--", target)
+	cmd.Env = botEnv(proxy)
+	out, err := cmd.Output()
 	if err != nil {
 		return song{}, errors.New("not found")
 	}
 	l := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(l) < 4 {
 		return song{}, errors.New("not found")
+	}
+	// The stream yt-dlp found: http(s) only, not an address inside (ffmpeg's proxy checks every connection too)
+	if _, err := tvCheckURL(l[3], false); err != nil {
+		return song{}, errors.New("not a public address")
 	}
 	secs, _ := strconv.ParseFloat(l[2], 64)
 	return song{Title: clip(l[0], 200), Page: l[1], Secs: int(secs), URL: l[3]}, nil

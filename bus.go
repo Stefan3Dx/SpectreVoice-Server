@@ -7,7 +7,9 @@ package main
 //	-> {"t":"state","state":{kind:{id:value}},"ops":[…],"admin":bool,"version":…}   on connect: what's kept
 //	<- {"t":"put","kind":"events","id":"x","v":{...}}    kept and sent to everyone (sender too), stamped "_by": U
 //	<- {"t":"del","kind":"events","id":"x"}              forgotten, and sent to everyone
-//	<- {"t":"add"|"incr",…}                              changes the server works out itself (see applyAdd/applyIncr)
+//	<- {"t":"add"|"incr",…}                              changes the server works out itself (see applyAdd/applyIncr);
+//	                                                     a Lei "add" with "strict":true is refused ("funds") rather
+//	                                                     than stopped at 0, and Lei moved is rate limited (leiBudget)
 //	<- {"t":"buy","item":…}                              a shop purchase (shop.go)
 //	<- {"t":"anything else", ...}                       passed on to the others, with "from": U and "relay": true
 //	-> {"t":"error","op":…,"why":…,"message":…}          a change that was refused (and why)
@@ -183,6 +185,45 @@ type busSpace struct {
 	state   map[string]map[string]json.RawMessage
 	size    int // bytes of all values
 	dirty   bool
+	// leiLeft: Lei each uid may still move (leiBudget), and when it was last topped up
+	leiLeft map[string]float64
+	leiAt   map[string]time.Time
+}
+
+// leiBudget takes cost from uid's Lei allowance in this space; false when it's spent. Purses change by what apps
+// say (a table's keeper pays out and takes in), so one app can't mint or drain at the bus's message rate: Lei
+// given (to any purse, its own too) or taken from others' purses, busLeiPerMin a minute at most (bursts as
+// big). b.mu held.
+func (sp *busSpace) leiBudget(uid string, cost float64) bool {
+	if cost <= 0 {
+		return true
+	}
+	if sp.leiLeft == nil {
+		sp.leiLeft, sp.leiAt = map[string]float64{}, map[string]time.Time{}
+	}
+	now := time.Now()
+	if len(sp.leiLeft) > 4096 {
+		// The full ones are the same as new: forgotten
+		for k, at := range sp.leiAt {
+			if now.Sub(at) > time.Minute {
+				delete(sp.leiLeft, k)
+				delete(sp.leiAt, k)
+			}
+		}
+	}
+	left, seen := sp.leiLeft[uid]
+	if seen {
+		left = min(busLeiPerMin, left+now.Sub(sp.leiAt[uid]).Minutes()*busLeiPerMin)
+	} else {
+		left = busLeiPerMin
+	}
+	sp.leiAt[uid] = now
+	if cost > left {
+		sp.leiLeft[uid] = left
+		return false
+	}
+	sp.leiLeft[uid] = left - cost
+	return true
 }
 
 func (sp *busSpace) set(kind, id string, raw json.RawMessage) {
@@ -685,13 +726,36 @@ func (b *bus) change(sp *busSpace, c *busClient, op string, m map[string]any) {
 		// ("add"), counters in a record ("incr"); everyone then gets the result as a put
 		cur := decodeRecord(items[id])
 		if op == "add" {
+			before := 0.0
 			if kind == "lei" {
 				// A game's win or loss, not a fortune: a bounded delta, the apps' own start and floor
 				m["d"] = max(-busLeiStep, min(busLeiStep, num(m["d"])))
 				m["start"] = max(0, min(busLeiStart, num(m["start"])))
 				m["min"] = 0.0
+				v, has := cur["v"].(float64)
+				if !has {
+					v = num(m["start"])
+				}
+				before = v
+				// "strict": all or nothing, never stopped at 0 (a transfer takes only what is there)
+				if strict, _ := m["strict"].(bool); strict && before+num(m["d"]) < 0 {
+					c.refuse(m, op, "funds", "not that many Lei")
+					return
+				}
 			}
 			next = applyAdd(cur, m)
+			if next != nil && kind == "lei" && !c.admin {
+				// What it really moved: given to any purse, or taken from someone else's
+				moved := num(next["v"]) - before
+				cost := max(moved, 0)
+				if moved < 0 && id != c.uid {
+					cost = -moved
+				}
+				if !sp.leiBudget(c.uid, cost) {
+					c.refuse(m, op, "rate", "too many Lei at once, wait a minute")
+					return
+				}
+			}
 		} else {
 			next = applyIncr(cur, m)
 		}
@@ -805,6 +869,10 @@ const (
 	busLeiStep  = 1_000_000
 	busLeiStart = 1000
 )
+
+// busLeiPerMin: Lei one person's apps may give (to any purse) or take from others' purses a minute, in "add"s
+// (leiBudget). A var so tests can make it small.
+var busLeiPerMin float64 = 100_000
 
 func applyAdd(cur map[string]any, m map[string]any) map[string]any {
 	set, _ := m["set"].(map[string]any)

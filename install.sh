@@ -857,7 +857,8 @@ if [[ $FIRST -eq 1 && -n "$DOMAIN" ]]; then
     apt-get update -qq && apt-get install -y -qq caddy >/dev/null
   fi
   # Our site in its own file; an existing Caddyfile (other sites) is kept and only imports it
-  printf '%s {\n\tencode zstd gzip\n\treverse_proxy 127.0.0.1:7880\n}\n' "$DOMAIN" >/etc/caddy/spectrevoice.caddy
+  # X-Forwarded-For: only the client's own address (the server believes the last hop from loopback alone)
+  printf '%s {\n\tencode zstd gzip\n\treverse_proxy 127.0.0.1:7880 {\n\t\theader_up X-Forwarded-For {remote_host}\n\t}\n}\n' "$DOMAIN" >/etc/caddy/spectrevoice.caddy
   if [[ ! -s /etc/caddy/Caddyfile ]] || grep -q "The Caddyfile is an easy way" /etc/caddy/Caddyfile; then
     {
       [[ -n "$EMAIL" ]] && printf '{\n\temail %s\n}\n\n' "$EMAIL"
@@ -891,7 +892,8 @@ no-tlsv1
 no-tlsv1_1
 no-multicast-peers
 no-tcp-relay
-# Relay only to the internet, never into this network
+# Relay only to the internet, never into this network. Not this server's own public address: the apps relayed
+# here reach the voice server there (only UDP is relayed: no-tcp-relay). Loopback is in the list below.
 denied-peer-ip=0.0.0.0-0.255.255.255
 denied-peer-ip=10.0.0.0-10.255.255.255
 denied-peer-ip=100.64.0.0-100.127.255.255

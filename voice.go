@@ -31,10 +31,14 @@ const (
 )
 
 type voicePeer struct {
-	ss      *session
-	pc      *webrtc.PeerConnection
+	ss *session
+	pc *webrtc.PeerConnection
+	// sig: one description change at a time on pc (the app's offer or answer, our offer, tracks added or
+	// removed), so the server never offers while it answers. Taken before mu; never held into sync or negotiate.
+	sig     sync.Mutex
 	mu      sync.Mutex
 	local   webrtc.TrackLocal         // this person's voice as the others get it
+	upEnd   chan struct{}             // closed when the carry of local ends (a newer mic track waits for it)
 	senders map[int]*webrtc.RTPSender // whose voice (sid) goes to this person through which sender
 	ready   bool                      // the app's first offer is answered
 	pending bool                      // a server offer waits for its answer
@@ -144,7 +148,9 @@ func (v *voice) signal(ss *session, t string, m map[string]any) {
 		if p == nil {
 			return
 		}
+		p.sig.Lock()
 		if err := p.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: desc}); err != nil {
+			p.sig.Unlock()
 			log.Printf("voice %d: answer: %v", ss.sid, err)
 			v.reset(p)
 			return
@@ -154,6 +160,7 @@ func (v *voice) signal(ss *session, t string, m map[string]any) {
 		again := p.again
 		p.again = false
 		p.mu.Unlock()
+		p.sig.Unlock()
 		if again {
 			v.negotiate(p)
 		}
@@ -266,6 +273,7 @@ func (p *voicePeer) wasReady() bool {
 // couldn't be taken (the peer is dropped then).
 func (v *voice) answer(p *voicePeer, offer string) bool {
 	pc := p.pc
+	p.sig.Lock()
 	if pc.SignalingState() == webrtc.SignalingStateHaveLocalOffer {
 		// Both offered at once: the app's wins, ours goes out again afterwards
 		_ = pc.SetLocalDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeRollback})
@@ -273,16 +281,24 @@ func (v *voice) answer(p *voicePeer, offer string) bool {
 		p.pending, p.again = false, true
 		p.mu.Unlock()
 	}
-	// A sane offer: the app's voice plus the voices we send it (an offer with hundreds of tracks is refused)
-	p.mu.Lock()
-	most := len(p.senders) + 4
-	p.mu.Unlock()
-	if n := mlines(offer); n == 0 || n > max(most, 8) {
-		p.ss.refuse("rtc", "bad", "offer not taken")
-		v.dropPeer(p)
+	// A sane offer: the app's voice plus the media sections this connection has (an offer with hundreds of tracks
+	// is refused). Transceivers stay once made (a voice that went is an inactive section, reused later), so the
+	// limit counts them, not the voices sent now: else a re-offer after many people came and went is refused.
+	most := min(max(len(pc.GetTransceivers())+4, 8), maxMlines)
+	if n := mlines(offer); n == 0 || n > most {
+		p.sig.Unlock()
+		if p.wasReady() {
+			// A working connection: the app makes a new one (a refusal alone would leave it without voice)
+			log.Printf("voice %d: offer with %d media sections not taken (at most %d)", p.ss.sid, n, most)
+			v.reset(p)
+		} else {
+			p.ss.refuse("rtc", "bad", "offer not taken")
+			v.dropPeer(p)
+		}
 		return true
 	}
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}); err != nil {
+		p.sig.Unlock()
 		log.Printf("voice %d: offer: %v", p.ss.sid, err)
 		// Not kept half made (its candidates would pile up for ever)
 		v.dropPeer(p)
@@ -296,6 +312,7 @@ func (v *voice) answer(p *voicePeer, offer string) bool {
 		err = pc.SetLocalDescription(ans)
 	}
 	if err != nil {
+		p.sig.Unlock()
 		log.Printf("voice %d: answer: %v", p.ss.sid, err)
 		v.reset(p)
 		return true
@@ -309,6 +326,8 @@ func (v *voice) answer(p *voicePeer, offer string) bool {
 	}
 	early := p.early
 	p.early = nil
+	// A new offer (an ICE restart) brings new candidates: the cap is per offer, not per connection's life
+	p.cands = len(early)
 	first := !p.ready
 	p.ready = true
 	again := p.again
@@ -317,6 +336,7 @@ func (v *voice) answer(p *voicePeer, offer string) bool {
 	for _, c := range early {
 		_ = pc.AddICECandidate(c)
 	}
+	p.sig.Unlock()
 	if first {
 		v.s.hub.mu.Lock()
 		ch := p.ss.ch
@@ -342,19 +362,47 @@ func (v *voice) carry(p *voicePeer, remote *webrtc.TrackRemote, recv *webrtc.RTP
 			levelID = e.ID
 		}
 	}
-	p.mu.Lock()
-	if p.local != nil {
-		// One voice per connection: a second track isn't carried (each would re-sync the channel)
+	// One voice per connection: a second track waits until the first one ends (the app changed its microphone's
+	// transceiver), and is carried then; two at once would each re-sync the channel
+	for {
+		p.mu.Lock()
+		if p.local == nil {
+			break
+		}
+		wait := p.upEnd
 		p.mu.Unlock()
-		return
+		if wait == nil || p.dead() {
+			return
+		}
+		<-wait
 	}
 	p.local = local
+	end := make(chan struct{})
+	p.upEnd = end
 	p.mu.Unlock()
 	log.Printf("voice %d: up (%s)", sid, remote.Codec().MimeType)
 	v.s.hub.mu.Lock()
 	ch := p.ss.ch
 	v.s.hub.mu.Unlock()
 	v.sync(ch)
+	defer func() {
+		// The track ended: the others stop getting it (else they'd keep a silent voice, and a newer track of the
+		// app's could never be carried)
+		p.mu.Lock()
+		mine := p.local == local
+		if mine {
+			p.local = nil
+			p.upEnd = nil
+		}
+		p.mu.Unlock()
+		close(end)
+		if mine && v.peer(sid) == p {
+			v.s.hub.mu.Lock()
+			ch := p.ss.ch
+			v.s.hub.mu.Unlock()
+			v.sync(ch)
+		}
+	}()
 	buf := make([]byte, 1500)
 	var pkt rtp.Packet
 	var lastErr time.Time
@@ -516,9 +564,11 @@ func (v *voice) reconcile(p *voicePeer, want map[int]webrtc.TrackLocal) {
 	if os.Getenv("SV_DEBUG_VOICE") != "" {
 		log.Printf("voice %d: wants %d voices", p.ss.sid, len(want))
 	}
+	p.sig.Lock()
 	p.mu.Lock()
 	if !p.ready || p.pc == nil {
 		p.mu.Unlock()
+		p.sig.Unlock()
 		return
 	}
 	changed := false
@@ -543,6 +593,7 @@ func (v *voice) reconcile(p *voicePeer, want map[int]webrtc.TrackLocal) {
 		changed = true
 	}
 	p.mu.Unlock()
+	p.sig.Unlock()
 	if changed {
 		v.negotiate(p)
 	}
@@ -559,6 +610,8 @@ func drainRTCP(s *webrtc.RTPSender) {
 
 // negotiate sends the app a new offer, or remembers to once the one out is answered.
 func (v *voice) negotiate(p *voicePeer) {
+	p.sig.Lock()
+	defer p.sig.Unlock()
 	p.mu.Lock()
 	if p.pending || !p.ready {
 		p.again = true
@@ -623,6 +676,7 @@ const (
 	maxCandLen = 512
 	maxCands   = 64
 	maxEarly   = 32
+	maxMlines  = 128 // media sections in an app's offer at most
 )
 
 // drop closes a session's voice connection (it left, or the connection broke).

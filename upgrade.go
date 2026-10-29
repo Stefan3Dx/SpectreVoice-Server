@@ -154,6 +154,10 @@ func (l *licensing) upgradeLoop() {
 		l.upMu.Unlock()
 		if err == nil {
 			log.Printf("plus: installed, restarting into it")
+			// What the bus changed in the last seconds is written first: exec doesn't wait for its saver
+			if l.s != nil && l.s.bus != nil && l.s.bus.dir != "" {
+				l.s.bus.saveDirty()
+			}
 			if err = execPlus(path); err == nil {
 				return
 			}

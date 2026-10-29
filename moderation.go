@@ -423,19 +423,76 @@ func isHex(s string) bool {
 	return err == nil
 }
 
-// The address a web request came from (behind the reverse proxy: the one it says, when it's on our network).
-func requestIP(r *http.Request) string {
+// trustedProxies: besides loopback, the reverse proxies whose X-Forwarded-* headers count (SV_TRUSTED_PROXIES,
+// e.g. a proxy on another machine of the LAN). Anyone else could write those headers themselves.
+var trustedProxies []*net.IPNet
+
+// parseTrustedProxies reads SV_TRUSTED_PROXIES: addresses or CIDRs, comma separated.
+func parseTrustedProxies(v string) []*net.IPNet {
+	var out []*net.IPNet
+	for _, f := range strings.Split(v, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if !strings.Contains(f, "/") {
+			if ip := net.ParseIP(f); ip != nil {
+				bits := 128
+				if ip.To4() != nil {
+					ip, bits = ip.To4(), 32
+				}
+				out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			} else {
+				log.Printf("SV_TRUSTED_PROXIES: %q is not an address", f)
+			}
+			continue
+		}
+		if _, n, err := net.ParseCIDR(f); err == nil {
+			out = append(out, n)
+		} else {
+			log.Printf("SV_TRUSTED_PROXIES: %q is not an address range", f)
+		}
+	}
+	return out
+}
+
+// viaProxy: the request's peer address, and whether it is our reverse proxy (loopback: Caddy from install.sh, or
+// one in SV_TRUSTED_PROXIES), whose headers may be believed.
+func viaProxy(r *http.Request) (string, bool) {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if ip := net.ParseIP(host); ip != nil && (ip.IsPrivate() || ip.IsLoopback()) {
-		if x := strings.TrimSpace(r.Header.Get("X-Real-IP")); x != "" {
-			return x
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host, false
+	}
+	if ip.IsLoopback() {
+		return host, true
+	}
+	for _, n := range trustedProxies {
+		if n.Contains(ip) {
+			return host, true
 		}
-		if x := r.Header.Get("X-Forwarded-For"); x != "" {
-			return strings.TrimSpace(strings.Split(x, ",")[0])
-		}
+	}
+	return host, false
+}
+
+// The address a web request came from. Behind our proxy: the last X-Forwarded-For hop, the one the proxy itself
+// appended (what the client sent before it is the client's to write). X-Real-IP is never believed: Caddy passes on
+// the client's own.
+func requestIP(r *http.Request) string {
+	host, proxied := viaProxy(r)
+	if !proxied {
+		return host
+	}
+	xff := r.Header.Values("X-Forwarded-For")
+	if len(xff) == 0 {
+		return host
+	}
+	hops := strings.Split(xff[len(xff)-1], ",")
+	if ip := net.ParseIP(strings.TrimSpace(hops[len(hops)-1])); ip != nil {
+		return ip.String()
 	}
 	return host
 }

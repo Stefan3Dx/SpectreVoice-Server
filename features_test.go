@@ -80,6 +80,22 @@ func TestChannelFeatures(t *testing.T) {
 	ana.wait(func(m map[string]any) bool {
 		return m["t"] == "member" && m["m"].(map[string]any)["uid"] == bob.uid && m["m"].(map[string]any)["vmuted"] == nil
 	})
+	// A voice mute for a while ends by itself for someone online (here a short one, put as "voice-mute" would)
+	s.hub.mu.Lock()
+	s.hub.sessions[bob.sid].vmuted = true
+	s.hub.mu.Unlock()
+	s.mods.put(ban{UID: bob.uid, Kind: "vmute", Ch: 1, Until: time.Now().Add(300 * time.Millisecond).UnixMilli(), By: ana.uid})
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		s.hub.mu.Lock()
+		heard = s.hub.maySpeak(s.hub.sessions[bob.sid])
+		s.hub.mu.Unlock()
+		if heard || time.Now().After(deadline) {
+			break
+		}
+	}
+	if !heard {
+		t.Fatal("still silenced after the mute ended")
+	}
 	// Away message and connection quality, for everyone to see
 	bob.send(map[string]any{"t": "state", "away": true, "awayMsg": "la masă", "rtt": 42, "loss": 1})
 	m := ana.wait(func(m map[string]any) bool {

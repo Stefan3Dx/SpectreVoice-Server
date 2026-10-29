@@ -23,7 +23,6 @@ import (
 	"html"
 	"io"
 	"math/big"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -146,19 +145,14 @@ func (s *server) inviteURL(base, code string) string {
 
 // requestBase: how the app reached the server (https://sfu.example.com), behind the proxy too.
 func requestBase(r *http.Request) string {
-	// The proxy's headers count only from the proxy (on this machine or the LAN), not from anyone
-	viaProxy := false
-	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		if ip := net.ParseIP(h); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
-			viaProxy = true
-		}
-	}
+	// The proxy's headers count only from our proxy (loopback or SV_TRUSTED_PROXIES), not from anyone
+	_, proxied := viaProxy(r)
 	scheme := "http"
-	if r.TLS != nil || (viaProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")) {
+	if r.TLS != nil || (proxied && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")) {
 		scheme = "https"
 	}
 	host := ""
-	if viaProxy {
+	if proxied {
 		host = r.Header.Get("X-Forwarded-Host")
 	}
 	if host == "" {

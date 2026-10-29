@@ -87,3 +87,24 @@ func TestAdminPanel(t *testing.T) {
 		t.Fatal(a)
 	}
 }
+
+// The panel's kick: only someone ranked below (an admin can't kick the owner, nor another admin).
+func TestAdminKickRank(t *testing.T) {
+	s, hs := newTestServer(t, nil)
+	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
+	bob, _ := dialV(t, hs, newKey(t), "Bob", "")
+	cara, _ := dialV(t, hs, newKey(t), "Cara", "")
+	_ = s.store.setRole(ana.uid, roleOwner)
+	_ = s.store.setRole(bob.uid, roleAdmin)
+	_ = s.store.setRole(cara.uid, roleAdmin)
+	kick := func(by string, sid int) bool {
+		ok, _ := s.adminAction(by, "kick", map[string]any{"sid": float64(sid)})["ok"].(bool)
+		return ok
+	}
+	if kick(bob.uid, ana.sid) || kick(bob.uid, cara.sid) || kick(bob.uid, bob.sid) {
+		t.Fatal("an admin kicked the owner, another admin or himself")
+	}
+	if !kick(ana.uid, bob.sid) {
+		t.Fatal("the owner couldn't kick an admin")
+	}
+}
