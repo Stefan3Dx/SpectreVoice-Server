@@ -56,7 +56,11 @@ function waitingOnMe() {
     const seat = tb.players.findIndex((p) => p.uid === me);
     if (seat < 0 || !tb.started || !tb.state || !R.playable(tb.kind)) continue;
     if (R.waitingOn(tb.kind, tb.state, hub.secretOf(tb.id)).includes(seat)) return true;
-    if (tb.kind === 'BLACKJACK' && tb.state.phase === 'play' && tb.state.turn === seat) return true;
+    // The games whose turn only the keeper's secret tells: read from what everyone sees
+    const st = tb.state;
+    if ((tb.kind === 'BLACKJACK' || tb.kind === 'POKER') && ['play', 'preflop', 'flop', 'turn', 'river'].includes(st.phase) && st.turn === seat) return true;
+    if (tb.kind === 'HANGMAN' && st.ph === 'guess' && st.turn === seat) return true;
+    if (tb.kind === 'TRIVIA' && st.ph === 'q' && Array.isArray(st.done) && !st.done.includes(seat)) return true;
   }
   return hub.invites.length > 0;
 }
