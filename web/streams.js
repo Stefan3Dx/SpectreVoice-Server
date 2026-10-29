@@ -8,7 +8,7 @@
 //   answer (p2p-answer), candidates both ways (p2p-ice), p2p-bye to leave; "moved" (or the live list) means the
 //   stream goes the other way now: we follow it. The badge says how it comes: via the server, P2P or P2P relay.
 // Sharing: getDisplayMedia (with the tab's or system's sound when the browser offers it), the "Server + P2P" route:
-//   published once to the SFU (room = our uid); when the server can't take it (refused, or no connection in 12 s)
+//   published once to the SFU (room = our uid; in three sizes, simulcast rid l/m/h, as the PC); when the server can't take it (refused, or no connection in 12 s)
 //   it goes peer to peer: p2p-live, then a connection per viewer that joins (at most SHARE_P2P_MAX).
 
 import { $, S, el, send, on, emit, toast, api, wsUrl, rtcConfig, memberByUid, may } from './core.js';
@@ -21,6 +21,11 @@ const P2P_OFFER_TIMEOUT = 20000;
 const NO_PICTURE = 9000;
 const SHARE_P2P_MAX = 4;
 const SHARE_KBPS = 2500;
+const SIMULCAST = [
+  { rid: 'l', scaleResolutionDownBy: 4, maxBitrate: Math.max(200, SHARE_KBPS / 12) * 1000, maxFramerate: 30 },
+  { rid: 'm', scaleResolutionDownBy: 2, maxBitrate: Math.max(400, SHARE_KBPS / 4) * 1000, maxFramerate: 30 },
+  { rid: 'h', scaleResolutionDownBy: 1, maxBitrate: SHARE_KBPS * 1000, maxFramerate: 30 },
+];
 
 // The streams live now by someone (the TV isn't anyone's)
 export const liveOf = (uid) => [...S.live.values()].filter((l) => l.uid === uid && !l.room.startsWith('tv:'));
@@ -444,8 +449,10 @@ function sharePublish() {
   };
   for (const tr of SH.stream.getTracks()) {
     const init = { direction: 'sendonly', streams: [SH.stream] };
-    if (tr.kind === 'video') init.sendEncodings = [{ maxBitrate: SHARE_KBPS * 1000, maxFramerate: 30 }];
-    pc.addTransceiver(tr, init);
+    // Through the server: three sizes (simulcast, as the PC: rid l/m/h, smallest first), each viewer gets the one
+    // its connection takes; a browser that can't is given one picture
+    if (tr.kind === 'video') init.sendEncodings = SIMULCAST;
+    try { pc.addTransceiver(tr, init); } catch { init.sendEncodings = [{ maxBitrate: SHARE_KBPS * 1000, maxFramerate: 30 }]; pc.addTransceiver(tr, init); }
   }
   ws.onopen = async () => {
     try {

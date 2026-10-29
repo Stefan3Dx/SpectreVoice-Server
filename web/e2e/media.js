@@ -107,6 +107,13 @@ const playing = (page, sel) => page.waitForFunction(async (s) => {
     const via = await bob.page.getAttribute(tile + ' .via', 'data-via');
     if (via !== 'server') throw new Error('via ' + via);
     await ana.page.waitForFunction(() => /1 watching/.test(document.querySelector('#shareInfo')?.textContent || ''), null, { timeout: 15000 });
+    // Simulcast: the quality picker has the layers; the smallest asked for, the picture gets smaller
+    await bob.page.waitForSelector(tile + ' select.q:not(.hidden) option[value="l"]', { state: 'attached', timeout: 15000 });
+    const full = await bob.page.$eval(tile + ' video', (v) => v.videoWidth);
+    await bob.page.selectOption(tile + ' select.q', 'l');
+    await bob.page.waitForFunction(([s, w]) => { const v = document.querySelector(s + ' video'); return v.videoWidth > 0 && v.videoWidth <= w / 3 && document.querySelector(s).dataset.layer === 'l'; }, [tile, full], { timeout: 15000 });
+    step('quality picker: ' + full + ' → ' + (await bob.page.$eval(tile + ' video', (v) => v.videoWidth)));
+    await bob.page.selectOption(tile + ' select.q', 'auto');
     await bob.page.hover(tile);
     await shot(bob.page, 'watch-sfu');
     await shot(ana.page, 'share-screen');
