@@ -910,7 +910,7 @@ func (l *tvLogos) get(u string) ([]byte, string, bool) {
 		e = &tvLogo{ready: make(chan struct{})}
 		l.m[u] = e
 		l.order = append(l.order, u)
-		for len(l.order) > tvLogoEntries || l.bytes > tvLogoBytes {
+		for len(l.order) > 0 && (len(l.order) > tvLogoEntries || l.bytes > tvLogoBytes) {
 			old := l.order[0]
 			l.order = l.order[1:]
 			if o := l.m[old]; o != nil && o != e {
@@ -962,6 +962,9 @@ func (l *tvLogos) fetch(u string, e *tvLogo) {
 	}
 	l.mu.Lock()
 	e.data, e.ctype = data, ct
-	l.bytes += len(data)
+	// Counted only while kept: one pushed out while it came, or from before a reset, is the waiting request's alone
+	if l.m[u] == e {
+		l.bytes += len(data)
+	}
 	l.mu.Unlock()
 }
