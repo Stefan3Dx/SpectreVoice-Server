@@ -735,22 +735,42 @@ func (h *hub) move(ss *session, sid int, ch int64) {
 		return
 	}
 	o, c := h.sessions[sid], h.chans[ch]
-	if o == nil || c == nil || o.ch == ch || o.comm != ss.comm || c.Comm != ss.comm || c.Kind != "" {
+	switch {
+	case o == nil || c == nil || o.comm != ss.comm || c.Comm != ss.comm:
+		h.mu.Unlock()
+		ss.refuse("move", "gone", "no such person or channel")
+		return
+	case o.ch == ch:
 		h.mu.Unlock()
 		return
-	}
-	if o != ss && !h.outranks(ss, o.uid) {
+	case c.Kind != "":
+		h.mu.Unlock()
+		ss.refuse("move", "bad", "not a voice channel")
+		return
+	case o != ss && !h.outranks(ss, o.uid):
 		h.mu.Unlock()
 		ss.refuse("move", "role", "they rank as high as you")
 		return
+	case h.s.mods.channelBanned(o.uid, ch) && !h.may(ss, pChannelBan):
+		// Who may lift the ban may also bring them in; a mover without it doesn't get round the ban
+		h.mu.Unlock()
+		ss.refuse("move", "banned", "they are banned from that channel")
+		return
 	}
+	// Staff moving someone (pMove, ranking above them) gets past the channel's password and its limit, as a
+	// moderator does in TeamSpeak: the move is theirs to answer for, and it's how they bring someone in.
 	old := o.ch
 	o.ch = ch
 	o.talk, o.talker = false, false
 	h.memberChanged(o)
+	name := c.Name
 	h.mu.Unlock()
-	o.send(map[string]any{"t": "moved", "ch": ch, "by": ss.name})
+	if o != ss {
+		// Told who and where ("X moved you to Y"); moving oneself (dragging oneself) is just a join
+		o.send(map[string]any{"t": "moved", "ch": ch, "by": ss.name, "name": name})
+	}
 	h.s.voice.sync(old, ch)
+	h.s.music.joined(o, ch)
 }
 
 // target works out a "to": "c:<channel>" or "u:<uid>"; the conversation and who gets it.

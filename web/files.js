@@ -3,7 +3,7 @@
 // folders; one renames and deletes one's own, those with "files" anyone's. Shown in the middle column, the
 // "Files" tab next to the chat's, for the channel whose chat is open.
 
-import { $, S, el, send, on, toast, api, may, openDialog, fmtSize } from './core.js';
+import { $, S, el, send, on, toast, api, may, openDialog, fmtSize, chLabel } from './core.js';
 import { t } from './i18n.js';
 import { setView } from './chat.js';
 
@@ -34,7 +34,7 @@ function render() {
   if ($('chat').dataset.view !== 'files') return;
   box.textContent = '';
   const ch = S.channels.get(F.ch);
-  const crumbs = el('div', { class: 'crumbs' }, el('button', { type: 'button', class: 'ghost small', text: '#' + (ch?.name || '?'), onclick: () => list(F.ch, 0) }));
+  const crumbs = el('div', { class: 'crumbs' }, el('button', { type: 'button', class: 'ghost small', text: chLabel(ch) || '?', onclick: () => list(F.ch, 0) }));
   for (const p of F.path) crumbs.append(el('span', { class: 'muted', text: '›' }), el('button', { type: 'button', class: 'ghost small', text: p.name, onclick: () => list(F.ch, p.id) }));
   const input = el('input', { type: 'file', multiple: true, class: 'hidden', id: 'cfFile' });
   input.onchange = () => { for (const f of input.files) upload(f); input.value = ''; };

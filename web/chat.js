@@ -11,7 +11,7 @@
 //   mentions    @Name, completed from the people here; a line naming you is lit (ChatViews.kt mentions)
 // Other conversations (private ones) are another module's: messages whose "to" isn't c:/g: are left alone here.
 
-import { $, S, el, esc, send, toast, on, emit, store, api, me, may, SERVER_CHAT, openDialog } from './core.js';
+import { $, S, el, esc, send, toast, on, emit, store, api, me, may, SERVER_CHAT, openDialog, chLabel } from './core.js';
 import { t, getLang } from './i18n.js';
 import { busSend } from './bus.js';
 import { avatar, javaHash } from './avatar.js';
@@ -234,7 +234,7 @@ export function renderChat(stick) {
   }
   if (sel) list.querySelector(`.msg[data-id="${sel}"]`)?.classList.add('sel');
   $('say').disabled = !S.cur;
-  const where = S.cur.startsWith('c:') ? '#' + (S.channels.get(+S.cur.slice(2))?.name || '') : t('serverChat');
+  const where = S.cur.startsWith('c:') ? chLabel(S.channels.get(+S.cur.slice(2))) : t('serverChat');
   $('say').placeholder = t('messageTo', { where });
   if (stick || atEnd) box.scrollTop = box.scrollHeight; else box.scrollTop = keep;
 }

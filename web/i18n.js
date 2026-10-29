@@ -63,6 +63,10 @@ export function applyTexts(root = document) {
 // A server refusal ({"t":"error","op","why","message"}) in words
 export function errText(m) {
   const w = m.why;
+  if (m.op === 'move') {
+    const mk = { role: 'errMoveRole', bad: 'errMoveBad', banned: 'errMoveBanned', gone: 'errMoveGone' }[w];
+    if (mk) return t(mk);
+  }
   if (w === 'password') return m.op === 'hello' ? t('errPassword') : t('errChPassword');
   const k = { banned: 'errBanned', full: 'errFull', many: 'errMany', name: 'errName', auth: 'errAuth', rate: 'errRate', invite: 'errInvite', muted: 'errMuted', role: 'errRole', gone: 'errGone', server: 'errServer' }[w];
   return k ? t(k) : (m.message || w || 'error');

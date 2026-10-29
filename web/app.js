@@ -7,7 +7,7 @@
 //   core.js (state, events, helpers)  i18n.js (texts)  identity.js (key)  voice.js  chat.js  streams.js  tv.js
 //   files.js (channel files)  settings.js
 
-import { $, S, el, send, toast, on, emit, me, may, SERVER_CHAT, store, openDialog } from './core.js';
+import { $, S, el, send, toast, on, emit, me, may, SERVER_CHAT, store, openDialog, chLabel } from './core.js';
 import { t, initLang, applyTexts, errText } from './i18n.js';
 import { loadIdentity, signChallenge } from './identity.js';
 import { voiceStart, applyVolumes, updatePTT } from './voice.js';
@@ -141,7 +141,7 @@ async function handle(m) {
       if (mem) { mem.talk = m.on; renderTalk(m.sid, m.on); }
       break;
     }
-    case 'moved': toast(t('moved', { by: m.by, ch: S.channels.get(m.ch)?.name || '?' })); break;
+    case 'moved': toast(t('moved', { by: m.by, ch: S.channels.get(m.ch)?.name || m.name || '?' })); break;
     case 'kicked':
       S.phase = 'off';
       failed(t(m.ban ? 'banned' : 'kicked', { by: m.by }) + (m.why ? ': ' + m.why : ''));
@@ -289,6 +289,8 @@ function render() {
       class: 'ch' + (c.kind === 'text' ? ' text' : ' voice') + (c.locked ? ' locked' : '') + (c.id === mine ? ' mine' : '') + (open ? ' cur' : '') + (c.temp ? ' temp' : '') + (unread ? ' unread' : ''),
       title: c.topic || (c.temp ? t('temp') : ''), dataset: { id: c.id },
     }, el('span', { class: 'chname', text: (c.icon ? c.icon + ' ' : '') + c.name }));
+    // A voice channel shows a microphone (drawn first by CSS order; the name stays the row's first child); text keeps its #
+    if (!c.kind) row.appendChild(el('span', { class: 'chic', title: t('voiceChannel') }, icon('mic')));
     const badge = unreadBadge('c:' + c.id);
     if (badge) row.appendChild(badge);
     if (!c.kind) {
@@ -326,7 +328,7 @@ function render() {
   };
   draw(0, tree, 0);
   const cur = S.channels.get(+S.cur.slice(2));
-  $('tabChannel').textContent = S.cur.startsWith('c:') && cur ? '# ' + cur.name : (S.channels.get(mine)?.name ? '# ' + S.channels.get(mine).name : t('chat'));
+  $('tabChannel').textContent = S.cur.startsWith('c:') && cur ? chLabel(cur) : (S.channels.get(mine)?.name ? chLabel(S.channels.get(mine)) : t('chat'));
   const view = $('chat').dataset.view || 'chat';
   $('tabChannel').classList.toggle('on', view === 'chat' && S.cur.startsWith('c:'));
   $('tabComm').classList.toggle('on', view === 'chat' && S.cur.startsWith('g:'));
@@ -354,7 +356,7 @@ function renderMe() {
   box.classList.toggle('talking', !!m?.talk);
   box.classList.toggle('mic-off', S.mic);
   $('meName').textContent = m?.name || S.name;
-  $('meWhere').textContent = S.channels.get(m?.ch)?.name ? '# ' + S.channels.get(m.ch).name : '';
+  $('meWhere').textContent = chLabel(S.channels.get(m?.ch));
   const rtc = document.body.dataset.rtc || 'new';
   const up = rtc === 'connected';
   const down = rtc === 'failed' || rtc === 'disconnected';
@@ -457,6 +459,13 @@ function personPop(mem, ev) {
   for (const l of liveOf(mem.uid)) {
     pop.append(el('button', { class: 'primary small', type: 'button', text: '▶ ' + (l.title || t('watch')), onclick: () => { watchRoom(l.room); showPane('stage'); pop.classList.add('hidden'); } }));
   }
+  // Moderators and admins (the move permission): to one's own channel, or any voice channel; the server checks ranks
+  if (may('move')) {
+    const mine = me()?.ch;
+    const moveTo = (ch) => { send({ t: 'move', sid: mem.sid, ch }); pop.classList.add('hidden'); };
+    if (mine && mem.ch !== mine) pop.append(el('button', { type: 'button', class: 'small', id: 'moveHere', text: t('moveHere'), onclick: () => moveTo(mine) }));
+    pop.append(el('button', { type: 'button', class: 'small', id: 'moveTo', text: t('moveTo'), onclick: (e) => { e.stopPropagation(); movePicker(mem, pop, moveTo); } }));
+  }
   emit('app:personPop', { mem, pop });
   pop.classList.remove('hidden');
   const r = ev.currentTarget.getBoundingClientRect();
@@ -465,6 +474,30 @@ function personPop(mem, ev) {
   ev.stopPropagation();
 }
 document.addEventListener('click', (ev) => { if (!$('volPop').contains(ev.target)) $('volPop').classList.add('hidden'); });
+
+// "Move to…": the voice channels in the tree's order, the person's own marked
+function movePicker(mem, pop, moveTo) {
+  pop.textContent = '';
+  pop.append(el('div', { class: 'popname' }, avatar(mem.name, mem.uid, 28), el('span', { text: t('moveTitle', { name: mem.name }) })));
+  const kids = new Map();
+  for (const c of S.channels.values()) { if (!kids.has(c.parent)) kids.set(c.parent, []); kids.get(c.parent).push(c); }
+  for (const l of kids.values()) l.sort((a, b) => a.pos - b.pos || a.id - b.id);
+  const list = el('div', { class: 'movelist' });
+  const walk = (parent, depth) => {
+    for (const c of kids.get(parent) || []) {
+      if (!c.kind) {
+        const here = c.id === mem.ch;
+        list.append(el('button', { type: 'button', class: 'movech' + (here ? ' here' : ''), disabled: here, dataset: { id: c.id }, onclick: () => moveTo(c.id) },
+          el('span', { class: 'chic' }, icon('mic')), el('span', { class: 'chname', text: (c.temp ? '⏳ ' : '') + (c.icon ? c.icon + ' ' : '') + c.name }),
+          c.locked ? el('span', { class: 'chlock' }, icon('lock')) : null));
+        list.lastChild.dataset.depth = String(Math.min(depth, 6));
+      }
+      if (kids.has(c.id) && depth < 10) walk(c.id, depth + 1);
+    }
+  };
+  walk(0, 0);
+  pop.append(list);
+}
 
 // ====== Pages (phones: one pane at a time) ======
 

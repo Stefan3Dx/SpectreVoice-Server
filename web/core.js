@@ -135,3 +135,7 @@ export function openDialog({ title, body, actions, wide, onclose, cls }) {
   return { close, root: d };
 }
 export const dialogOpen = () => $('dlg').open;
+
+// A channel's name as headers show it: "# name" for a text channel, the bare name for a voice one (its mic is drawn
+// next to it where there's room); empty for none.
+export const chLabel = (c) => (!c ? '' : c.kind === 'text' ? '# ' + c.name : c.name);

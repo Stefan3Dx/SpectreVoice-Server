@@ -8,7 +8,7 @@
 //	<- {"t":"music","sid","ch","now":SONG|null,"queue":[SONG…],"paused","volume"}   ({"t":"music"}: no bot)
 //	SONG = {"title","page"?,"by","secs"?}
 
-import { S, el, send, on, toast, me, openDialog } from './core.js';
+import { S, el, send, on, toast, me, openDialog, chLabel } from './core.js';
 import { t } from './i18n.js';
 
 export const M = { available: false, st: null, limit: 0 };
@@ -58,7 +58,7 @@ function render() {
     const where = S.channels.get(m.ch);
     out.push(el('div', { class: 'munow', id: 'muNow' },
       el('div', { class: 'mutitle', text: now.title || '' }),
-      el('div', { class: 'muted small', text: [now.by, mmss(now.secs), m.paused ? t('muPaused') : '', where ? '#' + where.name : ''].filter(Boolean).join(' · ') })));
+      el('div', { class: 'muted small', text: [now.by, mmss(now.secs), m.paused ? t('muPaused') : '', where ? chLabel(where) : ''].filter(Boolean).join(' · ') })));
   }
   if (m) {
     out.push(el('div', { class: 'row wrap mubtns' },
