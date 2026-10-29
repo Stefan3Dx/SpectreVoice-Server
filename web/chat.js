@@ -25,7 +25,9 @@ export function richText(s) {
   h = h.replace(/\[b\]([\s\S]*?)\[\/b\]/gi, '<b>$1</b>').replace(/\[i\]([\s\S]*?)\[\/i\]/gi, '<i>$1</i>');
   h = h.replace(/\[url=(https?:\/\/[^\]\s]+)\]([\s\S]*?)\[\/url\]/gi, (_, u, l) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${l}</a>`);
   h = h.replace(/\[url\](https?:\/\/[^\]\s]+)\[\/url\]/gi, (_, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
-  h = h.replace(/(^|[^"=>])(https?:\/\/[^\s<]+[^\s<.,;:!?)\]])/g, (_, p, u) => `${p}<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
+  // Bare links only outside the links made above (inside one they'd break its href); no quote ever in a link
+  h = h.split(/(<a\b[^>]*>[\s\S]*?<\/a>)/).map((part, i) => i % 2 ? part
+    : part.replace(/(https?:\/\/[^\s<"']+[^\s<"'.,;:!?)\]])/g, (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`)).join('');
   return h;
 }
 
@@ -62,6 +64,8 @@ const sentNames = new Map();
 function applyReact(k, e, uid, onv) {
   let forMsg = reacts.get(k);
   if (!forMsg) { if (!onv) return; forMsg = new Map(); reacts.set(k, forMsg); }
+  // At most 20 different emoji on one message (a peer can't fill it with chips)
+  if (onv && !forMsg.has(e) && forMsg.size >= 20) return;
   const who = forMsg.get(e) || new Set();
   if (onv) who.add(uid); else who.delete(uid);
   if (who.size) forMsg.set(e, who); else forMsg.delete(e);
@@ -170,7 +174,7 @@ function message(m) {
   const fresh = i < 0;
   if (i >= 0) c.items[i] = msg; else c.items.push(msg);
   const mine = msg.from === S.uid;
-  if (fresh) spoke(msg.to, msg.name);
+  if (fresh) spoke(msg.to, msg.from);
   if (msg.to === S.cur) renderChat(fresh && mine);
   if (fresh && !mine && !msg.del) {
     if (msg.to !== S.cur || document.hidden) {
@@ -382,7 +386,7 @@ function insertAtCaret(input, s) {
 
 // ====== "… is typing" ======
 
-const typingNow = new Map(); // "c5" / "g1" → name → when
+const typingNow = new Map(); // "c5" / "g1" → uid → when
 const typingKey = (to) => (to || '').replace(':', '');
 let lastTyped = 0;
 let lastTypedKey = '';
@@ -395,15 +399,18 @@ function typed() {
   lastTypedKey = k;
   busSend({ t: 'typing', k, name: me()?.name || S.name });
 }
-function spoke(to, name) {
+function spoke(to, uid) {
   const m = typingNow.get(typingKey(to));
-  if (m?.delete(name) && to === S.cur) renderTyping();
+  if (m?.delete(uid) && to === S.cur) renderTyping();
 }
 on('bus:typing', (m) => {
   if (m.to !== undefined || typeof m.k !== 'string' || !/^[cg]\d{1,12}$/.test(m.k) || typeof m.from !== 'string' || m.from === S.uid) return;
-  const name = String(m.name || '?').slice(0, 40);
+  // By the uid the server stamped (the name a message carries could be anyone's); its name from the members
+  if (typeof m.name === 'string' && sentNames.size < 2000) sentNames.set(m.from, m.name.slice(0, 40));
   if (!typingNow.has(m.k)) typingNow.set(m.k, new Map());
-  typingNow.get(m.k).set(name, Date.now());
+  const who = typingNow.get(m.k);
+  if (who.size >= 20 && !who.has(m.from)) return;
+  who.set(m.from, Date.now());
   renderTyping();
 });
 let typingTimer = 0;
@@ -412,7 +419,7 @@ function renderTyping() {
   const m = typingNow.get(typingKey(S.cur));
   const now = Date.now();
   if (m) for (const [n, at] of m) if (now - at > 6000) m.delete(n);
-  const who = m ? [...m.keys()] : [];
+  const who = m ? [...m.keys()].map(nameOf) : [];
   box.textContent = '';
   if (who.length) {
     box.append(el('span', { class: 'tdots' }, el('i'), el('i'), el('i')),
