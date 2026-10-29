@@ -79,7 +79,13 @@ function gotTrack(w, track) {
   if (w.video.srcObject !== w.stream) w.video.srcObject = w.stream;
   applySink(w.video);
   applyVolume(w);
-  w.video.play().catch(() => { tileMsg(w, t('clickToPlay'), [{ text: '▶', onclick: () => { w.video.play(); tileMsg(w, ''); } }]); });
+  // Only a play the browser blocked asks for a click: one cut short because the watch ended (its picture taken away,
+  // an AbortError) leaves the tile saying that it ended
+  const gen = w.gen;
+  w.video.play().catch((e) => {
+    if (w.ended || w.gen !== gen || e?.name === 'AbortError') return;
+    tileMsg(w, t('clickToPlay'), [{ text: '▶', onclick: () => { w.video.play(); tileMsg(w, ''); } }]);
+  });
 }
 
 // Codecs the browser can't decode (an old browser and the TV's H.264, say): said, instead of a black tile
