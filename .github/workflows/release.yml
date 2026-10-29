@@ -35,5 +35,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v$V" dist/* --title "Spectre Voice Server $V" --generate-notes || \
+          gh release create "v$V" dist/* --target "$GITHUB_SHA" --title "Spectre Voice Server $V" --generate-notes || \
             gh release upload "v$V" dist/* --clobber
