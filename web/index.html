@@ -1,86 +1,105 @@
 <!doctype html>
-<html lang="ro">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0d14">
 <title>Spectre Voice</title>
 <link rel="stylesheet" href="app.css">
 <link rel="icon" href="data:,">
+<link rel="modulepreload" href="core.js">
+<link rel="modulepreload" href="i18n.js">
 </head>
-<body data-rtc="new">
+<body data-rtc="new" data-pane="channels">
 
 <header class="top">
   <div class="brand">
     <svg viewBox="0 0 108 108" aria-hidden="true"><path fill="currentColor" d="M33,48 a3,3 0 0 1 6,0 v12 a3,3 0 0 1 -6,0 z M43,38 a3,3 0 0 1 6,0 v32 a3,3 0 0 1 -6,0 z M51,30 a3,3 0 0 1 6,0 v48 a3,3 0 0 1 -6,0 z M59,38 a3,3 0 0 1 6,0 v32 a3,3 0 0 1 -6,0 z M69,48 a3,3 0 0 1 6,0 v12 a3,3 0 0 1 -6,0 z"/></svg>
     <div>
       <div id="serverName" class="server">Spectre Voice</div>
-      <div id="status" class="status" data-i18n="off">Deconectat</div>
+      <div id="status" class="status" data-i18n="off">Disconnected</div>
     </div>
   </div>
   <div class="tools">
-    <button id="lang" class="ghost" type="button" title="Language">EN</button>
-    <button id="leave" class="ghost hidden" type="button" data-i18n="leave">Ieși</button>
+    <button id="settings" class="ghost icon" type="button" data-i18n-title="settings" title="Settings">⚙</button>
+    <button id="leave" class="ghost hidden" type="button" data-i18n="leave">Leave</button>
   </div>
 </header>
 
 <main id="connect" class="card connect">
-  <h1 data-i18n="welcome">Intră pe server</h1>
+  <h1 data-i18n="welcome">Join the server</h1>
   <p id="inviteNote" class="muted hidden"></p>
   <form id="form" autocomplete="off">
-    <label><span data-i18n="name">Numele tău</span><input id="name" maxlength="32" required></label>
-    <label><span data-i18n="password">Parola serverului (dacă are)</span><input id="password" type="password" maxlength="200"></label>
-    <button id="go" class="primary" type="submit" data-i18n="connect">Conectează-te</button>
+    <label><span data-i18n="name">Your name</span><input id="name" maxlength="32" required></label>
+    <button id="go" class="primary" type="submit" data-i18n="connect">Connect</button>
   </form>
   <p id="connectError" class="error hidden"></p>
-  <p class="muted small"><span data-i18n="idNote">Identitatea ta e o cheie făcută în acest browser; nu există cont.</span> <span id="uidNote"></span></p>
+  <p class="muted small"><span data-i18n="idNote">Your identity is a key made in this browser; there is no account.</span> <span id="uidNote"></span></p>
 </main>
 
 <section id="app" class="app hidden">
   <nav class="mobile-tabs">
-    <button type="button" data-pane="channels" class="on" data-i18n="channels">Canale</button>
+    <button type="button" data-pane="channels" class="on" data-i18n="channels">Channels</button>
     <button type="button" data-pane="chat" data-i18n="chat">Chat</button>
+    <button type="button" data-pane="stage" data-i18n="liveTab">Live</button>
   </nav>
-  <aside id="channels" class="pane channels on">
+  <aside id="channels" class="pane channels">
     <div id="commBar" class="commbar">
       <div id="commName" class="commname"></div>
     </div>
     <div id="motd" class="motd hidden"></div>
+    <div id="tvCard" class="tvcard hidden"></div>
+    <div id="liveBox" class="livebox hidden">
+      <div class="boxhead" data-i18n="liveNow">Live now</div>
+      <div id="liveList"></div>
+    </div>
     <div id="tree" class="tree"></div>
   </aside>
-  <section id="chat" class="pane chat">
-    <div class="chat-tabs">
-      <button id="tabChannel" type="button" class="on"></button>
-      <button id="tabComm" type="button" data-i18n="serverChat">Server</button>
+  <section id="middle" class="pane middle">
+    <div id="stage" class="stage hidden">
+      <div id="tiles" class="tiles"></div>
+      <p class="stage-empty muted" data-i18n="stageEmpty">Nobody you watch is live. Pick a stream in the channel list.</p>
     </div>
-    <div id="messages" class="messages">
-      <button id="older" class="ghost small hidden" type="button" data-i18n="older">Mesaje mai vechi</button>
-      <div id="msgList"></div>
-    </div>
-    <form id="sayForm" class="say">
-      <input id="say" maxlength="4000" data-i18n-ph="write" placeholder="Scrie un mesaj…">
-      <button class="primary" type="submit" data-i18n="send">Trimite</button>
-    </form>
+    <section id="chat" class="chat" data-view="chat">
+      <div class="chat-tabs">
+        <button id="tabChannel" type="button" class="on"></button>
+        <button id="tabComm" type="button" data-i18n="serverChat">Server</button>
+        <button id="tabFiles" type="button" class="hidden" data-i18n="files">Files</button>
+      </div>
+      <div id="messages" class="messages">
+        <button id="older" class="ghost small hidden" type="button" data-i18n="older">Older messages</button>
+        <div id="msgList"></div>
+      </div>
+      <div id="filesView" class="filesview"></div>
+      <div id="uploads" class="uploads"></div>
+      <form id="sayForm" class="say">
+        <button id="attach" class="ghost icon" type="button" data-i18n-title="attach" title="Send a file or picture">📎</button>
+        <input id="attachFile" type="file" class="hidden" multiple>
+        <input id="say" maxlength="4000" data-i18n-ph="write" placeholder="Write a message…" autocomplete="off">
+        <button class="primary" type="submit" data-i18n="send">Send</button>
+      </form>
+    </section>
   </section>
   <footer class="bar">
-    <button id="ptt" class="ptt" type="button"><span data-i18n="ptt">Ține apăsat ca să vorbești</span> <kbd>Space</kbd></button>
+    <button id="ptt" class="ptt" type="button"><span data-i18n="ptt">Hold to talk</span> <kbd id="pttKey">Space</kbd></button>
     <div class="bar-right">
-      <label class="chk"><input id="openMic" type="checkbox"> <span data-i18n="openMic">Microfon deschis</span></label>
-      <button id="mute" class="ghost" type="button" data-i18n="mute">Mut</button>
-      <button id="deafen" class="ghost" type="button" data-i18n="deafen">Surd</button>
+      <label class="chk"><input id="openMic" type="checkbox"> <span data-i18n="openMic">Open mic</span></label>
+      <button id="mute" class="ghost" type="button" data-i18n="mute">Mute</button>
+      <button id="deafen" class="ghost" type="button" data-i18n="deafen">Deafen</button>
+      <span id="shareInfo" class="shareinfo hidden"></span>
+      <button id="shareBtn" class="ghost share hidden" type="button" data-i18n="shareScreen">Share screen</button>
     </div>
   </footer>
 </section>
 
-<div id="toast" class="toast hidden"></div>
-<div id="volPop" class="volpop hidden">
-  <div id="volName"></div>
-  <input id="vol" type="range" min="0" max="100" value="100">
-</div>
+<div id="toast" class="toast hidden" popover="manual" role="status" aria-live="polite"></div>
+<div id="volPop" class="volpop hidden"></div>
+<dialog id="dlg" class="dlg"></dialog>
 
 <footer class="foot">
-  <span data-i18n="footer">Clientul web: voce și chat. Streamuri, jocuri, fișiere și mesaje private sunt în aplicație:</span>
+  <span data-i18n="footer">The web client. Games and the rest are in the app:</span>
   <a href="https://spectrevoice.com" rel="noopener">spectrevoice.com</a>
 </footer>
 

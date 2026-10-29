@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -40,9 +43,22 @@ func TestWebAppServed(t *testing.T) {
 	if res.Header.Get("Cache-Control") != "no-store" || res.Header.Get("X-Frame-Options") != "DENY" {
 		t.Fatal(res.Header)
 	}
-	res, body = get("/app/app.js")
+	if pp := res.Header.Get("Permissions-Policy"); !strings.Contains(pp, "display-capture=(self)") || !strings.Contains(pp, "camera=()") {
+		t.Fatal(pp)
+	}
+	res, body = get("/app/identity.js")
 	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") || !strings.Contains(body, "spectrevoice-auth-v2:") {
-		t.Fatalf("app.js: %d %s", res.StatusCode, res.Header.Get("Content-Type"))
+		t.Fatalf("identity.js: %d %s", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+	// Every module app.js imports (and the ones they import) is served
+	for _, m := range []string{"app", "core", "i18n", "voice", "chat", "streams", "tv", "files", "settings"} {
+		if res, _ = get("/app/" + m + ".js"); res.StatusCode != 200 {
+			t.Fatalf("%s.js: %d", m, res.StatusCode)
+		}
+	}
+	res, body = get("/app/i18n-ro.json")
+	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") || !strings.Contains(body, `"connect"`) {
+		t.Fatalf("i18n-ro.json: %d %s", res.StatusCode, res.Header.Get("Content-Type"))
 	}
 	res, _ = get("/app/app.css")
 	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/css") {
@@ -162,4 +178,69 @@ type testWriter struct{ t *testing.T }
 func (w *testWriter) Write(p []byte) (int, error) {
 	w.t.Log("e2e stderr:", strings.TrimRight(string(p), "\n"))
 	return len(p), nil
+}
+
+// TestWebTexts: the web client's ten languages have every text English has, with the same {placeholders}, and every
+// text the page asks for (t('key') in the modules, data-i18n… in index.html) is there; every module a module
+// imports is embedded.
+func TestWebTexts(t *testing.T) {
+	read := func(name string) []byte {
+		b, err := webFiles.ReadFile("web/" + name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return b
+	}
+	load := func(lang string) map[string]string {
+		var m map[string]string
+		if err := json.Unmarshal(read("i18n-"+lang+".json"), &m); err != nil {
+			t.Fatalf("i18n-%s.json: %v", lang, err)
+		}
+		return m
+	}
+	en := load("en")
+	ph := regexp.MustCompile(`\{\w+\}`)
+	holders := func(s string) string { l := ph.FindAllString(s, -1); sort.Strings(l); return strings.Join(l, ",") }
+	for _, lang := range []string{"ro", "es", "de", "pl", "fr", "it", "pt", "hu", "tr"} {
+		m := load(lang)
+		for k, v := range en {
+			tr, ok := m[k]
+			if !ok || strings.TrimSpace(tr) == "" {
+				t.Errorf("%s: no %q (%q)", lang, k, v)
+			} else if holders(tr) != holders(v) {
+				t.Errorf("%s: %q has %q, English %q", lang, k, tr, v)
+			}
+		}
+		for k := range m {
+			if _, ok := en[k]; !ok {
+				t.Errorf("%s: %q isn't in English", lang, k)
+			}
+		}
+	}
+	used := map[string]bool{}
+	entries, _ := webFiles.ReadDir("web")
+	imp := regexp.MustCompile(`from '\./([\w.-]+)'|import '\./([\w.-]+)'`)
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".js") {
+			continue
+		}
+		src := read(e.Name())
+		for _, m := range regexp.MustCompile(`\bt\('(\w+)'`).FindAllSubmatch(src, -1) {
+			used[string(m[1])] = true
+		}
+		for _, m := range imp.FindAllSubmatch(src, -1) {
+			name := string(m[1]) + string(m[2])
+			if _, err := webFiles.ReadFile("web/" + name); err != nil {
+				t.Errorf("%s imports %s, which isn't embedded", e.Name(), name)
+			}
+		}
+	}
+	for _, m := range regexp.MustCompile(`data-i18n(?:-ph|-title)?="(\w+)"`).FindAllSubmatch(read("index.html"), -1) {
+		used[string(m[1])] = true
+	}
+	for k := range used {
+		if _, ok := en[k]; !ok {
+			t.Errorf("the page asks for %q, which has no text", k)
+		}
+	}
 }
