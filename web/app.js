@@ -18,6 +18,7 @@ import './tv.js';
 import './files.js';
 import './dm.js';
 import './soundboard.js'; import './music.js';
+import './games/ui.js';
 import { openSettings } from './settings.js';
 import { icon, setIcon } from './icons.js';
 import { avatar, avatarPath, hueOf, initials } from './avatar.js';

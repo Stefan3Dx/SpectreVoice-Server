@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -55,6 +56,20 @@ func TestWebAppServed(t *testing.T) {
 		if res, _ = get("/app/" + m + ".js"); res.StatusCode != 200 {
 			t.Fatalf("%s.js: %d", m, res.StatusCode)
 		}
+	}
+	// The games' modules, one folder down; nothing deeper (their tests) and no way out of it
+	for _, m := range []string{"ui", "hub", "rules", "views", "util", "grid", "chess", "casino", "blackjack"} {
+		if res, _ = get("/app/games/" + m + ".js"); res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
+			t.Fatalf("games/%s.js: %d", m, res.StatusCode)
+		}
+	}
+	for _, p := range []string{"/app/games/test/run.mjs", "/app/games/../app.js", "/app/e2e/run.js", "/app/games/"} {
+		if res, _ = get(p); res.StatusCode == 200 {
+			t.Fatalf("%s served", p)
+		}
+	}
+	if res, _ = get("/app/games.css"); res.StatusCode != 200 {
+		t.Fatalf("games.css: %d", res.StatusCode)
 	}
 	res, body = get("/app/i18n-ro.json")
 	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") || !strings.Contains(body, `"connect"`) {
@@ -218,20 +233,23 @@ func TestWebTexts(t *testing.T) {
 		}
 	}
 	used := map[string]bool{}
-	entries, _ := webFiles.ReadDir("web")
-	imp := regexp.MustCompile(`from '\./([\w.-]+)'|import '\./([\w.-]+)'`)
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".js") {
-			continue
-		}
-		src := read(e.Name())
-		for _, m := range regexp.MustCompile(`\bt\('(\w+)'`).FindAllSubmatch(src, -1) {
-			used[string(m[1])] = true
-		}
-		for _, m := range imp.FindAllSubmatch(src, -1) {
-			name := string(m[1]) + string(m[2])
-			if _, err := webFiles.ReadFile("web/" + name); err != nil {
-				t.Errorf("%s imports %s, which isn't embedded", e.Name(), name)
+	imp := regexp.MustCompile(`from '(\.\.?/[\w./-]+)'|import '(\.\.?/[\w./-]+)'`)
+	// The modules, and the games' one folder down (web/games/)
+	for _, dir := range []string{"", "games/"} {
+		entries, _ := webFiles.ReadDir("web/" + strings.TrimSuffix(dir, "/"))
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".js") {
+				continue
+			}
+			src := read(dir + e.Name())
+			for _, m := range regexp.MustCompile(`\bt\('(\w+)'`).FindAllSubmatch(src, -1) {
+				used[string(m[1])] = true
+			}
+			for _, m := range imp.FindAllSubmatch(src, -1) {
+				name := path.Join("web", dir, string(m[1])+string(m[2]))
+				if _, err := webFiles.ReadFile(name); err != nil || !strings.HasPrefix(name, "web/") {
+					t.Errorf("%s imports %s, which isn't embedded", dir+e.Name(), name)
+				}
 			}
 		}
 	}

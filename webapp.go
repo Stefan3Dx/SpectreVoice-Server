@@ -13,14 +13,14 @@ import (
 	"strings"
 )
 
-//go:embed web/index.html web/*.js web/*.css web/*.json
+//go:embed web/index.html web/*.js web/*.css web/*.json web/games/*.js
 var webFiles embed.FS
 
 // webCSP: scripts and styles only from this server, connections only to it (its own WebSocket), nothing else.
 const webCSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: blob:; " +
 	"media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
-// GET /app/ (index.html), /app/<module>.js, /app/app.css, /app/i18n-<lang>.json.
+// GET /app/ (index.html), /app/<module>.js, /app/games/<module>.js, /app/app.css, /app/i18n-<lang>.json.
 func (s *server) handleWebApp(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/app" {
 		http.Redirect(w, r, "/app/"+map[bool]string{true: "?" + r.URL.RawQuery, false: ""}[r.URL.RawQuery != ""], http.StatusMovedPermanently)
@@ -32,7 +32,8 @@ func (s *server) handleWebApp(w http.ResponseWriter, r *http.Request) {
 	}
 	sub, _ := fs.Sub(webFiles, "web")
 	data, err := fs.ReadFile(sub, name)
-	if err != nil || strings.Contains(name, "/") {
+	// One folder deep only for the games' modules (web/games/*.js)
+	if err != nil || strings.Contains(strings.TrimPrefix(name, "games/"), "/") {
 		http.NotFound(w, r)
 		return
 	}
