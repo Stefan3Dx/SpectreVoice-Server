@@ -254,6 +254,10 @@ func (h *hub) pushFor(ss *session, msg *chatMsg, ch int64, other string) {
 		return
 	}
 	text := msg.Text
+	if msg.Enc != "" {
+		// End to end encrypted: the server has no words to send, and says only who wrote (the app: "New message from X")
+		text = ""
+	}
 	if len([]rune(text)) > 180 {
 		text = string([]rune(text)[:180]) + "…"
 	}

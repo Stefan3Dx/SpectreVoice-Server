@@ -36,10 +36,11 @@ func TestSearch(t *testing.T) {
 	if items := r["items"].([]any); len(items) != 1 || items[0].(map[string]any)["text"] != "Hello World" || r["more"] != false {
 		t.Fatal(r)
 	}
-	// Everywhere: the channel, the community chat and the private one (newest first)
+	// Everywhere: the channel and the server chat (newest first); private chats never (end to end encrypted, e2e.go:
+	// the apps search them), not even the older plaintext ones
 	a.send(map[string]any{"t": "search", "q": "hello", "to": "*"})
 	r = a.wait(isT("search"))
-	if items := r["items"].([]any); len(items) != 3 || items[0].(map[string]any)["text"] != "hello community" || items[2].(map[string]any)["text"] != "Hello World" {
+	if items := r["items"].([]any); len(items) != 2 || items[0].(map[string]any)["text"] != "hello community" || items[1].(map[string]any)["text"] != "Hello World" {
 		t.Fatal(r)
 	}
 	// Someone else's private chat isn't searched, even by name
@@ -48,8 +49,8 @@ func TestSearch(t *testing.T) {
 		t.Fatal("private chat leaked", r)
 	}
 	c.send(map[string]any{"t": "search", "q": "privately", "to": "u:" + a.uid})
-	if r = c.wait(isT("search")); len(r["items"].([]any)) != 0 {
-		t.Fatal("private chat leaked", r)
+	if r = refusal(c, "search"); r["why"] != "e2e" {
+		t.Fatal("private chat searched", r)
 	}
 	// % and _ mean themselves
 	a.send(map[string]any{"t": "search", "q": "100%", "to": lc})

@@ -89,7 +89,11 @@ type session struct {
 	vRefill    time.Time
 	sTokens    float64 // chat searches it may still make now (search.go; its read loop only)
 	sRefill    time.Time
-	drops      int
+	// End-to-end encryption (e2e.go; its read loop only): budgets, and whether it published its device's key (an
+	// app that can encrypt never sends a private message in plaintext)
+	e2eSay, e2eKeys bucket
+	e2e             bool
+	drops           int
 }
 
 type member struct {
@@ -655,6 +659,8 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 		h.tvOp(ss, m)
 	case "sb":
 		h.soundboardOp(ss, m)
+	case "e2e-publish", "e2e-keys", "e2e-say":
+		h.e2eOp(ss, t, m)
 	default:
 		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
 			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.tempOp(ss, t, m) && !h.s.eventOp(ss, t, m) && !h.s.leiOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {
@@ -829,6 +835,12 @@ func (h *hub) say(ss *session, t, to string, m map[string]any) {
 		h.mu.Unlock()
 		return
 	}
+	// An app that published its device's key encrypts private messages (e2e-say): a plaintext one from it is a
+	// mistake, never a quiet fall back
+	if other != "" && ss.e2e {
+		ss.refuse(t, "e2e", "private messages go end-to-end encrypted (e2e-say)")
+		return
+	}
 	text := strings.TrimSpace(str(m, "text"))
 	if text == "" || utf8.RuneCountInString(text) > maxText {
 		ss.refuse(t, "bad", "empty or too long")
@@ -910,6 +922,11 @@ func (h *hub) edit(ss *session, t string, id int64, text string) {
 		ss.refuse(t, "owner", "not yours")
 		return
 	}
+	if t == "edit" && msg.Enc != "" {
+		// The server can't rewrite what it can't read: take it back and write again
+		ss.refuse(t, "e2e", "an end-to-end encrypted message can't be edited")
+		return
+	}
 	// One's own message, but only where one may still write: in the community and the channel now, not banned
 	// or muted there (a banned person can't rewrite what they left behind)
 	if mine && (isChan || isComm) {
@@ -957,7 +974,7 @@ func (h *hub) edit(ss *session, t string, id int64, text string) {
 		msg.Text, msg.Edit = text, time.Now().UnixMilli()
 		err = h.s.store.editMessage(id, text, msg.Edit)
 	} else {
-		msg.Text, msg.Del = "", true
+		msg.Text, msg.Del, msg.Enc = "", true, ""
 		err = h.s.store.deleteMessage(id)
 	}
 	if err != nil {
