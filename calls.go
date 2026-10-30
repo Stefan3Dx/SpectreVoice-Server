@@ -155,15 +155,52 @@ func newCallID() string {
 
 var callIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{16}$`)
 
-// appSessions: uid's sessions that can take a call (not bots); h.mu held.
+// appSessions: uid's sessions that can take a call (not bots, not the web client, not apps older than calls); h.mu
+// held.
 func (h *hub) appSessions(uid string) []*session {
 	var out []*session
 	for _, o := range h.sessions {
-		if o.uid == uid && !o.bot && !o.api {
+		if o.uid == uid && !o.bot && !o.api && clientCanCall(o.client) {
 			out = append(out, o)
 		}
 	}
 	return out
+}
+
+// clientCanCall: whether a client (its hello's "client", "android/0.9.0", "windows/0.9.0", "web/…") rings for a
+// call. The web client has no calls, and the apps before 0.9.0 don't know call-ring: rung, they'd stay silent and
+// the caller would hear it ring for the whole ring time; without them the caller is told "offline" at once.
+// Anything else (tests, a dev or local build, a client unknown here) rings.
+func clientCanCall(client string) bool {
+	kind, ver, _ := strings.Cut(strings.ToLower(client), "/")
+	switch kind {
+	case "web":
+		return false
+	case "android", "windows", "linux", "macos":
+	default:
+		return true
+	}
+	var v [3]int
+	parts := strings.SplitN(ver, ".", 3)
+	if len(parts) < 2 {
+		return true
+	}
+	for i, p := range parts {
+		n, digits := 0, 0
+		for _, r := range p {
+			if r < '0' || r > '9' || digits > 6 {
+				break
+			}
+			n, digits = n*10+int(r-'0'), digits+1
+		}
+		if digits == 0 {
+			return true
+		}
+		v[i] = n
+	}
+	// 0.2 … 0.8: the releases before calls. 0.1.0 is what a local build without -PappVersion calls itself (and the
+	// 0.1 releases are long gone): it rings
+	return !(v[0] == 0 && v[1] >= 2 && v[1] < 9)
 }
 
 func (h *hub) sendTo(sid int, m map[string]any) {

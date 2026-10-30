@@ -508,3 +508,36 @@ func TestCallsInWelcome(t *testing.T) {
 		}
 	}
 }
+
+// A callee only on clients without calls (the web client, an app before 0.9.0) isn't rung: the caller hears
+// "offline" at once, not a ring for the whole ring time; a 0.9.0 app of theirs rings.
+func TestCallNotRungOnClientsWithoutCalls(t *testing.T) {
+	_, hs := newTestServer(t, func(c *config) { c.callsRoute = "p2p" })
+	a, _ := dialV(t, hs, newKey(t), "Alice", "")
+	kb := newKey(t)
+	old, _ := dialVWith(t, hs, kb, "Bob", map[string]any{"client": "windows/0.8.0"})
+	web, _ := dialVWith(t, hs, kb, "Bob", map[string]any{"client": "web/0.8.0"})
+	a.send(map[string]any{"t": "call-invite", "to": old.uid, "n": "o"})
+	if e := a.wait(isCall("call-end", "")); e["why"] != "offline" || e["n"] != "o" {
+		t.Fatalf("not offline: %v", e)
+	}
+	noMsg(t, old, 300*time.Millisecond, isCall("call-ring", ""))
+	noMsg(t, web, 0, isCall("call-ring", ""))
+	// Bob's new app comes: it rings there only
+	nb, _ := dialVWith(t, hs, kb, "Bob", map[string]any{"client": "android/0.9.0"})
+	id := ring(t, a, nb)
+	noMsg(t, old, 300*time.Millisecond, isCall("call-ring", id))
+	a.send(map[string]any{"t": "call-cancel", "id": id})
+}
+
+func TestClientCanCall(t *testing.T) {
+	for c, want := range map[string]bool{
+		"windows/0.9.0": true, "android/0.9.0": true, "linux/0.10.2": true, "macos/1.0.0": true, "Windows/0.9.1-beta": true,
+		"windows/0.8.0": false, "android/0.8.3": false, "linux/0.7.2": false, "web/0.9.0": false, "web/dev": false,
+		"test/1": true, "jvm": true, "linux/dev": true, "": true, "android/x.y": true, "android/0.1.0": true, "windows/0.2.0": false,
+	} {
+		if got := clientCanCall(c); got != want {
+			t.Errorf("%q: %v, want %v", c, got, want)
+		}
+	}
+}
