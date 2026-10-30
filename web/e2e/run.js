@@ -68,6 +68,33 @@ if (!base || !text) {
     if (Math.abs(lim.quiet - 0.1) > 0.01) throw new Error('limiter: a quiet tone changed to ' + lim.quiet);
     console.log('LIMITER ' + JSON.stringify(lim));
 
+    // A voice through the limiter is heard also while the context isn't running (Safari before a click): its element
+    // plays then, and the limiter again once the context runs
+    const route = await page.evaluate(async () => {
+      const m = await import(new URL('voice.js', document.baseURI).href);
+      const gen = new AudioContext();
+      const o = gen.createOscillator();
+      const d = gen.createMediaStreamDestination();
+      o.connect(d); o.start();
+      const e = m._testVoice(d.stream);
+      const ctx = m.A.ctx;
+      const look = () => ({ state: ctx.state, graph: !!e.graph, elMuted: e.el.muted, gain: e.graph ? e.graph.gain.gain.value : -1 });
+      await ctx.resume();
+      const running = look();
+      await ctx.suspend();
+      await new Promise((r) => setTimeout(r, 100));
+      const suspended = look();
+      await ctx.resume();
+      await new Promise((r) => setTimeout(r, 100));
+      const back = look();
+      e.done(); o.stop(); gen.close();
+      return { running, suspended, back };
+    });
+    if (!route.running.graph || !route.running.elMuted || route.running.gain !== 1) throw new Error('limiter route: ' + JSON.stringify(route));
+    if (route.suspended.elMuted || route.suspended.gain !== 0) throw new Error('suspended, the voice is not on its element: ' + JSON.stringify(route));
+    if (!route.back.elMuted || route.back.gain !== 1) throw new Error('running again, the voice is not on the limiter: ' + JSON.stringify(route));
+    console.log('ROUTE ' + JSON.stringify(route));
+
     await page.click('body');
     await page.keyboard.down('Space');
     const live = await page.$eval('#ptt', (e) => e.classList.contains('live'));

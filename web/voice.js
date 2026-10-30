@@ -20,7 +20,11 @@ export const prefs = {
 
 // ====== Max volume: each voice through a limiter (Web Audio), so a cough or a shout never comes out above it ======
 
-const A = { ctx: null };
+export const A = { ctx: null };
+
+// The limiter is heard only while the context runs: suspended (no click yet on Safari, or the browser held it back)
+// or interrupted, each voice plays through its own element as before, at its volume
+const ctxLive = () => !!A.ctx && A.ctx.state === 'running';
 
 function audioCtx() {
   if (A.ctx) return A.ctx;
@@ -28,6 +32,8 @@ function audioCtx() {
   if (!C) return null;
   try { A.ctx = new C({ latencyHint: 'interactive' }); } catch { return null; }
   if (prefs.outDev && typeof A.ctx.setSinkId === 'function') A.ctx.setSinkId(prefs.outDev).catch(() => {});
+  // Running, suspended or interrupted: the voices follow at once (element or limiter)
+  A.ctx.onstatechange = () => applyVolumes();
   // Started by the next click or key if the browser held it back
   const resume = () => { if (A.ctx && A.ctx.state === 'suspended') A.ctx.resume().catch(() => {}); };
   document.addEventListener('pointerdown', resume, true);
@@ -60,6 +66,8 @@ function wire(entry) {
   if (prefs.maxDb >= 0 || !entry.el.srcObject) return;
   const ctx = audioCtx();
   if (!ctx) return;
+  // An output chosen and no way to send the context there (Firefox, Safari): the elements keep playing on it
+  if (prefs.outDev && typeof ctx.setSinkId !== 'function') return;
   try {
     const src = ctx.createMediaStreamSource(entry.el.srcObject);
     const gain = ctx.createGain();
@@ -72,6 +80,20 @@ function wire(entry) {
     console.warn('limiter', e);
     entry.graph = null;
   }
+}
+
+// Tests (web/e2e/run.js): one voice from [stream], wired as a received one would be
+export function _testVoice(stream) {
+  const el = new Audio();
+  el.autoplay = true;
+  el.srcObject = stream;
+  const entry = { el, sid: -1, graph: null };
+  const key = { test: true };
+  V.audios.set(key, entry);
+  wire(entry);
+  applyVolumes();
+  entry.done = () => { unwire(entry); el.pause(); el.srcObject = null; V.audios.delete(key); };
+  return entry;
 }
 
 export function setMaxDb(db) {
@@ -211,11 +233,13 @@ export function applyVolumes() {
     const uid = S.members.get(sid)?.uid;
     const vol = Math.max(0, Math.min(1, S.volumes[uid] ?? 1));
     const off = S.snd || !!S.muted[uid];
-    if (graph) {
+    if (graph && ctxLive()) {
       // Through the limiter: the element stays muted (it only keeps the track flowing)
       graph.gain.gain.value = off ? 0 : vol;
       a.muted = true;
     } else {
+      // Not through the limiter (none, or the context isn't running): the element plays, the graph stays silent
+      if (graph) graph.gain.gain.value = 0;
       a.volume = vol;
       a.muted = off;
     }
@@ -269,6 +293,9 @@ export function setOutputDevice(id) {
     if (typeof a.setSinkId === 'function') a.setSinkId(id).catch(() => {});
   }
   if (A.ctx && typeof A.ctx.setSinkId === 'function') A.ctx.setSinkId(id || '').catch(() => {});
+  // An output the context can't follow (no setSinkId): the voices back on their elements, or on the limiter again
+  for (const a of V.audios.values()) wire(a);
+  applyVolumes();
   emit('app:sink');
 }
 export async function setNoiseSuppression(on) {
