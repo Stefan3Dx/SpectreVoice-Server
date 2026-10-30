@@ -411,3 +411,28 @@ func TestWebMembersE2E(t *testing.T) {
 		t.Fatalf("blocks %d", blocks)
 	}
 }
+
+// A block covers whispering too: the blocked person's voice doesn't go straight into the other's ears (nor the
+// other way round).
+func TestBlockStopsWhisper(t *testing.T) {
+	s, hs := newTestServer(t, nil)
+	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
+	bob, _ := dialV(t, hs, newKey(t), "Bob", "")
+	carl, _ := dialV(t, hs, newKey(t), "Carl", "")
+	ana.send(map[string]any{"t": "block", "uid": bob.uid})
+	ana.wait(isT("blocks"))
+	targets := func(c *tclient) []int {
+		time.Sleep(300 * time.Millisecond)
+		s.hub.mu.Lock()
+		defer s.hub.mu.Unlock()
+		return append([]int(nil), s.hub.sessions[c.sid].whisperTo...)
+	}
+	bob.send(map[string]any{"t": "whisper", "on": true, "sids": []int{ana.sid, carl.sid}})
+	if got := targets(bob); len(got) != 1 || got[0] != carl.sid {
+		t.Fatalf("bob whispers to %v", got)
+	}
+	ana.send(map[string]any{"t": "whisper", "on": true, "sids": []int{bob.sid, carl.sid}})
+	if got := targets(ana); len(got) != 1 || got[0] != carl.sid {
+		t.Fatalf("ana whispers to %v", got)
+	}
+}

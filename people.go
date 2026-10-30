@@ -14,7 +14,7 @@ package main
 //
 // Who's listed: everyone who has ever come in (memberships of the space) and is still here: not server-banned, not
 // erased (wipe drops the membership), not someone the asker blocked. A block works both ways for private messages,
-// pokes and calls (hub.blocked, calls.go's callBlockedHook); the blocked person isn't told (their message is refused as "blocked").
+// pokes, whispers to the person and calls (hub.blocked, calls.go's callBlockedHook); the blocked person isn't told (their message is refused as "blocked").
 
 import (
 	"sort"

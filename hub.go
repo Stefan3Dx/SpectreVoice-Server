@@ -1429,10 +1429,10 @@ func (h *hub) whisper(ss *session, m map[string]any) {
 		chs = kept
 	}
 	if on {
-		// Only people in the same community
+		// Only people in the same community, and not where one blocked the other (people.go)
 		kept := sids[:0]
 		for _, sid := range sids {
-			if o := h.sessions[sid]; o != nil && o.comm == ss.comm {
+			if o := h.sessions[sid]; o != nil && o.comm == ss.comm && !h.blocked(ss.uid, o.uid) {
 				kept = append(kept, sid)
 			}
 		}
