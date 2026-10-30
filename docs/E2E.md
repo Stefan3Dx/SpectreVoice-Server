@@ -167,8 +167,18 @@ warnings the apps show:
 - History, `dms`, catch-up after a reconnect: the same as before, with `e2e` in the items.
 - **Search**: the server no longer searches private chats at all (`to: "u:…"` is refused; `"*"` covers channels and
   the server chat). The apps search the private chats themselves, over what they have loaded and decrypted.
-- **Push**: a private message wakes the phone with no text. Without `SV_PUSH_CONTENT`: `{"kind":"dm"}` only. With it:
-  the sender's name as the title and an empty body (the app shows "New message from X"), never the words.
+- **Push**: a private message wakes the phone with no text. An app that gave the server a push key (with its
+  `push-token`) gets it sealed for that phone (AES-256-GCM, AAD `sv-push-v1`): Google, and the push relay a
+  self-hosted server goes through, see only `{"sv":"1","x":…}`. Inside: the sender's name and uid, the
+  conversation, the message id and, when it fits in FCM's 4 KB, the envelope itself. The phone checks and opens the
+  envelope like any other line (signature, its own device key) and shows the words as the notification's preview;
+  nothing decrypted is kept. Older apps (no key): without `SV_PUSH_CONTENT`, `{"kind":"dm"}` only; with it, the
+  sender's name as the title and an empty body, never the words.
+- **Offline people**: a message to someone not connected is kept as it came (one envelope with a key for each of
+  their published devices) and handed out with `history` and `dms` when they come back, on any device. `dms`
+  says how many are unread (`unread`, after the read marker `read`); `dm-read {"with","id"}` moves the marker and
+  tells the person's other sessions, so the PC and the phone agree.
+- **Blocking** (`block`, `unblock`, `blocks`): no private messages, pokes or calls either way.
 - Erasing a person (`wipe`) deletes their device records too.
 
 ## 7. What the apps keep on the device
@@ -182,7 +192,8 @@ or go on that device).
 
 A consequence: a new device (a new phone, a reinstall, another browser) can't read private messages sent before
 it existed, which were encrypted only to the devices of that time. They show as "Sent before this device had its
-key".
+key", a quiet note in the chat rather than an error: the messages are still readable on the devices that were
+there, and everything sent from now on is encrypted to the new one too.
 
 ## 8. Limits, plainly
 

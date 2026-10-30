@@ -224,11 +224,11 @@ func TestMessagesOfAnyShape(t *testing.T) {
 		"invite-del", "invite-use", "invites", "join", "kick", "member-roles", "move", "mute", "name", "p2p-answer", "p2p-bye", "p2p-ice",
 		"p2p-join", "p2p-live", "p2p-offer", "ping", "poke", "push-off", "push-token", "relay", "role", "role-del", "role-save", "rtc",
 		"say", "search", "server-ban", "server-save", "server-unban", "slots", "state", "talker", "unban", "unmute", "unsay",
-		"voice-mute", "voice-unmute", "whisper", "music", "admin-link", "tv", "enter", "nothing-like-this"}
+		"voice-mute", "voice-unmute", "whisper", "music", "admin-link", "tv", "enter", "members", "dm-read", "block", "unblock", "blocks", "nothing-like-this"}
 	fields := []string{"ch", "to", "text", "id", "uid", "sid", "sids", "chs", "on", "name", "password", "room", "sdp", "type", "c",
 		"mid", "mline", "q", "before", "after", "around", "perms", "roles", "minutes", "folder", "code", "pass", "hours", "uses",
 		"data", "parent", "pos", "max", "kind", "icon", "pic", "quality", "default", "moderated", "cmd", "candidate", "mic", "snd",
-		"away", "awayMsg", "rtt", "loss", "token", "platform", "invite", "about", "color", "why", "title", "url"}
+		"away", "awayMsg", "rtt", "loss", "token", "platform", "invite", "about", "color", "why", "title", "url", "offset", "limit", "with", "key"}
 	values := []any{nil, true, false, 0, -1, 1e300, -1e300, 3.5, "", "x", "c:1", "u:" + b.uid, "g:1", "*", b.uid, strings.Repeat("é", 5000),
 		[]any{}, []any{1, "a", nil, []any{}}, map[string]any{}, map[string]any{"a": []any{1}}, float64(b.sid)}
 	makes := map[string]bool{"invite-create": true, "ch-save": true, "role-save": true, "cf-mkdir": true, "bot-add": true, "say": true, "server-save": true, "community-save": true}

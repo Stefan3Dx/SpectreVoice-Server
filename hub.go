@@ -95,6 +95,7 @@ type session struct {
 	e2eSay, e2eKeys bucket
 	e2e             bool
 	drops           int
+	people          bucket // the member list, read markers, blocks (people.go; its read loop only)
 }
 
 type member struct {
@@ -237,6 +238,9 @@ func newHub(s *server) (*hub, error) {
 	h := &hub{s: s, sessions: map[int]*session{}, chans: map[int64]*channel{}, live: map[string]liveStream{}, acc: map[int64]*commAccess{}, tempMade: map[string][]time.Time{}, leftAt: map[string]time.Time{}, watchGrace: watchGrace}
 	cs, err := s.store.channels()
 	if err != nil {
+		return nil, err
+	}
+	if err := s.store.migratePeople(); err != nil {
 		return nil, err
 	}
 	for _, c := range cs {
@@ -493,7 +497,8 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	ss.sid = h.next
 	h.sessions[ss.sid] = ss
 	srv := map[string]any{"motd": h.s.cfg.motd, "version": version, "ice": h.s.publicICE(uid),
-		"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil}
+		"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil,
+		"people": true, "membersSeen": h.s.cfg.membersSeen} // people.go: members, dm-read, block
 	for k, v := range info {
 		srv[k] = v
 	}
@@ -565,6 +570,9 @@ func (h *hub) leave(ss *session) {
 	ss.close()
 	h.mu.Lock()
 	delete(h.sessions, ss.sid)
+	if !ss.bot && !h.online(ss.uid) {
+		go h.s.store.touchSeen(ss.uid) // last seen (people.go)
+	}
 	if !ss.bot && len(h.channelsOf(ss.uid)) == 0 {
 		// Their last session: their watches stay a while (a reconnect), then end (watchch.go)
 		h.leftAt[ss.uid] = time.Now()
@@ -618,6 +626,7 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 			ss.refuse(t, "server", err.Error())
 			return
 		}
+		h.s.store.dmUnread(ss.uid, list)
 		ss.send(map[string]any{"t": "dms", "items": list})
 	case "edit", "unsay":
 		h.edit(ss, t, i64(m, "id"), str(m, "text"))
@@ -681,7 +690,7 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 	case "call-invite", "call-accept", "call-decline", "call-cancel", "call-end", "call-sdp", "call-ice", "call-rejoin":
 		h.callOp(ss, t, m)
 	default:
-		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
+		if !h.peopleOp(ss, t, m) && !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
 			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.tempOp(ss, t, m) && !h.s.eventOp(ss, t, m) && !h.s.leiOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {
 			ss.refuse(t, "bad", "unknown message")
 		}
@@ -851,6 +860,10 @@ func (h *hub) say(ss *session, t, to string, m map[string]any) {
 	// Private messages only to people of this server (not to any uid)
 	if other != "" && !h.s.store.isMember(spaceID, other) {
 		ss.refuse(t, "bad", "they aren't on this server")
+		return
+	}
+	if other != "" && h.blocked(ss.uid, other) {
+		ss.refuse(t, "blocked", "they can't get your messages")
 		return
 	}
 	if t == "relay" {
@@ -1048,6 +1061,10 @@ func (h *hub) poke(ss *session, uid, text string) {
 	text = clip(strings.TrimSpace(text), 200)
 	if !uidRe.MatchString(uid) || !h.s.store.isMember(spaceID, uid) {
 		ss.refuse("poke", "gone", "they aren't here")
+		return
+	}
+	if h.blocked(ss.uid, uid) {
+		ss.refuse("poke", "blocked", "they can't get your pokes")
 		return
 	}
 	h.mu.Lock()

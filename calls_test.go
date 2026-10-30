@@ -187,8 +187,9 @@ func TestCallDeclineBusyAndTimeout(t *testing.T) {
 
 func TestCallBlockedRingsNobody(t *testing.T) {
 	_, _, a, b := callPair(t, func(c *config) { c.callsRoute = "p2p"; c.callRing = time.Second })
+	before := callBlockedHook // the blocks' own (people.go), back after this test
 	callBlockedHook = func(_ *server, x, y string) bool { return x == b.uid && y == a.uid }
-	t.Cleanup(func() { callBlockedHook = nil })
+	t.Cleanup(func() { callBlockedHook = before })
 	a.send(map[string]any{"t": "call-invite", "to": b.uid})
 	id := a.wait(isCall("call-ringing", ""))["id"].(string)
 	if e := a.wait(isCall("call-end", id)); e["why"] != "timeout" {

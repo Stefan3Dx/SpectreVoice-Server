@@ -1,0 +1,38 @@
+/* The member list (members.js) in the right column, and the private chats' list (dm.js) */
+.rptabs { display: flex; gap: 4px; padding: 3px; border-radius: 12px; background: var(--glass); border: 1px solid var(--edge); flex: none; }
+.rptabs button { flex: 1; padding: 6px 4px; border: 0; background: transparent; color: var(--muted); border-radius: 9px; font-size: 12.5px; font-weight: 600; }
+.rptabs button.on { background: var(--accent-soft); color: var(--bright); }
+.peoplebox:not([data-tab="members"]) .membersview { display: none; }
+.peoplebox[data-tab="members"] > :not(.rptabs):not(.membersview) { display: none; }
+.membersview { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.memsearch { flex: none; padding: 7px 10px; border-radius: 10px; font-size: 13px; }
+.memlist { flex: 1; min-height: 0; overflow: auto; margin: 0 -6px; padding: 0 2px; }
+.memhead { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 6px 4px; background: none; border: 0; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; text-align: left; cursor: pointer; }
+.memhead .chev { display: inline-block; transition: transform .15s; }
+.memhead.folded .chev { transform: rotate(-90deg); }
+.mem.drow { display: flex; align-items: center; gap: 10px; }
+.mem.drow.offline { opacity: .55; }
+.mem.drow.offline:hover { opacity: .9; }
+.memav { position: relative; flex: none; display: inline-flex; }
+.memav .pres { position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--surface, #12121c); background: var(--faint); }
+.memav .pres.on { background: var(--green); }
+.memav .pres.away { background: var(--amber, #f59e0b); }
+.memav .pres.off { background: #6b7280; }
+.mtext { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mtext .mname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msub { color: var(--faint); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.memmore { margin: 6px auto; display: block; }
+.dmsection { padding: 6px 4px; }
+.dmrow { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; margin: 2px 0; border-radius: 12px; text-align: left; background: transparent; border: 1px solid transparent; font-weight: 400; }
+.dmrow:hover { background: var(--glass); border-color: var(--edge); }
+.dmrow .dmtext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dmrow .dmname { color: var(--text); font-weight: 600; font-size: 13.5px; }
+.dmrow .dmprev { color: var(--faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dmrow.unread .dmname { color: var(--bright); }
+.dmrow.unread .dmprev { color: var(--text); }
+.dmrow .dmmeta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.dmrow .when { color: var(--faint); font-size: 11px; }
+.dmcount { min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; text-align: center; }
+.dmnote { padding: 2px 4px; }
+.msg.lock-before .text { color: var(--faint); font-style: italic; }
+.msg.lock-before .lock { color: var(--faint); }

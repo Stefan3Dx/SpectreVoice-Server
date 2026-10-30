@@ -232,6 +232,10 @@ func (h *hub) e2eSay(ss *session, m map[string]any) {
 		ss.refuse(t, "bad", "they aren't on this server")
 		return
 	}
+	if h.blocked(ss.uid, other) {
+		ss.refuse(t, "blocked", "they can't get your messages")
+		return
+	}
 	env := str(m, "e")
 	if env == "" || len(env) > e2eMaxEnvelope {
 		ss.refuse(t, "full", "empty or too long")

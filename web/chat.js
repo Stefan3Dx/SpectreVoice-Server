@@ -457,8 +457,9 @@ export async function setNotify(want) {
 export function notify(title, body, to) {
   if (!notifyPrefs.on || !document.hidden || !('Notification' in window) || Notification.permission !== 'granted') return;
   try {
-    const n = new Notification(title, { body: String(body || '').slice(0, 200), tag: to || 'sv', silent: false });
-    n.onclick = () => { window.focus(); if (to) openConv(to); n.close(); };
+    // to: a conversation to open, or what to do on a click (a private chat: dm.js)
+    const n = new Notification(title, { body: String(body || '').slice(0, 200), tag: typeof to === 'string' ? to : 'sv-dm', silent: false });
+    n.onclick = () => { window.focus(); if (typeof to === 'function') to(); else if (to) openConv(to); n.close(); };
   } catch { /* some browsers only from a service worker */ }
 }
 document.addEventListener('visibilitychange', () => {

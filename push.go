@@ -54,6 +54,8 @@ type pushJob struct {
 	data map[string]string
 	ttl  string // "": a day; a call's ring lasts its own time (calls.go)
 	only string // one device's token ("": all of uid's)
+	// What apps with a push key get, sealed for them (pushseal.go); nil: data
+	sealed map[string]string
 }
 
 func newPusher(credFile string, st *store) (*pusher, error) {
@@ -175,12 +177,16 @@ func (p *pusher) notify(uid string, data map[string]string) {
 
 func (p *pusher) loop() {
 	for j := range p.queue {
-		toks := []string{j.only}
-		if j.only == "" {
-			toks = p.st.pushTokens(j.uid)
+		if j.only != "" {
+			// One device, already sealed for it (a call's push, calls.go)
+			if err := p.sendTTL(j.only, j.data, j.ttl); err != nil {
+				log.Printf("push %s: %v", j.uid, err)
+			}
+			continue
 		}
-		for _, tok := range toks {
-			if err := p.sendTTL(tok, j.data, j.ttl); err != nil {
+		// Each phone its own: sealed for it when it gave a push key (pushseal.go), else the open data
+		for _, t := range p.st.pushTargets(j.uid) {
+			if err := p.sendTTL(t.token, j.dataFor(t), j.ttl); err != nil {
 				log.Printf("push %s: %v", j.uid, err)
 			}
 		}
@@ -256,8 +262,13 @@ func (s *server) pushOp(ss *session, t string, m map[string]any) bool {
 		if s.push == nil {
 			return true // the server doesn't send push notifications: nothing to keep
 		}
-		_, err := s.store.db.Exec(`INSERT INTO push_tokens(token,uid,platform,updated) VALUES(?,?,?,?) ON CONFLICT(token) DO UPDATE SET uid=excluded.uid, platform=excluded.platform, updated=excluded.updated`,
-			tok, ss.uid, clip(str(m, "platform"), 20), time.Now().UnixMilli())
+		// The app's push key: its notifications are sealed for it (pushseal.go)
+		pk := str(m, "key")
+		if !pushKeyOK(pk) {
+			pk = ""
+		}
+		_, err := s.store.db.Exec(`INSERT INTO push_tokens(token,uid,platform,updated,pkey) VALUES(?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET uid=excluded.uid, platform=excluded.platform, updated=excluded.updated, pkey=excluded.pkey`,
+			tok, ss.uid, clip(str(m, "platform"), 20), time.Now().UnixMilli(), pk)
 		if err != nil {
 			ss.refuse(t, "server", err.Error())
 			return true
@@ -310,7 +321,17 @@ func (h *hub) pushFor(ss *session, msg *chatMsg, ch int64, other string) {
 		on := h.online(other)
 		h.mu.Unlock()
 		if !on {
-			p.notify(other, h.s.pushData(map[string]string{"kind": "dm", "title": msg.Name, "body": text, "from": ss.uid, "conv": "u:" + ss.uid}))
+			full := map[string]string{"kind": "dm", "title": msg.Name, "body": text, "from": ss.uid, "conv": "u:" + ss.uid}
+			open := h.s.pushData(full)
+			// Sealed for the phone (pushseal.go): who, where, and the envelope for a preview it decrypts itself
+			sealed := map[string]string{"kind": "dm", "title": msg.Name, "from": ss.uid, "conv": "u:" + ss.uid, "id": fmt.Sprint(msg.ID), "at": fmt.Sprint(msg.At)}
+			if srv := open["srv"]; srv != "" {
+				sealed["srv"] = srv
+			}
+			if msg.Enc != "" {
+				sealed["e"] = msg.Enc
+			}
+			p.notifySealed(other, open, sealed)
 		}
 		return
 	}

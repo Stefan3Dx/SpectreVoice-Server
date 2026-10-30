@@ -413,6 +413,10 @@ type dmSummary struct {
 	With string  `json:"with"`
 	Name string  `json:"name"`
 	Last chatMsg `json:"last"`
+	// What they read of it (people.go): the last id, and how many of the other's messages came after
+	Read    int64 `json:"read"`
+	Unread  int   `json:"unread"`
+	Blocked bool  `json:"blocked,omitempty"`
 }
 
 // dms lists uid's private conversations, the most recent first.
@@ -454,6 +458,8 @@ func (st *store) wipeUser(uid string) (int, error) {
 	// their roles there, where they were last. Bans stay (they're the community's, not the person's).
 	for _, q := range []string{
 		`DELETE FROM push_tokens WHERE uid=?`,
+		`DELETE FROM dm_reads WHERE uid=?`,
+		`DELETE FROM blocks WHERE uid=?1 OR other=?1`,
 		`DELETE FROM e2e_devices WHERE uid=?`,
 		`DELETE FROM event_rsvp WHERE uid=?`,
 		`DELETE FROM event_mute WHERE uid=?`,

@@ -4,10 +4,14 @@
 // on a person's card, the lock on every line, the safety number to compare ("Verify"), a warning when someone's
 // devices change, and no sending at all to someone whose app has no key yet (never plaintext instead).
 // Decrypted lines live in memory only; search here is over what this page decrypted.
+// With a server that has them (people.go): the Private tab lists the recent chats with their unread counts (the
+// server's read markers, so the apps agree) and a preview decrypted here; reading moves the marker (dm-read);
+// blocking (block / unblock) stops private messages both ways and hides the person.
 
 import { $, S, el, send, toast, on, emit, store, api, openDialog, fmtSize, memberByUid } from './core.js';
 import { t } from './i18n.js';
-import { setView } from './chat.js';
+import { setView, notify } from './chat.js';
+import { avatar } from './avatar.js';
 import * as E from './e2e.js';
 
 
@@ -43,7 +47,13 @@ async function deviceKey() {
 let ready = null;
 const D = {
   key: null, open: '', convs: new Map(), devices: new Map(), asked: new Map(), queue: [], peers: new Map(), dms: [], filter: '',
+  people: false, blocks: new Set(), names: new Map(), preview: new Map(),
 };
+export const isBlocked = (uid) => D.blocks.has(uid);
+export function setBlocked(uid, on) {
+  if (!D.people || !uid || uid === S.uid) return;
+  send({ t: on ? 'block' : 'unblock', uid });
+}
 // Pins (no secrets): devices seen per person, their name, the identity key, whether verified
 let pins = {};
 try { pins = JSON.parse(store.get('sv.e2e.pins', '{}')) || {}; } catch { pins = {}; }
@@ -56,7 +66,7 @@ const peerOfConv = (to) => {
   const [a, b] = to.slice(2).split(':');
   return a === S.uid ? b : b === S.uid ? a : null;
 };
-const nameOf = (uid) => memberByUid(uid)?.name || D.dms.find((d) => d.with === uid)?.name || pins[uid]?.name || uid.slice(0, 8);
+const nameOf = (uid) => memberByUid(uid)?.name || D.dms.find((d) => d.with === uid)?.name || D.names.get(uid) || pins[uid]?.name || uid.slice(0, 8);
 function conv(peer) {
   if (!D.convs.has(peer)) D.convs.set(peer, { items: [], more: false, loaded: false, seen: new Map(), unread: 0 });
   return D.convs.get(peer);
@@ -75,12 +85,14 @@ function want(uid) {
   if (!c || Date.now() - c.at > FRESH) ask(uid);
 }
 
-on('app:welcome', async () => {
+on('app:welcome', async (m) => {
   D.devices.clear(); D.asked.clear();
   ready = deviceKey().then((k) => { D.key = k; }, (e) => { console.warn('e2e', e?.name); D.key = null; });
   await ready;
   if (D.key) send({ t: 'e2e-publish', rec: await E.signRecord(S.id, S.dev, D.key.spki) });
   for (const c of D.convs.values()) { c.items = []; c.loaded = false; c.seen.clear(); }
+  D.people = !!m.server?.people;
+  if (D.people) send({ t: 'blocks' });
   send({ t: 'dms' });
   if (D.open) { want(D.open); send({ t: 'history', to: 'u:' + D.open }); }
   tabs();
@@ -126,6 +138,8 @@ on('error', (m) => {
     for (const uid of D.asked.keys()) { D.queue = D.queue.filter((o) => { if (o.peer === uid) dropPending(o); return o.peer !== uid; }); }
     D.asked.clear();
   }
+  if (m.op === 'dm-read' || m.op === 'blocks' || ((m.op === 'block' || m.op === 'unblock') && m.why !== 'full')) m.handled = true;
+  if ((m.op === 'e2e-say' || m.op === 'poke') && m.why === 'blocked') { m.handled = true; toast(t('dmBlocked'), true); }
   if (m.op === 'e2e-say' || (m.op === 'say' && m.why === 'e2e')) {
     for (const c of D.convs.values()) c.items = c.items.filter((x) => !x.pending);
     render();
@@ -181,8 +195,10 @@ async function decode(raw, peer) {
   if (raw.del) return { ...raw, lock: 'none', text: '' };
   if (ready) await ready;
   if (typeof raw.e2e !== 'string') return { ...raw, lock: 'plain' };
-  if (!D.key) return { ...raw, lock: 'broken', text: '', note: 'NOT_FOR_THIS_DEVICE' };
+  if (!D.key) return { ...raw, lock: 'before', text: '', note: 'NOT_FOR_THIS_DEVICE' };
   const o = await E.open(raw.e2e, S.uid, S.dev, D.key, raw.from, peer);
+  // Sent before this browser had its key: not an error, the other devices read it
+  if (!o.ok && o.why === 'NOT_FOR_THIS_DEVICE') return { ...raw, lock: 'before', text: '', note: o.why, mid: o.mid };
   if (!o.ok) return { ...raw, lock: 'broken', text: '', note: o.why, mid: o.mid };
   const first = c.seen.get(o.mid) ?? raw.id;
   if (!c.seen.has(o.mid)) c.seen.set(o.mid, raw.id);
@@ -199,11 +215,26 @@ on('msg', async (m) => {
   const i = c.items.findIndex((y) => y.id === x.id || (m.n && y.n === m.n));
   if (i >= 0) c.items[i] = x; else c.items.push(x);
   c.items.sort((a, b) => (a.pending ? 1 : 0) - (b.pending ? 1 : 0) || a.id - b.id);
-  if (i < 0 && x.from !== S.uid && !x.del && (D.open !== peer || $('chat').dataset.view !== 'dm')) c.unread++;
-  if (!D.dms.some((d) => d.with === peer)) D.dms.unshift({ with: peer, name: x.from === peer ? x.name : nameOf(peer) });
+  const looking = D.open === peer && $('chat').dataset.view === 'dm' && !document.hidden;
+  if (i < 0 && x.from !== S.uid && !x.del && !looking) c.unread++;
+  if (i < 0 && x.from !== S.uid && !x.del && document.hidden) notify(t('dmFrom', { name: x.name }), x.text || (x.att ? '📎 ' + x.att.name : t('dmNewMsg')), () => openDm(peer));
+  const d = D.dms.find((y) => y.with === peer);
+  if (d) D.dms = [d, ...D.dms.filter((y) => y !== d)];
+  else D.dms.unshift({ with: peer, name: x.from === peer ? x.name : nameOf(peer) });
+  if (!x.pending) D.preview.set(peer, x);
+  if (looking && x.from !== S.uid) markRead(peer);
   tabs();
-  if (D.open === peer) render(true);
+  if (D.open === peer) render(true); else if ($('chat').dataset.view === 'dm' && !D.open) render();
 });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && D.open && $('chat').dataset.view === 'dm') { conv(D.open).unread = 0; markRead(D.open); tabs(); } });
+
+// The server's read marker for this chat: the last line shown (the other devices are told)
+function markRead(peer) {
+  if (!D.people || !peer) return;
+  const c = conv(peer);
+  const last = c.items.filter((x) => !x.pending && x.id < Number.MAX_SAFE_INTEGER).reduce((n, x) => Math.max(n, x.id), 0);
+  if (last > (c.read || 0)) { c.read = last; send({ t: 'dm-read', with: peer, id: last }); }
+}
 on('history', async (m) => {
   const peer = peerOfConv(m.to);
   if (!peer) return;
@@ -216,9 +247,30 @@ on('history', async (m) => {
     if (x.note !== 'replayed') byID.set(x.id, x);
   }
   c.items = [...byID.values()].sort((a, b) => a.id - b.id).slice(-2000).concat(c.items.filter((x) => x.pending));
+  if (D.open === peer && $('chat').dataset.view === 'dm') markRead(peer);
   if (D.open === peer) render(!m.before);
 });
-on('dms', (m) => { D.dms = (m.items || []).map((d) => ({ with: d.with, name: d.name })); tabs(); if ($('chat').dataset.view === 'dm' && !D.open) render(); });
+on('dms', async (m) => {
+  D.dms = (m.items || []).map((d) => ({ with: d.with, name: d.name, blocked: !!d.blocked }));
+  for (const d of m.items || []) {
+    const c = conv(d.with);
+    if (typeof d.unread === 'number' && !(D.open === d.with && $('chat').dataset.view === 'dm')) c.unread = d.unread;
+    if (typeof d.read === 'number') c.read = Math.max(c.read || 0, d.read);
+  }
+  tabs();
+  // Each chat's last line, decrypted here for the list's preview
+  for (const d of m.items || []) if (d.last) D.preview.set(d.with, await decode(d.last, d.with));
+  if ($('chat').dataset.view === 'dm' && !D.open) render();
+});
+// Read on another device of ours
+on('dm-read', (m) => {
+  const c = conv(m.with);
+  c.read = Math.max(c.read || 0, m.id || 0);
+  if (!c.items.some((x) => x.id > c.read && x.from !== S.uid && !x.pending)) c.unread = 0;
+  tabs();
+  if ($('chat').dataset.view === 'dm') render();
+});
+on('blocks', (m) => { D.blocks = new Set(m.items || []); tabs(); emit('app:blocks'); if ($('chat').dataset.view === 'dm') render(); });
 
 // ====== Files ======
 
@@ -288,11 +340,13 @@ const tab = el('button', { id: 'tabDm', type: 'button' });
 document.querySelector('#chat .chat-tabs').append(tab);
 tab.onclick = () => openDm(D.open || '');
 
-export function openDm(peer) {
+export function openDm(peer, name) {
   D.open = peer;
   D.filter = '';
+  if (peer && name) D.names.set(peer, name);
   if (peer) {
     conv(peer).unread = 0;
+    markRead(peer);
     want(peer); want(S.uid);
     if (!conv(peer).loaded) send({ t: 'history', to: 'u:' + peer });
   }
@@ -303,7 +357,7 @@ export function openDm(peer) {
 }
 
 function tabs() {
-  const unread = [...D.convs.values()].reduce((n, c) => n + c.unread, 0);
+  const unread = [...D.convs.entries()].reduce((n, [u, c]) => n + (D.blocks.has(u) ? 0 : c.unread), 0);
   tab.textContent = t('dmTab');
   tab.dataset.count = unread > 99 ? '99+' : unread || '';
   tab.classList.toggle('on', $('chat').dataset.view === 'dm');
@@ -313,7 +367,7 @@ on('app:lang', () => { tabs(); render(); });
 on('app:down', () => { D.queue = []; });
 
 function lockLabel(x) {
-  return { sealed: '🔒 ' + t('dmE2e'), plain: '⚠ ' + t('dmPlain'), broken: '⛔ ' + t('dmBroken') }[x.lock] || '';
+  return { sealed: '🔒 ' + t('dmE2e'), plain: '⚠ ' + t('dmPlain'), broken: '⛔ ' + t('dmBroken'), before: '🔒' }[x.lock] || '';
 }
 function noteText(x) {
   return { replayed: t('dmReplay'), late: t('dmLate'), NOT_FOR_THIS_DEVICE: t('dmNotForDevice'), NOT_FROM_SENDER: t('dmForged'), WRONG_CONVERSATION: t('dmForged'),
@@ -329,14 +383,34 @@ function render(stick) {
   $('dmSend').textContent = t('send');
   $('dmSay').placeholder = t('write');
   // Who: the open chat, and the others to switch to
-  const others = [...new Set([...D.dms.map((d) => d.with), ...D.convs.keys()])].filter((u) => u && u !== S.uid);
+  const others = [...new Set([...D.dms.map((d) => d.with), ...D.convs.keys()])].filter((u) => u && u !== S.uid && !D.blocks.has(u));
+  if (D.open) head.append(el('button', { type: 'button', class: 'small', id: 'dmAll', text: '← ' + t('dmAll'), onclick: () => openDm('') }));
   for (const u of others.slice(0, 30)) {
     const c = D.convs.get(u);
     head.append(el('button', { type: 'button', class: 'small' + (u === D.open ? ' on' : ''), text: '@' + nameOf(u), dataset: { count: c?.unread ? String(c.unread) : '' }, onclick: () => openDm(u) }));
   }
   if (!D.open) {
-    list.append(el('div', { class: 'empty muted', text: t('dmNone') }));
+    // The recent private chats: who, the last line (decrypted here), when, how many unread
     $('dmForm').classList.add('hidden');
+    if (!others.length) { list.append(el('div', { class: 'empty muted', text: t('dmNone') })); return; }
+    list.append(el('div', { class: 'section dmsection', text: t('dmRecent') }));
+    for (const u of others.slice(0, 100)) {
+      const c = D.convs.get(u);
+      const last = D.preview.get(u) || c?.items.filter((x) => !x.pending).at(-1);
+      let text = '';
+      if (last) {
+        if (last.del) text = t('deleted');
+        else if (last.lock === 'before') text = '🔒 ' + t('dmEncrypted');
+        else if (last.lock === 'broken') text = '⛔ ' + t('dmBroken');
+        else text = (last.from === S.uid ? t('dmYou') : '') + (last.text || (last.att ? '📎 ' + last.att.name : ''));
+      }
+      const n = c?.unread || 0;
+      list.append(el('button', { type: 'button', class: 'dmrow' + (n ? ' unread' : ''), dataset: { uid: u }, onclick: () => openDm(u) },
+        avatar(nameOf(u), u, 36),
+        el('span', { class: 'dmtext' }, el('span', { class: 'dmname', text: nameOf(u) }), el('span', { class: 'dmprev', text: text })),
+        el('span', { class: 'dmmeta' }, last ? el('span', { class: 'when', text: new Date(last.at).toLocaleDateString() === new Date().toLocaleDateString() ? new Date(last.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date(last.at).toLocaleDateString([], { day: 'numeric', month: 'short' }) }) : null,
+          n ? el('span', { class: 'dmcount', text: n > 99 ? '99+' : String(n) }) : null)));
+    }
     return;
   }
   $('dmForm').classList.remove('hidden');
@@ -357,8 +431,12 @@ function render(stick) {
   const same = Object.entries(pins).find(([u, q]) => u !== peer && q.name && q.name.toLowerCase() === name.toLowerCase());
   if (same) banner.append(el('div', { class: 'dmwarn bad', text: t('dmSameName', { name }) }));
   if (p?.bad) banner.append(el('div', { class: 'dmwarn bad', text: t('dmBadKeys', { name }) }));
-  $('dmSay').disabled = p?.supported === false;
-  $('dmAttach').disabled = p?.supported === false || !S.files;
+  const blocked = D.blocks.has(peer);
+  if (blocked) banner.append(el('div', { class: 'dmwarn', id: 'dmBlockedNote' }, el('span', { text: t('dmYouBlocked', { name }) }),
+    el('button', { type: 'button', class: 'small', text: t('unblock'), onclick: () => setBlocked(peer, false) })));
+  if (!memberByUid(peer) && !blocked && p?.supported) banner.append(el('div', { class: 'dmnote muted small', id: 'dmOfflineNote', text: t('dmOfflineNote', { name }) }));
+  $('dmSay').disabled = p?.supported === false || blocked;
+  $('dmAttach').disabled = p?.supported === false || !S.files || blocked;
   const c = conv(peer);
   if (c.more) list.append(el('button', { class: 'ghost small', type: 'button', text: t('older'), onclick: () => { const first = c.items.find((x) => !x.pending); if (first) send({ t: 'history', to: 'u:' + peer, before: first.id }); } }));
   const q = D.filter.trim().toLowerCase();
@@ -366,7 +444,7 @@ function render(stick) {
     if (q && !(x.text || '').toLowerCase().includes(q) && !(x.att?.name || '').toLowerCase().includes(q)) continue;
     const text = el('div', { class: 'text' });
     if (x.del) text.textContent = t('deleted');
-    else if (x.lock === 'broken') text.textContent = noteText(x);
+    else if (x.lock === 'broken' || x.lock === 'before') text.textContent = noteText(x);
     else text.textContent = x.text;
     const row = el('div', { class: 'msg lock-' + (x.lock || 'none') + (x.pending ? ' pending' : '') + (x.from === S.uid ? ' own' : ''), dataset: { id: x.id } },
       el('span', { class: 'who', text: x.name }),
@@ -374,7 +452,7 @@ function render(stick) {
       x.del ? null : el('span', { class: 'lock', title: lockLabel(x), text: lockLabel(x) }),
       text);
     if (x.att && !x.del) row.append(fileCard(x.att, row));
-    if (x.note && x.lock !== 'broken') row.append(el('div', { class: 'muted small', text: noteText(x) }));
+    if (x.note && x.lock !== 'broken' && x.lock !== 'before') row.append(el('div', { class: 'muted small', text: noteText(x) }));
     list.append(row);
   }
   if (stick) list.scrollTop = list.scrollHeight;
@@ -419,5 +497,6 @@ $('dmFile').onchange = () => { for (const f of $('dmFile').files) sendFile(D.ope
 
 // "Message" on a person's card
 on('app:personPop', ({ mem, pop }) => {
-  pop.append(el('button', { type: 'button', class: 'small', id: 'dmOpen', text: t('dmMessage'), onclick: () => { pop.classList.add('hidden'); openDm(mem.uid); } }));
+  if (!D.blocks.has(mem.uid)) pop.append(el('button', { type: 'button', class: 'small', id: 'dmOpen', text: t('dmMessage'), onclick: () => { pop.classList.add('hidden'); openDm(mem.uid, mem.name); } }));
+  if (D.people) pop.append(el('button', { type: 'button', class: 'small', id: 'dmBlock', text: D.blocks.has(mem.uid) ? t('unblock') : t('block'), onclick: () => { pop.classList.add('hidden'); setBlocked(mem.uid, !D.blocks.has(mem.uid)); } }));
 });

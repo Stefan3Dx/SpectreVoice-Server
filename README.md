@@ -121,8 +121,18 @@ sounds at most; `SV_SOUNDBOARD=false` turns it off.
 Everything stays on this server: accounts are keys made on the devices (no e-mail, no phone number), chat history,
 files and settings are here and nowhere else. What leaves it, and only when you turn it on or use it:
 
-- **Push notifications** (`SV_PUSH_CREDENTIALS`): through Google; by default only "there is a message" and which
-  server, never who or what (`SV_PUSH_CONTENT=false`). On the phone they're off until the person turns them on.
+- **Push notifications**: on the phone they're off until the person turns them on. Nothing to set up: a server
+  without Firebase credentials of its own sends them through the push relay of the donation service
+  (`SV_LICENSE_URL`, `POST /v1/push`, signed with this server's key), because the phones' tokens belong to the
+  official apps' Firebase project and only its credentials can reach them. Each phone's notification is sealed for
+  that phone (AES-256-GCM, a key the app gave this server): Google and the relay see the phone's token and a sealed
+  blob, never who wrote or what. Inside, for a private message, are the sender's name and the end-to-end envelope,
+  which the phone decrypts itself for a preview. Older apps (no key) get only "there is a message". Turn the relay
+  off with `SV_PUSH_RELAY=false` (no push then), or use your own Firebase project with `SV_PUSH_CREDENTIALS` (a
+  service account key; it reaches only apps built with that project's ids). `SV_PUSH_CONTENT=true` adds the text
+  of mentions for older apps (never of private messages).
+- **Member list**: everyone who has been on the server, online or not; when offline people were last here is
+  shown only with `SV_MEMBERS_LAST_SEEN=true` (off by default).
 - **Music bot**: `!play some words` searches YouTube from this server (the words go there); `!play <link>` plays
   only that link (public addresses only: yt-dlp and ffmpeg go through the same kind of proxy as the TV, so
   redirects and stream segments into the LAN are refused too).

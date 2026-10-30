@@ -82,6 +82,7 @@ type config struct {
 	audioLevel  int    // the voice's level where a channel doesn't set one (quality.go)
 	music       bool   // the music bot (needs yt-dlp and ffmpeg)
 	pushContent bool   // push notifications carry who and what (through Google); off: only that there's something
+	membersSeen bool   // the member list shows when offline people were last here (people.go)
 	ytdlp       string
 	ffmpeg      string
 	tv          bool          // the server's TV (tv.go): an IPTV channel everyone watches, played by ffmpeg
@@ -203,6 +204,7 @@ func main() {
 	flag.StringVar(&cfg.pushCreds, "push-credentials", env("SV_PUSH_CREDENTIALS", ""), "Firebase service account (JSON) for push notifications [SV_PUSH_CREDENTIALS]")
 	flag.StringVar(&cfg.licenseURL, "license-url", env("SV_LICENSE_URL", "https://license.spectrevoice.com"), "the donation service: donations add places for a month [SV_LICENSE_URL]")
 	flag.IntVar(&cfg.audioLevel, "audio-quality", envInt("SV_AUDIO_QUALITY", defaultAudioLevel), "voice quality where a channel sets none: 1 low … 6 max [SV_AUDIO_QUALITY]")
+	flag.BoolVar(&cfg.membersSeen, "members-last-seen", envBool("SV_MEMBERS_LAST_SEEN", false), "the member list shows when offline people were last here [SV_MEMBERS_LAST_SEEN]")
 	flag.BoolVar(&cfg.pushContent, "push-content", envBool("SV_PUSH_CONTENT", false), "push notifications carry the sender and the text (they pass through Google) [SV_PUSH_CONTENT]")
 	flag.BoolVar(&cfg.music, "music", envBool("SV_MUSIC", true), "the music bot (!play), when yt-dlp and ffmpeg are installed [SV_MUSIC]")
 	flag.StringVar(&cfg.ytdlp, "yt-dlp", env("SV_YTDLP", "yt-dlp"), "yt-dlp program [SV_YTDLP]")
