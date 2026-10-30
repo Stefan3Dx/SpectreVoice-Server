@@ -497,3 +497,14 @@ func TestCallDeclineRateLimited(t *testing.T) {
 	}
 }
 
+
+// The welcome says whether this server has calls (and how), so the apps show the call button only where it works.
+func TestCallsInWelcome(t *testing.T) {
+	for route, want := range map[string]any{"sfu": "sfu", "p2p": "p2p", "off": nil} {
+		_, hs := newTestServer(t, func(c *config) { c.callsRoute = route })
+		c, _ := dialV(t, hs, newKey(t), "Ana", "")
+		if got := c.wel["server"].(map[string]any)["calls"]; got != want {
+			t.Fatalf("route %s: calls %v", route, got)
+		}
+	}
+}

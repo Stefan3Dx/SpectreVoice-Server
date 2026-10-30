@@ -14,6 +14,8 @@ package main
 //	<- {"t":"call-sdp","id","type","sdp","ik","fsig"} · {"t":"call-ice","id","candidate","mid","mline"}  passed on
 //	<- {"t":"call-rejoin","id"}                   a reconnected session carries the call again -> call-rejoined
 //
+// The welcome's server "calls" says the route ("p2p", "sfu"); without it (off, or an older server) the apps hide calls.
+//
 // HTTP: POST /v1/call/decline {"call","t"} declines from a phone's notification without signing in (t from the
 // sealed push: an HMAC of the call and the callee); 10 tries an address, then one every 6 s.
 

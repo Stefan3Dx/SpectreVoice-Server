@@ -499,6 +499,9 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	srv := map[string]any{"motd": h.s.cfg.motd, "version": version, "ice": h.s.publicICE(uid),
 		"audio": audioLevels, "video": videoLevels, "audioDefault": h.s.cfg.audioLevel, "music": h.s.music.enabled(), "files": h.s.chfiles != nil,
 		"people": true, "membersSeen": h.s.cfg.membersSeen} // people.go: members, dm-read, block
+	if r := h.s.callRoute(); r != "off" {
+		srv["calls"] = r // calls.go: how this server's calls go ("p2p", "sfu"); none: no calls here
+	}
 	for k, v := range info {
 		srv[k] = v
 	}
