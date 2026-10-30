@@ -490,5 +490,8 @@
  "dmRecent": "Mesaje private",
  "dmEncrypted": "Mesaj criptat",
  "dmYou": "Tu: ",
- "dmYouBlocked": "L-ai blocat pe {name}: nu vă puteți scrie privat."
+ "dmYouBlocked": "L-ai blocat pe {name}: nu vă puteți scrie privat.",
+ "maxVolume": "Volum maxim",
+ "maxVolumeNote": "Nicio voce nu iese mai tare de atât: o tuse sau un țipăt e dat mai încet pe loc (stream-urile își păstrează volumul lor).",
+ "maxOff": "oprit"
 }

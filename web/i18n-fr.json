@@ -490,5 +490,8 @@
  "dmRecent": "Messages privés",
  "dmEncrypted": "Message chiffré",
  "dmYou": "Toi : ",
- "dmYouBlocked": "Tu as bloqué {name} : plus de messages privés dans les deux sens."
+ "dmYouBlocked": "Tu as bloqué {name} : plus de messages privés dans les deux sens.",
+ "maxVolume": "Volume maximal",
+ "maxVolumeNote": "Aucune voix ne sort plus fort que cela : une toux ou un cri est baissé aussitôt (les streams gardent leur propre volume).",
+ "maxOff": "désactivé"
 }

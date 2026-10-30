@@ -490,5 +490,8 @@
  "dmRecent": "Direktnachrichten",
  "dmEncrypted": "Verschlüsselte Nachricht",
  "dmYou": "Du: ",
- "dmYouBlocked": "Du hast {name} blockiert: keine privaten Nachrichten in beide Richtungen."
+ "dmYouBlocked": "Du hast {name} blockiert: keine privaten Nachrichten in beide Richtungen.",
+ "maxVolume": "Maximale Lautstärke",
+ "maxVolumeNote": "Keine Stimme wird lauter als das: Ein Husten oder ein Schrei wird sofort leiser gemacht (Streams behalten ihre eigene Lautstärke).",
+ "maxOff": "aus"
 }

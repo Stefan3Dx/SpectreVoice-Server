@@ -349,3 +349,5 @@ body.inapp .top, body.inapp .foot { display: none; }
   .tvlist { grid-template-columns: 1fr; max-height: none; }
   .srvhead { padding: 12px; }
 }
+.maxdb { display: flex; align-items: center; gap: 8px; }
+.maxdb input[type=range] { flex: 1; min-width: 0; }

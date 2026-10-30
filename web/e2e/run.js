@@ -46,6 +46,28 @@ if (!base || !text) {
     await page.waitForFunction(() => [...document.querySelectorAll('.msg:not(.pending) .text')].some((e) => e.textContent === 'hi from web'), null, { timeout: 10000 });
     console.log('SAID');
 
+    // Max volume: the voices' limiter keeps a full-scale tone at the ceiling (-9 dB ≈ 0.355) and leaves a quiet one as it was
+    const lim = await page.evaluate(async () => {
+      const m = await import(new URL('voice.js', document.baseURI).href);
+      const run = async (amp) => {
+        const ctx = new OfflineAudioContext(1, 48000, 48000);
+        const o = ctx.createOscillator();
+        o.frequency.value = 440;
+        const g = ctx.createGain();
+        g.gain.value = amp;
+        const l = m.limiterChain(ctx, -9);
+        o.connect(g); g.connect(l.input); l.output.connect(ctx.destination); o.start();
+        const d = (await ctx.startRendering()).getChannelData(0);
+        let peak = 0;
+        for (let i = 24000; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i]));
+        return peak;
+      };
+      return { loud: await run(1), quiet: await run(0.1) };
+    });
+    if (!(lim.loud <= 0.37 && lim.loud > 0.3)) throw new Error('limiter: a full-scale tone came out at ' + lim.loud);
+    if (Math.abs(lim.quiet - 0.1) > 0.01) throw new Error('limiter: a quiet tone changed to ' + lim.quiet);
+    console.log('LIMITER ' + JSON.stringify(lim));
+
     await page.click('body');
     await page.keyboard.down('Space');
     const live = await page.$eval('#ptt', (e) => e.classList.contains('live'));

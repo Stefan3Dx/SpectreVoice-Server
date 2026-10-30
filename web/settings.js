@@ -1,9 +1,9 @@
-// Settings (kept in this browser): language, microphone and speakers, the browser's noise suppression, the
+// Settings (kept in this browser): language, microphone and speakers, the browser's noise suppression, max volume, the
 // push-to-talk key, and notifications while the tab is hidden (opt-in).
 
 import { el, emit, openDialog } from './core.js';
 import { t, LANGS, getLang, setLang } from './i18n.js';
-import { prefs, setInputDevice, setOutputDevice, setNoiseSuppression, setPttKey, keyName } from './voice.js';
+import { prefs, setInputDevice, setOutputDevice, setNoiseSuppression, setPttKey, keyName, setMaxDb } from './voice.js';
 import { notifyPrefs, setNotify } from './chat.js';
 
 async function devices() {
@@ -43,6 +43,13 @@ export async function openSettings() {
     document.addEventListener('keydown', grab, true);
   };
 
+  // Max volume: no voice louder than this (a cough, a shout); the slider's end is off
+  const maxLabel = (db) => (db >= 0 ? t('maxOff') : db + ' dB');
+  const maxOut = el('span', { class: 'muted small', id: 'setMaxDbVal', text: maxLabel(prefs.maxDb) });
+  const maxDb = el('input', { type: 'range', id: 'setMaxDb', min: -24, max: 0, step: 1, value: prefs.maxDb, attrs: { 'aria-label': t('maxVolume') } });
+  maxDb.oninput = () => { maxOut.textContent = maxLabel(+maxDb.value); };
+  maxDb.onchange = () => setMaxDb(+maxDb.value);
+
   const notifyOK = 'Notification' in window;
   const notify = el('input', { type: 'checkbox', id: 'setNotify', checked: notifyPrefs.on, disabled: !notifyOK });
   notify.onchange = async () => { notify.checked = await setNotify(notify.checked); };
@@ -55,6 +62,7 @@ export async function openSettings() {
     row(t('microphone'), devSelect('setIn', ins, prefs.inDev, (v) => setInputDevice(v))),
     sinkOK ? row(t('speakers'), devSelect('setOut', outs, prefs.outDev, (v) => setOutputDevice(v))) : el('p', { class: 'muted small', text: t('speakersNo') }),
     row(t('noiseSuppression'), ns, t('noiseNote')),
+    row(t('maxVolume'), el('span', { class: 'maxdb' }, maxDb, maxOut), t('maxVolumeNote')),
     el('div', { class: 'setrow' }, el('span', { class: 'setlabel' }, t('pttKey'), el('small', { class: 'muted', text: t('pttNote') })), ptt),
     el('h3', { text: t('notifications') }),
     row(t('notifyHidden'), notify, notifyOK ? t('notifyNote') : t('notifyNo')));

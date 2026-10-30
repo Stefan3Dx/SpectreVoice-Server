@@ -490,5 +490,8 @@
  "dmRecent": "Wiadomości prywatne",
  "dmEncrypted": "Zaszyfrowana wiadomość",
  "dmYou": "Ty: ",
- "dmYouBlocked": "Zablokowano {name}: brak prywatnych wiadomości w obie strony."
+ "dmYouBlocked": "Zablokowano {name}: brak prywatnych wiadomości w obie strony.",
+ "maxVolume": "Maksymalna głośność",
+ "maxVolumeNote": "Żaden głos nie będzie głośniejszy: kaszel lub krzyk zostaje od razu ściszony (streamy zachowują własną głośność).",
+ "maxOff": "wył."
 }

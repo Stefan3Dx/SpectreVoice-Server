@@ -490,5 +490,8 @@
  "dmRecent": "Közvetlen üzenetek",
  "dmEncrypted": "Titkosított üzenet",
  "dmYou": "Te: ",
- "dmYouBlocked": "Letiltottad: {name}. Egyik irányban sincs privát üzenet."
+ "dmYouBlocked": "Letiltottad: {name}. Egyik irányban sincs privát üzenet.",
+ "maxVolume": "Maximális hangerő",
+ "maxVolumeNote": "Egyetlen hang sem szól ennél hangosabban: egy köhögést vagy kiabálást azonnal lehalkít (a streamek megtartják a saját hangerejüket).",
+ "maxOff": "ki"
 }

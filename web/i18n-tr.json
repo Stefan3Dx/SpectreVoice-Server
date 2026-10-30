@@ -490,5 +490,8 @@
  "dmRecent": "Doğrudan mesajlar",
  "dmEncrypted": "Şifreli mesaj",
  "dmYou": "Sen: ",
- "dmYouBlocked": "{name} kişisini engelledin: iki yönde de özel mesaj yok."
+ "dmYouBlocked": "{name} kişisini engelledin: iki yönde de özel mesaj yok.",
+ "maxVolume": "Maksimum ses",
+ "maxVolumeNote": "Hiçbir ses bundan yüksek çıkmaz: bir öksürük ya da bağırış anında kısılır (yayınlar kendi ses seviyelerini korur).",
+ "maxOff": "kapalı"
 }

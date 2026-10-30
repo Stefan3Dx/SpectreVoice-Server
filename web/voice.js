@@ -1,7 +1,7 @@
 // Voice: one WebRTC connection to the server's SFU over /v1/ws ("rtc"/"ice"/"rtc-reset"); the server offers again
 // whenever who we hear changes. Push-to-talk (a key, Space by default, or the button), open mic, mute, deafen,
 // per-person volume and mute (kept per uid in this browser), the microphone and speakers chosen in the settings, and
-// the browser's own noise suppression.
+// the browser's own noise suppression, and Max volume (each voice through a limiter).
 
 import { $, S, send, store, toast, emit, on, rtcConfig } from './core.js';
 import { t } from './i18n.js';
@@ -14,7 +14,72 @@ export const prefs = {
   outDev: store.get('sv.outDev', ''),
   ns: store.get('sv.ns', '1') !== '0',
   pttKey: store.get('sv.pttKey', 'Space'),
+  // Max volume: the loudest a voice may come out (dBFS, -24 .. -1; 0 = off), as in the apps
+  maxDb: Math.max(-24, Math.min(0, Math.round(+store.get('sv.maxDb', '-9')) || 0)),
 };
+
+// ====== Max volume: each voice through a limiter (Web Audio), so a cough or a shout never comes out above it ======
+
+const A = { ctx: null };
+
+function audioCtx() {
+  if (A.ctx) return A.ctx;
+  const C = window.AudioContext || window.webkitAudioContext;
+  if (!C) return null;
+  try { A.ctx = new C({ latencyHint: 'interactive' }); } catch { return null; }
+  if (prefs.outDev && typeof A.ctx.setSinkId === 'function') A.ctx.setSinkId(prefs.outDev).catch(() => {});
+  // Started by the next click or key if the browser held it back
+  const resume = () => { if (A.ctx && A.ctx.state === 'suspended') A.ctx.resume().catch(() => {}); };
+  document.addEventListener('pointerdown', resume, true);
+  document.addEventListener('keydown', resume, true);
+  resume();
+  return A.ctx;
+}
+
+// A limiter at [db] dBFS: in → out nodes. The compressor adds its own makeup gain (the spec's 0.6 power of what it
+// takes off at full scale); the gain after it takes that back, so under the ceiling the voice is as it was.
+export function limiterChain(ctx, db) {
+  const c = ctx.createDynamicsCompressor();
+  const ratio = 20; // the most Web Audio allows: the threshold a little lower, so full scale comes out at [db]
+  const thr = Math.max(-100, (db * ratio) / (ratio - 1));
+  c.threshold.value = thr;
+  c.knee.value = 0;
+  c.ratio.value = ratio;
+  c.attack.value = 0.001;
+  c.release.value = 0.4;
+  const back = ctx.createGain();
+  back.gain.value = Math.pow(10, (0.6 * thr * (1 - 1 / ratio)) / 20);
+  c.connect(back);
+  return { input: c, output: back };
+}
+
+// One voice's way out: the element alone (no limiter, or no Web Audio), or element (muted, it keeps Chrome pulling
+// the remote track) → source → volume → limiter → speakers
+function wire(entry) {
+  unwire(entry);
+  if (prefs.maxDb >= 0 || !entry.el.srcObject) return;
+  const ctx = audioCtx();
+  if (!ctx) return;
+  try {
+    const src = ctx.createMediaStreamSource(entry.el.srcObject);
+    const gain = ctx.createGain();
+    const lim = limiterChain(ctx, prefs.maxDb);
+    src.connect(gain);
+    gain.connect(lim.input);
+    lim.output.connect(ctx.destination);
+    entry.graph = { src, gain, out: lim.output };
+  } catch (e) {
+    console.warn('limiter', e);
+    entry.graph = null;
+  }
+}
+
+export function setMaxDb(db) {
+  prefs.maxDb = Math.max(-24, Math.min(0, Math.round(+db) || 0));
+  store.set('sv.maxDb', String(prefs.maxDb));
+  for (const a of V.audios.values()) wire(a);
+  applyVolumes();
+}
 
 function micConstraints() {
   return {
@@ -58,11 +123,13 @@ export async function voiceStart() {
     // One stream per voice, named "s<sid>"
     const sid = +((ev.streams[0]?.id || '').replace(/^s/, ''));
     const old = V.audios.get(ev.transceiver);
-    if (old) { old.el.pause(); old.el.srcObject = null; }
+    if (old) { unwire(old); old.el.pause(); old.el.srcObject = null; }
     const a = new Audio();
     a.autoplay = true;
     a.srcObject = ev.streams[0] || new MediaStream([ev.track]);
-    V.audios.set(ev.transceiver, { el: a, sid });
+    const entry = { el: a, sid, graph: null };
+    V.audios.set(ev.transceiver, entry);
+    wire(entry);
     applySink(a);
     applyVolumes();
     a.play().catch(() => { /* a user gesture came first (the connect button) */ });
@@ -87,7 +154,7 @@ export async function voiceStart() {
 export function voiceStop() {
   if (V.pc) { V.pc.onconnectionstatechange = null; V.pc.close(); }
   V.pc = null;
-  for (const { el } of V.audios.values()) { el.pause(); el.srcObject = null; }
+  for (const a of V.audios.values()) { unwire(a); a.el.pause(); a.el.srcObject = null; }
   V.audios.clear();
   document.body.dataset.rtc = 'new';
   emit('app:rtc');
@@ -125,6 +192,7 @@ export async function voiceSignal(m) {
 function pruneAudios() {
   for (const [tr, a] of V.audios) {
     if (tr.stopped || !tr.currentDirection || !tr.currentDirection.includes('recv')) {
+      unwire(a);
       a.el.pause();
       a.el.srcObject = null;
       V.audios.delete(tr);
@@ -132,11 +200,25 @@ function pruneAudios() {
   }
 }
 
+function unwire(entry) {
+  if (!entry.graph) return;
+  try { entry.graph.src.disconnect(); entry.graph.out.disconnect(); } catch { /* gone */ }
+  entry.graph = null;
+}
+
 export function applyVolumes() {
-  for (const { el: a, sid } of V.audios.values()) {
+  for (const { el: a, sid, graph } of V.audios.values()) {
     const uid = S.members.get(sid)?.uid;
-    a.volume = Math.max(0, Math.min(1, S.volumes[uid] ?? 1));
-    a.muted = S.snd || !!S.muted[uid];
+    const vol = Math.max(0, Math.min(1, S.volumes[uid] ?? 1));
+    const off = S.snd || !!S.muted[uid];
+    if (graph) {
+      // Through the limiter: the element stays muted (it only keeps the track flowing)
+      graph.gain.gain.value = off ? 0 : vol;
+      a.muted = true;
+    } else {
+      a.volume = vol;
+      a.muted = off;
+    }
   }
   emit('app:volumes');
 }
@@ -186,6 +268,7 @@ export function setOutputDevice(id) {
   for (const { el: a } of V.audios.values()) {
     if (typeof a.setSinkId === 'function') a.setSinkId(id).catch(() => {});
   }
+  if (A.ctx && typeof A.ctx.setSinkId === 'function') A.ctx.setSinkId(id || '').catch(() => {});
   emit('app:sink');
 }
 export async function setNoiseSuppression(on) {

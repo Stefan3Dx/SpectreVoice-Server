@@ -490,5 +490,8 @@
  "dmRecent": "Direct messages",
  "dmEncrypted": "Encrypted message",
  "dmYou": "You: ",
- "dmYouBlocked": "You blocked {name}: no private messages either way."
+ "dmYouBlocked": "You blocked {name}: no private messages either way.",
+ "maxVolume": "Max volume",
+ "maxVolumeNote": "No voice comes out louder than this: a cough or a shout is turned down at once (streams keep their own volume).",
+ "maxOff": "off"
 }

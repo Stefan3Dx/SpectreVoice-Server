@@ -490,5 +490,8 @@
  "dmRecent": "Mensagens diretas",
  "dmEncrypted": "Mensagem cifrada",
  "dmYou": "Tu: ",
- "dmYouBlocked": "Bloqueaste {name}: sem mensagens privadas em nenhum sentido."
+ "dmYouBlocked": "Bloqueaste {name}: sem mensagens privadas em nenhum sentido.",
+ "maxVolume": "Volume máximo",
+ "maxVolumeNote": "Nenhuma voz sai mais alta do que isto: uma tosse ou um grito é baixado na hora (os streams mantêm o seu próprio volume).",
+ "maxOff": "desligado"
 }
