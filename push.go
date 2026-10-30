@@ -45,11 +45,15 @@ type pusher struct {
 	access  string
 	expires time.Time
 	queue   chan pushJob
+	// relay: no credentials of its own, the pushes go through the donation service (pushrelay.go)
+	relay func(token string, data map[string]string, ttl string) error
 }
 
 type pushJob struct {
 	uid  string
 	data map[string]string
+	ttl  string // "": a day; a call's ring lasts its own time (calls.go)
+	only string // one device's token ("": all of uid's)
 }
 
 func newPusher(credFile string, st *store) (*pusher, error) {
@@ -93,7 +97,18 @@ func newPusher(credFile string, st *store) (*pusher, error) {
 func (st *store) migratePush() error {
 	_, err := st.db.Exec(`CREATE TABLE IF NOT EXISTS push_tokens(token TEXT PRIMARY KEY, uid TEXT NOT NULL, platform TEXT NOT NULL DEFAULT '', updated INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS push_tokens_uid ON push_tokens(uid);`)
-	return err
+	if err != nil {
+		return err
+	}
+	// The device's own key for what only it may read (a call's caller, calls.go) and the address it dials
+	for _, col := range []string{"pkey", "addr"} {
+		if !st.hasColumn("push_tokens", col) {
+			if _, err := st.db.Exec(`ALTER TABLE push_tokens ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (st *store) pushTokens(uid string) []string {
@@ -153,15 +168,19 @@ func (p *pusher) notify(uid string, data map[string]string) {
 		return
 	}
 	select {
-	case p.queue <- pushJob{uid, data}:
+	case p.queue <- pushJob{uid: uid, data: data}:
 	default:
 	}
 }
 
 func (p *pusher) loop() {
 	for j := range p.queue {
-		for _, tok := range p.st.pushTokens(j.uid) {
-			if err := p.send(tok, j.data); err != nil {
+		toks := []string{j.only}
+		if j.only == "" {
+			toks = p.st.pushTokens(j.uid)
+		}
+		for _, tok := range toks {
+			if err := p.sendTTL(tok, j.data, j.ttl); err != nil {
 				log.Printf("push %s: %v", j.uid, err)
 			}
 		}
@@ -170,14 +189,37 @@ func (p *pusher) loop() {
 
 var errGoneToken = errors.New("token no longer valid")
 
-func (p *pusher) send(token string, data map[string]string) error {
+func (p *pusher) send(token string, data map[string]string) error { return p.sendTTL(token, data, "") }
+
+// notifyOne queues a push for one device of uid, living ttl ("": a day).
+func (p *pusher) notifyOne(uid, token string, data map[string]string, ttl string) {
+	if p == nil {
+		return
+	}
+	select {
+	case p.queue <- pushJob{uid: uid, data: data, ttl: ttl, only: token}:
+	default:
+	}
+}
+
+func (p *pusher) sendTTL(token string, data map[string]string, ttl string) error {
+	if ttl == "" {
+		ttl = "86400s"
+	}
+	if p.relay != nil {
+		err := p.relay(token, data, ttl)
+		if errors.Is(err, errGoneToken) {
+			_, _ = p.st.db.Exec(`DELETE FROM push_tokens WHERE token=?`, token)
+		}
+		return err
+	}
 	at, err := p.accessToken()
 	if err != nil {
 		return err
 	}
 	body, _ := json.Marshal(map[string]any{"message": map[string]any{
 		"token": token, "data": data,
-		"android": map[string]any{"priority": "HIGH", "ttl": "86400s"},
+		"android": map[string]any{"priority": "HIGH", "ttl": ttl},
 	}})
 	req, _ := http.NewRequest("POST", p.api+"/v1/projects/"+p.project+"/messages:send", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+at)
@@ -220,6 +262,7 @@ func (s *server) pushOp(ss *session, t string, m map[string]any) bool {
 			ss.refuse(t, "server", err.Error())
 			return true
 		}
+		s.pushKeyOf(tok, ss.uid, m) // a call's sealed push (calls.go)
 		// A person's devices, the newest few: tokens made up by the thousand can't fill the database (or make each
 		// notification thousands of requests to Google)
 		_, _ = s.store.db.Exec(`DELETE FROM push_tokens WHERE uid=? AND token NOT IN (SELECT token FROM push_tokens WHERE uid=? ORDER BY updated DESC, rowid DESC LIMIT ?)`,

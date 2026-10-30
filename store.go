@@ -66,10 +66,12 @@ type chatMsg struct {
 	Del  bool   `json:"del,omitempty"`
 	// An end-to-end encrypted private message (e2e.go): the sender's envelope, opaque here; Text is "" then
 	Enc string `json:"e2e,omitempty"`
+	// A line the server writes itself (calls.go: a call's "Missed call", "Call · 12 min"), JSON; never edited
+	Sys string `json:"sys,omitempty"`
 }
 
 // msgCols: a message row as chatMsg scans it.
-const msgCols = "id,conv,from_uid,from_name,text,at,edited,deleted,enc"
+const msgCols = "id,conv,from_uid,from_name,text,at,edited,deleted,enc,sys"
 
 type store struct {
 	db    *sql.DB
@@ -100,6 +102,12 @@ func openStore(path string) (*store, error) {
 	// End-to-end encrypted private messages (e2e.go): their envelope, in a column of its own
 	if !st.hasColumn("messages", "enc") {
 		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN enc TEXT NOT NULL DEFAULT ''`); err != nil {
+			return nil, fmt.Errorf("schema: %w", err)
+		}
+	}
+	// The server's own lines (calls.go)
+	if !st.hasColumn("messages", "sys") {
+		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN sys TEXT NOT NULL DEFAULT ''`); err != nil {
 			return nil, fmt.Errorf("schema: %w", err)
 		}
 	}
@@ -287,7 +295,7 @@ func dmOther(conv, uid string) string {
 }
 
 func (st *store) addMessage(m *chatMsg) error {
-	res, err := st.db.Exec(`INSERT INTO messages(conv,from_uid,from_name,text,at,enc) VALUES(?,?,?,?,?,?)`, m.To, m.From, m.Name, m.Text, m.At, m.Enc)
+	res, err := st.db.Exec(`INSERT INTO messages(conv,from_uid,from_name,text,at,enc,sys) VALUES(?,?,?,?,?,?,?)`, m.To, m.From, m.Name, m.Text, m.At, m.Enc, m.Sys)
 	if err != nil {
 		return err
 	}
@@ -309,7 +317,7 @@ func (st *store) history(conv string, before int64, limit int) ([]chatMsg, error
 	for rows.Next() {
 		var m chatMsg
 		var del int
-		if err := rows.Scan(&m.ID, &m.To, &m.From, &m.Name, &m.Text, &m.At, &m.Edit, &del, &m.Enc); err != nil {
+		if err := rows.Scan(&m.ID, &m.To, &m.From, &m.Name, &m.Text, &m.At, &m.Edit, &del, &m.Enc, &m.Sys); err != nil {
 			return nil, err
 		}
 		if del == 1 {
@@ -329,7 +337,7 @@ func (st *store) scanMessages(rows *sql.Rows) ([]chatMsg, error) {
 	for rows.Next() {
 		var m chatMsg
 		var del int
-		if err := rows.Scan(&m.ID, &m.To, &m.From, &m.Name, &m.Text, &m.At, &m.Edit, &del, &m.Enc); err != nil {
+		if err := rows.Scan(&m.ID, &m.To, &m.From, &m.Name, &m.Text, &m.At, &m.Edit, &del, &m.Enc, &m.Sys); err != nil {
 			return nil, err
 		}
 		if del == 1 {
@@ -383,7 +391,7 @@ func (st *store) historyAround(conv string, id int64, half int) (items []chatMsg
 func (st *store) message(id int64) (*chatMsg, error) {
 	var m chatMsg
 	var del int
-	err := st.db.QueryRow(`SELECT `+msgCols+` FROM messages WHERE id=?`, id).Scan(&m.ID, &m.To, &m.From, &m.Name, &m.Text, &m.At, &m.Edit, &del, &m.Enc)
+	err := st.db.QueryRow(`SELECT `+msgCols+` FROM messages WHERE id=?`, id).Scan(&m.ID, &m.To, &m.From, &m.Name, &m.Text, &m.At, &m.Edit, &del, &m.Enc, &m.Sys)
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +417,7 @@ type dmSummary struct {
 
 // dms lists uid's private conversations, the most recent first.
 func (st *store) dms(uid string, limit int) ([]dmSummary, error) {
-	rows, err := st.db.Query(`SELECT m.id,m.conv,m.from_uid,m.from_name,m.text,m.at,m.edited,m.deleted,m.enc FROM messages m
+	rows, err := st.db.Query(`SELECT m.id,m.conv,m.from_uid,m.from_name,m.text,m.at,m.edited,m.deleted,m.enc,m.sys FROM messages m
 		JOIN (SELECT conv, MAX(id) AS id FROM messages WHERE conv LIKE ? OR conv LIKE ? GROUP BY conv) l ON l.id=m.id
 		ORDER BY m.id DESC LIMIT ?`, "d:"+uid+":%", "d:%:"+uid, limit)
 	if err != nil {
@@ -419,7 +427,7 @@ func (st *store) dms(uid string, limit int) ([]dmSummary, error) {
 	for rows.Next() {
 		var m chatMsg
 		var del int
-		if err := rows.Scan(&m.ID, &m.To, &m.From, &m.Name, &m.Text, &m.At, &m.Edit, &del, &m.Enc); err != nil {
+		if err := rows.Scan(&m.ID, &m.To, &m.From, &m.Name, &m.Text, &m.At, &m.Edit, &del, &m.Enc, &m.Sys); err != nil {
 			rows.Close()
 			return nil, err
 		}

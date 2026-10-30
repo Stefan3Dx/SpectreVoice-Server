@@ -228,8 +228,13 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				c.send(message{Type: "error", Message: "you may only stream as yourself"})
 				return
 			}
+			callRoom := isCallRoom(m.Room)
+			if callRoom && !s.callRoomAllowed(uid, m.Room, true) {
+				c.send(message{Type: "error", Message: "not in that call"})
+				return
+			}
 			var comm int64
-			if s.hub != nil {
+			if s.hub != nil && !callRoom {
 				var may bool
 				if comm, may = s.hub.streamComm(uid); !may {
 					c.send(message{Type: "error", Message: "not allowed to stream here"})
@@ -254,7 +259,7 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				c.send(message{Type: "error", Message: err.Error()})
 				return
 			}
-			if s.hub != nil {
+			if s.hub != nil && !callRoom { // a call's sound isn't a stream anyone sees live
 				s.hub.setLive(rm.name, uid, clip(m.Title, 80), comm, true)
 			}
 		case "subscribe":
@@ -326,7 +331,7 @@ func (s *server) openRoom(name, uid string, c *conn) (*room, error) {
 	// Two streams per person at most (a screen and a camera): the server's few aren't one person's
 	mine := 0
 	for k := range s.rooms {
-		if k != name && (k == uid || strings.HasPrefix(k, uid+":")) {
+		if k != name && !isCallRoom(k) && !isCallRoom(name) && (k == uid || strings.HasPrefix(k, uid+":")) {
 			mine++
 		}
 	}

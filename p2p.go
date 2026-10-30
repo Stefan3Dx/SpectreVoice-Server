@@ -145,7 +145,7 @@ func (h *hub) p2pStart(ss *session, room, title string) {
 	mine := map[string]bool{}
 	h.s.mu.Lock()
 	for k, rm := range h.s.rooms {
-		if k != room && (k == ss.uid || strings.HasPrefix(k, ss.uid+":")) {
+		if k != room && !isCallRoom(k) && (k == ss.uid || strings.HasPrefix(k, ss.uid+":")) {
 			rm.mu.Lock()
 			if rm.publisher != nil {
 				mine[k] = true

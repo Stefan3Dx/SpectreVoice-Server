@@ -517,6 +517,7 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	ss.send(welcome)
 	h.mu.Unlock()
+	h.callsWelcome(ss)
 	if inv != nil && inv.Channel != 0 {
 		h.join(ss, inv.Channel, "")
 	}
@@ -575,6 +576,7 @@ func (h *hub) leave(ss *session) {
 	h.mu.Unlock()
 	h.s.voice.drop(ss)
 	h.p2pGone(ss)
+	h.callsGone(ss)
 	if whisp {
 		h.s.voice.syncAll()
 	} else {
@@ -676,6 +678,8 @@ func (h *hub) dispatch(ss *session, t string, m map[string]any) {
 		h.soundboardOp(ss, m)
 	case "e2e-publish", "e2e-keys", "e2e-say":
 		h.e2eOp(ss, t, m)
+	case "call-invite", "call-accept", "call-decline", "call-cancel", "call-end", "call-sdp", "call-ice", "call-rejoin":
+		h.callOp(ss, t, m)
 	default:
 		if !h.communityOp(ss, t, m) && !h.s.mods.dispatch(ss, t, m) && !h.s.inviteOp(ss, t, m) && !h.s.pushOp(ss, t, m) &&
 			!h.s.licenseOp(ss, t, m) && !h.s.adminOp(ss, t, m) && !h.featureOp(ss, t, m) && !h.tempOp(ss, t, m) && !h.s.eventOp(ss, t, m) && !h.s.leiOp(ss, t, m) && !h.s.music.op(ss, t, m) && !h.s.chfiles.op(ss, t, m) && !h.botOp(ss, t, m) {
@@ -959,6 +963,10 @@ func (h *hub) edit(ss *session, t string, id int64, text string) {
 	isComm := strings.HasPrefix(msg.To, "g:")
 	if t == "edit" && !mine {
 		ss.refuse(t, "owner", "not yours")
+		return
+	}
+	if t == "edit" && msg.Sys != "" {
+		ss.refuse(t, "owner", "the server's own line (a call) can't be edited")
 		return
 	}
 	if t == "edit" && msg.Enc != "" {
@@ -1341,6 +1349,9 @@ func (h *hub) streamComm(uid string) (int64, bool) {
 
 // mayWatch: uid may watch room (a member of the stream's community, in the streamer's voice channel: watchch.go).
 func (h *hub) mayWatch(uid, room string) bool {
+	if isCallRoom(room) {
+		return h.s.callRoomAllowed(uid, room, false) // a call's sound: only the other person of the call
+	}
 	if room == tvRoom {
 		// The server's TV: everyone on the server, from any channel
 		return h.s.tv.enabled() && h.s.store.isMember(spaceID, uid) && !h.s.mods.banned(uid, spaceID)

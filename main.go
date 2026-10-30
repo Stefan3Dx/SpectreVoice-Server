@@ -84,23 +84,26 @@ type config struct {
 	pushContent bool   // push notifications carry who and what (through Google); off: only that there's something
 	ytdlp       string
 	ffmpeg      string
-	tv          bool   // the server's TV (tv.go): an IPTV channel everyone watches, played by ffmpeg
-	tvLAN       bool   // the TV may open LAN addresses (else only public ones)
-	tvKbps      int    // the TV's video bit rate
-	tvHeight    int    // the TV's picture height at most (16:9 width)
-	tvVideo     string // "auto" (VAAPI when it works, else x264), "vaapi", "x264"
-	tvVaapi     string // the VAAPI device
-	tvIdle      int    // seconds the TV plays with nobody watching
-	noSounds    bool   // SV_SOUNDBOARD=false: no server soundboard (soundboard.go)
-	soundsMax   int    // the server's sounds at most (SV_SOUNDS_MAX)
-	tempEmpty   int    // seconds a temporary channel stays empty before it goes (tempch.go)
-	tempPerUser int    // temporary channels one person has at once
-	tempMax     int    // temporary channels on the server at once
-	eventLead   int    // minutes before an event starts that people are told (events.go)
-	backupDir   string // where the daily backups go (backup.go); "" : <data>/backups
-	backupKeep  int    // daily backups kept
-	backupHour  int    // the hour (server's local time) of the daily backup; -1: none
-	leiMax      int    // the most Lei one grant may add or take (lei.go)
+	tv          bool          // the server's TV (tv.go): an IPTV channel everyone watches, played by ffmpeg
+	tvLAN       bool          // the TV may open LAN addresses (else only public ones)
+	tvKbps      int           // the TV's video bit rate
+	tvHeight    int           // the TV's picture height at most (16:9 width)
+	tvVideo     string        // "auto" (VAAPI when it works, else x264), "vaapi", "x264"
+	tvVaapi     string        // the VAAPI device
+	tvIdle      int           // seconds the TV plays with nobody watching
+	noSounds    bool          // SV_SOUNDBOARD=false: no server soundboard (soundboard.go)
+	soundsMax   int           // the server's sounds at most (SV_SOUNDS_MAX)
+	tempEmpty   int           // seconds a temporary channel stays empty before it goes (tempch.go)
+	tempPerUser int           // temporary channels one person has at once
+	tempMax     int           // temporary channels on the server at once
+	eventLead   int           // minutes before an event starts that people are told (events.go)
+	backupDir   string        // where the daily backups go (backup.go); "" : <data>/backups
+	backupKeep  int           // daily backups kept
+	backupHour  int           // the hour (server's local time) of the daily backup; -1: none
+	leiMax      int           // the most Lei one grant may add or take (lei.go)
+	callsRoute  string        // SV_CALLS_ROUTE: auto, p2p, sfu, off (calls.go)
+	callRing    time.Duration // how long a call rings (SV_CALL_RING seconds)
+	pushRelay   bool          // without SV_PUSH_CREDENTIALS, pushes go through the donation service (pushrelay.go)
 }
 
 type server struct {
@@ -132,6 +135,7 @@ type server struct {
 	conf    serverConf  // name and password, as the admins set them (settings.go)
 	tv      *tvManager  // the server's TV (tv.go)
 	sb      *soundboard // the server's sounds (soundboard.go)
+	calls   *callHub    // private calls (calls.go)
 	// testSpaces lets tests open bus spaces besides mainSpace (nil in production)
 	testSpaces func(name string) bool
 }
@@ -193,6 +197,9 @@ func main() {
 	flag.Float64Var(&cfg.playRate, "play-eur-ron", 5.0, "RON one euro donated through Google Play counts as")
 	flag.BoolVar(&cfg.playTest, "play-allow-test", envBool("SV_PLAY_ALLOW_TEST", false), "count license testers' purchases [SV_PLAY_ALLOW_TEST]")
 	flag.StringVar(&cfg.contact, "contact-email", env("SV_CONTACT_EMAIL", ""), "the owner's contact for data requests, shown at /privacy [SV_CONTACT_EMAIL]")
+	flag.StringVar(&cfg.callsRoute, "calls-route", env("SV_CALLS_ROUTE", "auto"), "private calls: auto (peer to peer with a TURN relay, else through the server), p2p, sfu, off [SV_CALLS_ROUTE]")
+	callRing := flag.Int("call-ring", envInt("SV_CALL_RING", 45), "seconds a call rings before it's missed [SV_CALL_RING]")
+	flag.BoolVar(&cfg.pushRelay, "push-relay", envBool("SV_PUSH_RELAY", true), "without SV_PUSH_CREDENTIALS, send push notifications through the donation service's relay [SV_PUSH_RELAY]")
 	flag.StringVar(&cfg.pushCreds, "push-credentials", env("SV_PUSH_CREDENTIALS", ""), "Firebase service account (JSON) for push notifications [SV_PUSH_CREDENTIALS]")
 	flag.StringVar(&cfg.licenseURL, "license-url", env("SV_LICENSE_URL", "https://license.spectrevoice.com"), "the donation service: donations add places for a month [SV_LICENSE_URL]")
 	flag.IntVar(&cfg.audioLevel, "audio-quality", envInt("SV_AUDIO_QUALITY", defaultAudioLevel), "voice quality where a channel sets none: 1 low … 6 max [SV_AUDIO_QUALITY]")
@@ -221,6 +228,7 @@ func main() {
 	flag.StringVar(&cfg.inviteBase, "invite-base", env("SV_INVITE_BASE", ""), "invite links' start, e.g. https://sfu.example.com/i/ (default: this server's address) [SV_INVITE_BASE]")
 	proxies := flag.String("trusted-proxies", env("SV_TRUSTED_PROXIES", ""), "reverse proxies besides this machine's own whose X-Forwarded-For counts (a proxy elsewhere on the LAN), addresses or CIDRs, comma separated [SV_TRUSTED_PROXIES]")
 	flag.Parse()
+	cfg.callRing = time.Duration(*callRing) * time.Second
 	trustedProxies = parseTrustedProxies(*proxies)
 	cfg.udpMin, cfg.udpMax = uint(*udpMin), uint(*udpMax)
 	tvLoopbackOK = *tvLoop
@@ -377,6 +385,7 @@ func newServer(cfg config) (*server, error) {
 		return nil, err
 	}
 	s.voice = newVoice(s)
+	s.calls = newCallHub(cfg.callRing)
 	s.tv = newTV(s)
 	if s.sb, err = newSoundboard(s); err != nil {
 		return nil, err
@@ -395,6 +404,11 @@ func newServer(cfg config) (*server, error) {
 			return nil, fmt.Errorf("push: %w", err)
 		}
 		log.Printf("push: notifications through Firebase project %s", s.push.project)
+	} else if cfg.pushRelay && s.lic.url != "" {
+		if s.push, err = s.newRelayPusher(); err != nil {
+			return nil, fmt.Errorf("push: %w", err)
+		}
+		log.Printf("push: notifications through the donation service's relay (%s)", s.lic.url)
 	}
 	s.bus = newBus(filepath.Join(cfg.data, "bus"))
 	s.bus.maxSpaces = cfg.maxSpaces
@@ -455,6 +469,7 @@ func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/ws", s.hub.handle)
 	mux.HandleFunc("/v1/link", s.handleLink)
+	mux.HandleFunc("/v1/call/decline", s.handleCallDecline)
 	mux.HandleFunc("/streams", s.handleStreams)
 	mux.HandleFunc("/streams/status", s.handleStreamStatus)
 	mux.HandleFunc("/health", s.handleHealth)
