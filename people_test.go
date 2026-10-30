@@ -334,7 +334,9 @@ func TestPushSealedThroughRelay(t *testing.T) {
 		pj, _ := base64.RawURLEncoding.DecodeString(env.P)
 		var q map[string]any
 		_ = json.Unmarshal(pj, &q)
-		got <- q
+		if q["kind"] == "push" { // the Plus build checks in too
+			got <- q
+		}
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	}))
 	defer fake.Close()
