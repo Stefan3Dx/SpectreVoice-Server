@@ -15,7 +15,7 @@ package main
 //	<- {"t":"call-rejoin","id"}                   a reconnected session carries the call again -> call-rejoined
 //
 // HTTP: POST /v1/call/decline {"call","t"} declines from a phone's notification without signing in (t from the
-// sealed push: an HMAC of the call and the callee).
+// sealed push: an HMAC of the call and the callee); 10 tries an address, then one every 6 s.
 
 import (
 	"crypto/aes"
@@ -48,6 +48,9 @@ const (
 	callMaxSDP      = 32 << 10
 	callMaxSDPs     = 40 // offers and answers in one call (ICE restarts after network changes)
 	callRoomPart    = ":call-"
+	// /v1/call/decline (no sign-in): per address, a burst of 10 and one more every 6 s
+	callDeclineBurst = 10.0
+	callDeclineRate  = 1.0 / 6
 )
 
 // callBlockedHook: whether a has blocked b (the private messages' blocking sets it; nil: nobody blocks). Either
@@ -103,6 +106,7 @@ type callHub struct {
 	invites map[string]*callBucket
 	pairs   map[string][]time.Time
 	sig     map[string]*callBucket // by session id
+	decl    map[string]*callBucket // /v1/call/decline, by address
 	ring    time.Duration
 }
 
@@ -110,7 +114,7 @@ func newCallHub(ring time.Duration) *callHub {
 	if ring <= 0 {
 		ring = callRingDefault
 	}
-	return &callHub{calls: map[string]*call{}, byUID: map[string]*call{}, invites: map[string]*callBucket{}, pairs: map[string][]time.Time{}, sig: map[string]*callBucket{}, ring: ring}
+	return &callHub{calls: map[string]*call{}, byUID: map[string]*call{}, invites: map[string]*callBucket{}, pairs: map[string][]time.Time{}, sig: map[string]*callBucket{}, decl: map[string]*callBucket{}, ring: ring}
 }
 
 func takeBucket(m map[string]*callBucket, key string, burst, rate float64) bool {
@@ -718,6 +722,21 @@ func (s *server) callPush(c *call, devs []callDevice, kind, why string) {
 func (s *server) handleCallDecline(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	// No sign-in here: a budget per address, so call ids and tokens can't be tried by the thousand
+	s.calls.mu.Lock()
+	ok := takeBucket(s.calls.decl, requestIP(r), callDeclineBurst, callDeclineRate)
+	if len(s.calls.decl) > 10000 {
+		for k, b := range s.calls.decl {
+			if time.Since(b.at) > 10*time.Minute {
+				delete(s.calls.decl, k)
+			}
+		}
+	}
+	s.calls.mu.Unlock()
+	if !ok {
+		http.Error(w, "slow down", http.StatusTooManyRequests)
 		return
 	}
 	var q struct {

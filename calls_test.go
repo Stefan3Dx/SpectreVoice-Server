@@ -468,3 +468,32 @@ func newHTTPTest(t *testing.T, h http.Handler) string {
 	t.Cleanup(hs.Close)
 	return hs.URL
 }
+
+// /v1/call/decline needs no sign-in, so it's held to a budget per address: guessing calls and tokens from one place
+// stops after a few tries (429), even for a right token then.
+func TestCallDeclineRateLimited(t *testing.T) {
+	s, hs := newTestServer(t, func(c *config) { c.callsRoute = "p2p" })
+	a, _ := dialV(t, hs, newKey(t), "Alice", "")
+	b, _ := dialV(t, hs, newKey(t), "Bob", "")
+	id := ring(t, a, b)
+	post := func(tk string) int {
+		raw, _ := json.Marshal(map[string]string{"call": id, "t": tk})
+		res, err := http.Post(hs.URL+"/v1/call/decline", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	limited := false
+	for i := 0; i < 40 && !limited; i++ {
+		limited = post(strings.Repeat("0", 32)) == http.StatusTooManyRequests
+	}
+	if !limited {
+		t.Fatal("40 wrong tokens from one address, never slowed down")
+	}
+	if code := post(s.declineToken(id, b.uid)); code != http.StatusTooManyRequests {
+		t.Fatalf("over the budget, still answered %d", code)
+	}
+}
+
