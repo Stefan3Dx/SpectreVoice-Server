@@ -71,7 +71,15 @@ func (w *chWatcher) wantEnded(t *testing.T, what string, within time.Duration) {
 			t.Fatalf("%s: ended with why %q, not channel", what, why)
 		}
 	case <-w.gone:
-		t.Fatalf("%s: closed without saying why", what)
+		// The server says why and then closes: both may be ready by now, and select picks either
+		select {
+		case why := <-w.ended:
+			if why != "channel" {
+				t.Fatalf("%s: ended with why %q, not channel", what, why)
+			}
+		default:
+			t.Fatalf("%s: closed without saying why", what)
+		}
 	case <-time.After(within):
 		t.Fatalf("%s: still watching", what)
 	}
