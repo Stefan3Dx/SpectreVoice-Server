@@ -290,7 +290,7 @@ func TestP2PSwitchWithSFU(t *testing.T) {
 	bob, _ := dialV(t, hs, newKey(t), "Bob", "")
 	room := ana.uid
 	comm, _ := s.hub.streamComm(ana.uid)
-	s.hub.setLive(room, ana.uid, "Game", comm, true) // as /streams does on publish
+	s.hub.setLive(room, ana.uid, "Game", "", comm, true) // as /streams does on publish
 	if lv := bob.wait(liveOn(room)); lv["s"].(map[string]any)["mode"] != nil {
 		t.Fatal(lv)
 	}
@@ -299,14 +299,14 @@ func TestP2PSwitchWithSFU(t *testing.T) {
 	if lv := bob.wait(liveOn(room)); lv["s"].(map[string]any)["mode"] != "p2p" {
 		t.Fatal(lv)
 	}
-	s.hub.setLive(room, "", "", 0, false)
+	s.hub.setLive(room, "", "", "", 0, false)
 	if !bob.quiet(400*time.Millisecond, liveOff(room)) {
 		t.Fatal("the SFU's end took the P2P stream off")
 	}
 	bob.send(map[string]any{"t": "p2p-join", "sid": ana.sid, "room": room})
 	ana.wait(isP2P("p2p-join", bob.sid))
 	// Back to the SFU: published again, then P2P off
-	s.hub.setLive(room, ana.uid, "Game", comm, true)
+	s.hub.setLive(room, ana.uid, "Game", "", comm, true)
 	bob.wait(liveOn(room))
 	ana.send(map[string]any{"t": "p2p-live", "room": room, "on": false})
 	if m := bob.wait(isP2P("p2p-bye", ana.sid)); m["why"] != "moved" {

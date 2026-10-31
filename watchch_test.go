@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,5 +215,73 @@ func TestTVFromAnyChannel(t *testing.T) {
 	defer s.hub.mu.Unlock()
 	if !s.hub.inStreamChannel(ana.uid, liveStream{Room: tvRoom, UID: "someone"}, false) {
 		t.Fatal("the TV needs a channel")
+	}
+}
+
+// A person on two devices (a phone left in one channel, the PC streaming from another): the stream is the PC's
+// channel's, named by its publish's "dev". Before, the live entry took the lowest channel of all the person's
+// sessions: the PC's channel mates didn't see Watch, and the phone's could watch. An app that doesn't say keeps
+// the old rule.
+func TestStreamChannelIsTheStreamingDevices(t *testing.T) {
+	s, hs := newTestServer(t, nil)
+	key := newKey(t)
+	pc, _ := dialVWith(t, hs, key, "Ana", map[string]any{"dev": "ana-pc"})
+	phone, _ := dialVWith(t, hs, key, "Ana", map[string]any{"dev": "ana-phone"})
+	vio, _ := dialV(t, hs, newKey(t), "Vio", "")
+	a, b := chanID(t, pc.wel, "Lobby"), chanID(t, pc.wel, "AFK")
+	low, high := min(a, b), max(a, b)
+	// The phone in the lower channel, the PC and Vio in the other
+	phone.send(map[string]any{"t": "join", "ch": low})
+	pc.send(map[string]any{"t": "join", "ch": high})
+	vio.send(map[string]any{"t": "join", "ch": high})
+	time.Sleep(300 * time.Millisecond)
+
+	publish := func(room, dev string) {
+		c := dial(t, "ws"+strings.TrimPrefix(hs.URL, "http")+"/streams?token="+url.QueryEscape(s.makeToken(pc.uid)))
+		track, _ := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "share")
+		if _, err := c.pc.AddTrack(track); err != nil {
+			t.Fatal(err)
+		}
+		go c.read(nil)
+		offer, _ := c.pc.CreateOffer(nil)
+		_ = c.pc.SetLocalDescription(offer)
+		c.send(message{Type: "publish", Room: room, SDP: offer.SDP, Dev: dev})
+		t.Cleanup(func() { _ = c.pc.Close(); _ = c.ws.Close() })
+	}
+	publish(pc.uid, "ana-pc")
+	lv := vio.wait(liveOn(pc.uid))
+	if ch := lv["s"].(map[string]any)["ch"]; ch != float64(high) {
+		t.Fatalf("the stream's channel: %v, want the PC's %d (the phone's is %d)", ch, high, low)
+	}
+	if _, ok := lv["s"].(map[string]any)["dev"]; ok {
+		t.Fatal("the device id went out in the live list")
+	}
+	if !s.hub.mayWatch(vio.uid, pc.uid) {
+		t.Fatal("Vio, in the streaming PC's channel, may not watch")
+	}
+	// Someone with the phone, not with the PC, may not
+	cara, _ := dialV(t, hs, newKey(t), "Cara", "")
+	cara.send(map[string]any{"t": "join", "ch": low})
+	time.Sleep(300 * time.Millisecond)
+	if s.hub.mayWatch(cara.uid, pc.uid) {
+		t.Fatal("Cara, with the phone only, may watch the PC's stream")
+	}
+	// The phone moving doesn't move the stream
+	phone.send(map[string]any{"t": "join", "ch": high})
+	time.Sleep(300 * time.Millisecond)
+	phone.send(map[string]any{"t": "join", "ch": low})
+	time.Sleep(400 * time.Millisecond)
+	s.hub.mu.Lock()
+	ch := s.hub.live[pc.uid].Ch
+	s.hub.mu.Unlock()
+	if ch != high {
+		t.Fatalf("the phone moved the PC's stream to %d", ch)
+	}
+
+	// An app that names no device: as before, any of the person's channels (the lowest shown)
+	publish(pc.uid+":camera", "")
+	lv = vio.wait(liveOn(pc.uid + ":camera"))
+	if ch := lv["s"].(map[string]any)["ch"]; ch != float64(low) {
+		t.Fatalf("an old app's stream: channel %v, want %d", ch, low)
 	}
 }

@@ -6,7 +6,8 @@ package main
 //
 // Signalling is JSON over a WebSocket at /streams?token=…:
 //
-//	{"type":"publish","room":R,"sdp":OFFER}  -> {"type":"answer","sdp":…}
+//	{"type":"publish","room":R,"sdp":OFFER,"dev":D} -> {"type":"answer","sdp":…} ("dev", optional: the streaming
+//	                                            app's device; the stream's channel is that session's)
 //	{"type":"subscribe","room":R,"dev":D}    -> {"type":"offer","sdp":…} ; reply {"type":"answer","sdp":…}
 //	                                            (the offer once the stream has a track: a viewer that comes before
 //	                                            the first frame waits for it; a new watch of the same person and
@@ -260,7 +261,7 @@ func (s *server) handleStreams(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if s.hub != nil && !callRoom { // a call's sound isn't a stream anyone sees live
-				s.hub.setLive(rm.name, uid, clip(m.Title, 80), comm, true)
+				s.hub.setLive(rm.name, uid, clip(m.Title, 80), clip(m.Dev, 64), comm, true)
 			}
 		case "subscribe":
 			if pc != nil {
@@ -382,7 +383,7 @@ func (s *server) endRoom(rm *room, only *webrtc.PeerConnection) {
 	}
 	s.mu.Unlock()
 	if gone && s.hub != nil {
-		s.hub.setLive(rm.name, "", "", 0, false)
+		s.hub.setLive(rm.name, "", "", "", 0, false)
 	}
 	for sub := range subs {
 		// Each viewer on its own: a stuck one can't hold up the rest

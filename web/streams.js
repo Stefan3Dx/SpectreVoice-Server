@@ -413,13 +413,16 @@ function renderLive() {
 
 // ====== Sharing the screen ======
 
-const SH = { on: false, stream: null, ws: null, pc: null, mode: '', up: false, gen: 0, timers: [], viewers: new Map(), poll: null, count: 0, preview: null };
+const SH = { on: false, asking: false, stream: null, ws: null, pc: null, mode: '', up: false, gen: 0, timers: [], viewers: new Map(), poll: null, count: 0, preview: null };
 
 export async function shareStart() {
-  if (SH.on) return;
+  // Not twice while the browser asks what to share (a double click): the second capture was never stopped, its
+  // preview tile stayed, and its publish ("already live") ended the first share
+  if (SH.on || SH.asking) return;
   if (!navigator.mediaDevices?.getDisplayMedia) { toast(t('shareUnsupported'), true); return; }
   if (!may('stream')) { toast(t('errRole'), true); return; }
   let stream;
+  SH.asking = true;
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 30 }, width: { max: 1920 }, height: { max: 1080 } },
@@ -428,6 +431,8 @@ export async function shareStart() {
   } catch (e) {
     if (e?.name !== 'NotAllowedError' && e?.name !== 'AbortError') toast(t('shareFailed', { why: e?.message || e }), true);
     return;
+  } finally {
+    SH.asking = false;
   }
   const video = stream.getVideoTracks()[0];
   if (!video) { stream.getTracks().forEach((x) => x.stop()); return; }
@@ -467,7 +472,8 @@ function sharePublish() {
     try {
       await pc.setLocalDescription(await pc.createOffer());
       if (SH.gen !== gen) return;
-      out({ type: 'publish', room: SH.room, sdp: pc.localDescription.sdp, title: '' });
+      // "dev": the stream is this session's channel's, not another of ours (a phone in the lobby)
+      out({ type: 'publish', room: SH.room, sdp: pc.localDescription.sdp, title: '', dev: S.dev });
     } catch (e) { toP2p(gen, String(e?.message || e)); }
   };
   ws.onmessage = async (ev) => {
@@ -634,17 +640,28 @@ $('shareBtn').onclick = () => (SH.on ? shareStop() : shareStart());
 on('app:render', renderLive);
 on('app:watching', renderLive);
 on('app:perms', updateShareUi);
+let downAt = 0; // when the connection to the server dropped (0: up)
 on('app:welcome', () => {
   updateShareUi();
   // A new session: watches peer to peer start again from it; our P2P share is announced again
   for (const w of W.values()) if (!w.ended && w.mode === 'p2p') follow(w);
+  // Back after a drop: a watch whose connection went with ours (it said "ended", the stream went on) is watched
+  // again, as the apps do; before, it stayed ended until clicked
+  if (downAt) {
+    for (const w of W.values()) {
+      const l = S.live.get(w.room);
+      if (w.ended && w.room !== TV_ROOM && w.endedAt >= downAt - 5000 && l && inMyChannel(l)) restart(w);
+    }
+    downAt = 0;
+  }
   if (SH.on && SH.mode === 'p2p') {
     for (const sid of [...SH.viewers.keys()]) dropViewer(sid, false);
     send({ t: 'p2p-live', room: SH.room, on: true, title: '' });
   }
 });
 on('app:down', ({ retry }) => {
-  if (retry) return;
+  if (retry) { downAt ||= Date.now(); return; }
+  downAt = 0;
   // Left the server: everything stops
   for (const room of [...W.keys()]) stopWatching(room);
   shareStop();

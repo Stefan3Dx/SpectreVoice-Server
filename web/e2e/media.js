@@ -56,6 +56,8 @@ function png() {
 
 async function open(browser, url, name, opts = {}) {
   const ctx = await browser.newContext({ permissions: ['microphone', 'notifications'], locale: 'en-US', viewport: opts.viewport || { width: 1280, height: 860 }, acceptDownloads: true });
+  // Every WebSocket the page opens, so a test can drop them all (a network change)
+  if (opts.trackWs) await ctx.addInitScript(() => { const O = window.WebSocket; window.__ws = []; window.WebSocket = class extends O { constructor(...a) { super(...a); window.__ws.push(this); } }; });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.error(name + ' page error:', e.message));
   page.on('console', (m) => { if (m.type() === 'error') console.error(name + ' console:', m.text()); });
@@ -85,7 +87,7 @@ const playing = (page, sel) => page.waitForFunction(async (s) => {
   let failedPage = null;
   try {
     const ana = await open(browser, base, 'Ana');
-    const bob = await open(browser, base, 'Bob');
+    const bob = await open(browser, base, 'Bob', { trackWs: true });
     console.log('UID Ana ' + ana.uid);
     await waitStdin('GO');
     await connect(ana);
@@ -123,11 +125,27 @@ const playing = (page, sel) => page.waitForFunction(async (s) => {
     await shot(bob.page, 'watch-sfu');
     await shot(ana.page, 'share-screen');
     step('share watched through the server');
+    // Bob's network drops (all his sockets close): his watch ends with it, and once he's back it comes back by itself
+    await bob.page.evaluate(() => { for (const s of window.__ws) try { s.close(); } catch { /* gone */ } });
+    await bob.page.waitForSelector(tile + '.ended', { timeout: 15000 });
+    await bob.page.waitForSelector(tile + ':not(.ended)', { timeout: 20000 });
+    await playing(bob.page, tile + ' video');
+    step('watched again after a drop');
     // Ana stops: Bob's tile says so
     await ana.page.click('#shareBtn');
     await bob.page.waitForSelector(tile + '.ended', { timeout: 15000 });
     await bob.page.click(tile + ' .tclose');
     step('share ended');
+    // A double click on Share: one share, one preview (the second capture stayed, and its publish ended the first)
+    await ana.page.evaluate(() => { const b = document.querySelector('#shareBtn'); b.click(); b.click(); });
+    await ana.page.waitForFunction(() => /via server/.test(document.querySelector('#shareInfo')?.textContent || ''), null, { timeout: 20000 });
+    await ana.page.waitForTimeout(1500);
+    const selfTiles = await ana.page.$$eval('.tile.self', (els) => els.length);
+    if (selfTiles !== 1) throw new Error('double click: ' + selfTiles + ' previews');
+    if (!(await ana.page.$eval('#shareBtn', (b) => b.classList.contains('live')))) throw new Error('double click: the share stopped');
+    await ana.page.click('#shareBtn');
+    await ana.page.waitForFunction(() => !document.querySelector('.tile.self'), null, { timeout: 10000 });
+    step('double click shares once');
 
     // ====== The TV ======
     await ana.page.waitForSelector('#tvCard:not(.hidden) #tvOpen', { timeout: 10000 });

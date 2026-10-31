@@ -132,6 +132,9 @@ type liveStream struct {
 	SID  int    `json:"sid,omitempty"`
 	// The streamer's voice channel: only those in it may watch (watchch.go); told again when the streamer moves
 	Ch int64 `json:"ch,omitempty"`
+	// An SFU stream: the device it's sent from (its publish's "dev"), so the channel is that session's, not the
+	// lowest of the person's (a phone left in the lobby put a PC's stream there); "" an app that doesn't say
+	Dev string `json:"-"`
 }
 
 func (ss *session) member() member {
@@ -1336,11 +1339,14 @@ func (h *hub) refreshRoles(comm int64) {
 }
 
 // setLive records a stream starting or ending and tells its community.
-func (h *hub) setLive(room, uid, title string, comm int64, on bool) {
+func (h *hub) setLive(room, uid, title, dev string, comm int64, on bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if on {
 		ls := liveStream{Room: room, UID: uid, Title: title, Since: time.Now().UnixMilli(), Comm: comm}
+		if dev != "" && h.devOnline(uid, dev) {
+			ls.Dev = dev // else (a device we don't know) any of the person's sessions, as before
+		}
 		ls.Ch = h.streamChannel(ls)
 		h.live[room] = ls
 		h.toComm(comm, map[string]any{"t": "live", "on": true, "s": ls})
@@ -1353,6 +1359,16 @@ func (h *hub) setLive(room, uid, title string, comm int64, on bool) {
 	}
 	delete(h.live, room)
 	h.toComm(ls.Comm, map[string]any{"t": "live", "on": false, "s": liveStream{Room: room}})
+}
+
+// devOnline: uid has a session from device dev now; h.mu held.
+func (h *hub) devOnline(uid, dev string) bool {
+	for _, o := range h.sessions {
+		if o.uid == uid && !o.bot && o.dev == dev {
+			return true
+		}
+	}
+	return false
 }
 
 // streamComm: the community uid streams in (where its app is now), if it may stream there.

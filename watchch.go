@@ -35,12 +35,24 @@ func (h *hub) channelsOf(uid string) map[int64]bool {
 	return out
 }
 
-// streamerChannels: the channel(s) ls's streamer is in: a P2P stream's own session's, else its person's; h.mu held.
+// streamerChannels: the channel(s) ls's streamer is in: a P2P stream's own session's, an SFU stream's device's (its
+// publish named it), else its person's; h.mu held.
 func (h *hub) streamerChannels(ls liveStream) map[int64]bool {
 	if ls.Mode == "p2p" && ls.SID != 0 {
 		if o := h.sessions[ls.SID]; o != nil && o.ch != 0 {
 			return map[int64]bool{o.ch: true}
 		}
+	}
+	if ls.Mode != "p2p" && ls.Dev != "" {
+		// That device only: the person's other sessions (a phone in the lobby) aren't where the stream is. None
+		// (that app reconnecting) is no channel: nothing ends meanwhile, nor does the stream move to another's
+		out := map[int64]bool{}
+		for _, o := range h.sessions {
+			if o.uid == ls.UID && !o.bot && o.dev == ls.Dev && o.ch != 0 {
+				out[o.ch] = true
+			}
+		}
+		return out
 	}
 	return h.channelsOf(ls.UID)
 }
