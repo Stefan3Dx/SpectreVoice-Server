@@ -168,7 +168,8 @@ export async function voiceStart() {
   const offer = await pc.createOffer();
   if (V.pc !== pc) return;
   await pc.setLocalDescription(offer);
-  send({ t: 'rtc', type: 'offer', sdp: pc.localDescription.sdp });
+  // polite: when our offers cross, we give way to a server that keeps its own (voice.go)
+  send({ t: 'rtc', type: 'offer', sdp: pc.localDescription.sdp, polite: true });
   updatePTT();
   emit('app:voice');
 }
@@ -182,7 +183,15 @@ export function voiceStop() {
   emit('app:rtc');
 }
 
-export async function voiceSignal(m) {
+// One signal at a time, in order: an answer still being set must not make the server's next offer look crossed
+let signals = Promise.resolve();
+export function voiceSignal(m) {
+  const done = signals.then(() => takeSignal(m));
+  signals = done.catch(() => {});
+  return done;
+}
+
+async function takeSignal(m) {
   const pc = V.pc;
   if (m.t === 'rtc-reset') { voiceStart(); return; }
   if (!pc) return;
@@ -196,12 +205,22 @@ export async function voiceSignal(m) {
       if (pc.signalingState !== 'have-local-offer') return;
       await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp });
     } else if (m.type === 'offer') {
-      // Ours is out and unanswered: the server rolls back and offers again after its answer
-      if (pc.signalingState !== 'stable') return;
+      let again = false;
+      if (pc.signalingState === 'have-local-offer') {
+        // Ours is out and unanswered. An older server takes its own back and offers again after its answer; one
+        // that keeps its own ("keep") gets ours taken back, its offer answered and ours made again after
+        if (!m.keep) return;
+        await pc.setLocalDescription({ type: 'rollback' });
+        again = true;
+      } else if (pc.signalingState !== 'stable') return;
       await pc.setRemoteDescription({ type: 'offer', sdp: m.sdp });
       const ans = await pc.createAnswer();
       await pc.setLocalDescription(ans);
       send({ t: 'rtc', type: 'answer', sdp: pc.localDescription.sdp });
+      if (again && V.pc === pc) {
+        await pc.setLocalDescription(await pc.createOffer());
+        send({ t: 'rtc', type: 'offer', sdp: pc.localDescription.sdp, polite: true });
+      }
     }
     for (const c of V.early.splice(0)) await pc.addIceCandidate(c).catch(() => {});
     pruneAudios();

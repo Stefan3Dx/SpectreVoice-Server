@@ -2,11 +2,16 @@ package main
 
 // Voice in channels: every app keeps one WebRTC connection to the server. Its microphone goes up once (Opus); the
 // server forwards it to the others in the same channel, each as its own track (stream id "s<sid>", so an app
-// knows whose voice it plays and can set its volume). The app makes the first offer; after that only the server
-// offers (when people come and go), so the two never offer at once.
+// knows whose voice it plays and can set its volume). The app makes the first offer; after that the server offers
+// when people come and go, and the app when it changes its voice level or restarts ICE.
 //
-//	<- {"t":"rtc","type":"offer","sdp":…}    -> {"t":"rtc","type":"answer","sdp":…}
-//	-> {"t":"rtc","type":"offer","sdp":…}    <- {"t":"rtc","type":"answer","sdp":…}
+// The two can offer at once (a far app: its offer crosses ours on the way). Pion can't roll its own offer back, so
+// ours is kept ("keep" on it): an app that gives way ("polite" on its offers, 0.9.1+) rolls its offer back, answers
+// ours and offers again after; its crossed offer is ignored here. An app that keeps its own (older apps) gets an
+// rtc-reset (a clean new connection) instead of an answer that can't be made.
+//
+//	<- {"t":"rtc","type":"offer","sdp":…,"polite":true}  -> {"t":"rtc","type":"answer","sdp":…}
+//	-> {"t":"rtc","type":"offer","sdp":…,"keep":true}    <- {"t":"rtc","type":"answer","sdp":…}
 //	<-> {"t":"ice","c":…,"mid":…,"mline":…}
 //	-> {"t":"rtc-reset"}                      the connection failed: make a new one
 //	-> {"t":"talk","sid":…,"on":bool}         who is talking (from the voice's level, RFC 6464)
@@ -134,7 +139,8 @@ func (v *voice) signal(ss *session, t string, m map[string]any) {
 				return
 			}
 		}
-		if !v.answer(p, desc) && p.wasReady() {
+		polite, _ := m["polite"].(bool)
+		if !v.answer(p, desc, polite) && p.wasReady() {
 			// An offer a working connection can't take: a new connection of the app's (another DTLS and ICE).
 			// It gets a fresh peer instead of no voice at all
 			np, err := v.open(ss)
@@ -142,7 +148,7 @@ func (v *voice) signal(ss *session, t string, m map[string]any) {
 				ss.refuse("rtc", "server", err.Error())
 				return
 			}
-			v.answer(np, desc)
+			v.answer(np, desc, polite)
 		}
 	case "answer":
 		if p == nil {
@@ -270,16 +276,25 @@ func (p *voicePeer) wasReady() bool {
 }
 
 // answer takes an offer from the app (its first, or a new one, e.g. after a network change); false when it
-// couldn't be taken (the peer is dropped then).
-func (v *voice) answer(p *voicePeer, offer string) bool {
+// couldn't be taken (the peer is dropped then). polite: the app gives way when our offers cross.
+func (v *voice) answer(p *voicePeer, offer string, polite bool) bool {
 	pc := p.pc
 	p.sig.Lock()
 	if pc.SignalingState() == webrtc.SignalingStateHaveLocalOffer {
-		// Both offered at once: the app's wins, ours goes out again afterwards
-		_ = pc.SetLocalDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeRollback})
-		p.mu.Lock()
-		p.pending, p.again = false, true
-		p.mu.Unlock()
+		// Both offered at once. Pion can't roll ours back (have-local-offer -> rollback is refused), so ours stays
+		p.sig.Unlock()
+		if polite {
+			// The app rolls its offer back, answers ours and offers again after: this one is dropped
+			if os.Getenv("SV_DEBUG_VOICE") != "" {
+				log.Printf("voice %d: offers crossed, the app gives way", p.ss.sid)
+			}
+			return true
+		}
+		// An app that keeps its own offer and ignores ours: neither can be answered on this connection. A clean
+		// new one (the app's offer on a new peer would carry this connection's ICE and DTLS: it barely comes up)
+		log.Printf("voice %d: offers crossed with an app that keeps its own: new connection", p.ss.sid)
+		v.reset(p)
+		return true
 	}
 	// A sane offer: the app's voice plus the media sections this connection has (an offer with hundreds of tracks
 	// is refused). Transceivers stay once made (a voice that went is an inactive section, reused later), so the
@@ -636,7 +651,7 @@ func (v *voice) negotiate(p *voicePeer) {
 		p.mu.Unlock()
 		return
 	}
-	p.ss.send(map[string]any{"t": "rtc", "type": "offer", "sdp": p.pc.LocalDescription().SDP})
+	p.ss.send(map[string]any{"t": "rtc", "type": "offer", "sdp": p.pc.LocalDescription().SDP, "keep": true})
 }
 
 // reset drops a broken voice connection; the app makes a new one.
