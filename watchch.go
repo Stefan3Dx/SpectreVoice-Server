@@ -44,15 +44,18 @@ func (h *hub) streamerChannels(ls liveStream) map[int64]bool {
 		}
 	}
 	if ls.Mode != "p2p" && ls.Dev != "" {
-		// That device only: the person's other sessions (a phone in the lobby) aren't where the stream is. None
-		// (that app reconnecting) is no channel: nothing ends meanwhile, nor does the stream move to another's
+		// That device only: the person's other sessions (a phone in the lobby) aren't where the stream is
 		out := map[int64]bool{}
 		for _, o := range h.sessions {
 			if o.uid == ls.UID && !o.bot && o.dev == ls.Dev && o.ch != 0 {
 				out[o.ch] = true
 			}
 		}
-		return out
+		if len(out) > 0 {
+			return out
+		}
+		// That device in no channel (reconnecting, or not in one): the person's channels, as for older apps. An
+		// empty answer would make the stream watchable by everyone on the server (inStreamChannel)
 	}
 	return h.channelsOf(ls.UID)
 }
