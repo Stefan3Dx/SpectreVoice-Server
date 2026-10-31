@@ -36,3 +36,4 @@
 .dmnote { padding: 2px 4px; }
 .msg.lock-before .text { color: var(--faint); font-style: italic; }
 .msg.lock-before .lock { color: var(--faint); }
+.msub.pstatus { color: var(--accent); opacity: .9; }

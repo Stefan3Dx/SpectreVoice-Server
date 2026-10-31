@@ -18,6 +18,7 @@ import './tv.js';
 import './files.js';
 import './dm.js';
 import './members.js';
+import './presence.js';
 import './soundboard.js'; import './music.js';
 import './games/ui.js';
 import { openSettings } from './settings.js';
