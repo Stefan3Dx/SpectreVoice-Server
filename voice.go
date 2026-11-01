@@ -18,6 +18,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -395,7 +396,7 @@ func (v *voice) carry(p *voicePeer, remote *webrtc.TrackRemote, recv *webrtc.RTP
 	end := make(chan struct{})
 	p.upEnd = end
 	p.mu.Unlock()
-	log.Printf("voice %d: up (%s)", sid, remote.Codec().MimeType)
+	log.Printf("voice %d: up (%s)%s", sid, remote.Codec().MimeType, pathOf(p.pc))
 	v.s.hub.mu.Lock()
 	ch := p.ss.ch
 	v.s.hub.mu.Unlock()
@@ -756,4 +757,21 @@ func itoa(n int) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+// pathOf: the ICE pair this connection uses, for the log (" via host/udp 1.2.3.4:5000 ↔ host/udp", "" when unknown):
+// a relay or a strange path is the first thing to look at when someone's voice keeps dropping.
+func pathOf(pc *webrtc.PeerConnection) string {
+	for _, r := range pc.GetReceivers() {
+		t := r.Transport()
+		if t == nil {
+			continue
+		}
+		pair, err := t.ICETransport().GetSelectedCandidatePair()
+		if err != nil || pair == nil || pair.Remote == nil || pair.Local == nil {
+			continue
+		}
+		return fmt.Sprintf(" via %s/%s %s:%d ↔ %s/%s", pair.Remote.Typ, pair.Remote.Protocol, pair.Remote.Address, pair.Remote.Port, pair.Local.Typ, pair.Local.Protocol)
+	}
+	return ""
 }
