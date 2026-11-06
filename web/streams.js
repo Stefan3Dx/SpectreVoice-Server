@@ -422,6 +422,7 @@ export async function shareStart() {
   if (!navigator.mediaDevices?.getDisplayMedia) { toast(t('shareUnsupported'), true); return; }
   if (!may('stream')) { toast(t('errRole'), true); return; }
   let stream;
+  const sess = S.token; // the server you were on when the picker opened
   SH.asking = true;
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
@@ -434,6 +435,8 @@ export async function shareStart() {
   } finally {
     SH.asking = false;
   }
+  // Left (or moved to another server) while the browser's picker was open: nothing is shared
+  if (S.phase === 'off' || !S.token || S.token !== sess) { stream.getTracks().forEach((x) => x.stop()); return; }
   const video = stream.getVideoTracks()[0];
   if (!video) { stream.getTracks().forEach((x) => x.stop()); return; }
   try { video.contentHint = 'detail'; } catch { /* old browser */ }
