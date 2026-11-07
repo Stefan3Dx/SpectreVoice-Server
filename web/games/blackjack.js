@@ -51,6 +51,12 @@ export function publicState(s) {
 // Player p's op ("bet" amount, "skip", "deal", "hit", "stand", "double", "next", "leave"); purse(i) a player's Lei
 export function move(s, p, op, amount, purse, host, rnd = defaultRnd) {
   switch (op) {
+    case 'back':
+      // Back at the table: plays from the next bets (now, if the bets are open and they've none down)
+      if (!s.left[p]) return 'not away';
+      s.left[p] = false;
+      if (s.phase === 'bet' && s.bets[p] === 0) s.ready[p] = false;
+      break;
     case 'leave':
       s.left[p] = true;
       if (s.phase === 'bet') { s.bets[p] = 0; s.ready[p] = true; if (s.ready.every(Boolean) && s.bets.some((b) => b > 0)) deal(s, rnd); }

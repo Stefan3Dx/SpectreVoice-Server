@@ -642,6 +642,8 @@ test('forfeits and the clock (GameFixesTest.forfeitsAndTheClock)', () => {
 
 function net() {
   const kept = { lei: {}, scores: {} };
+  // The clock every hub reads (moved on by hand: w.tick(ms))
+  let clock = 1_700_000_000_000;
   const peers = [];
   const log = [];
   function server(from, m) {
@@ -663,12 +665,12 @@ function net() {
     const p = { uid };
     p.hub = createHub({
       send: (m) => { server(uid, m); return true; }, kept: () => kept, caps: () => new Set(['add', 'incr']), online: () => true,
-      me: () => ({ uid, name }), present: () => new Set(peers.map((x) => x.uid)), text: (k, v) => k + (v ? JSON.stringify(v) : ''), rnd: seeded(uid.length * 7 + 1),
+      me: () => ({ uid, name }), present: () => new Set(peers.map((x) => x.uid)), now: () => clock, text: (k, v) => k + (v ? JSON.stringify(v) : ''), rnd: seeded(uid.length * 7 + 1),
     });
     peers.push(p);
     return p.hub;
   }
-  return { kept, log, person };
+  return { kept, log, person, tick: (ms) => { clock += ms; return clock; }, now: () => clock };
 }
 
 test('hub: a tic-tac-toe table kept by one, played by both, the same state on each side', () => {
@@ -696,7 +698,7 @@ test('hub: a tic-tac-toe table kept by one, played by both, the same state on ea
   assert.equal(JSON.stringify(ana.tables.get(id).state), before);
 });
 
-test('hub: a duel left mid-game is lost; onlookers bet and are paid by stake', () => {
+test('hub: a duel left mid-game is lost after a minute away; onlookers bet and are paid by stake', () => {
   const w = net();
   const ana = w.person('ana', 'Ana'), bo = w.person('bo', 'Bo'), cy = w.person('cy', 'Cy'), di = w.person('di', 'Di');
   const id = ana.create('CONNECT4');
@@ -709,9 +711,19 @@ test('hub: a duel left mid-game is lost; onlookers bet and are paid by stake', (
   // A player can't bet on their own table
   bo.bet(id, 0, 10);
   assert.equal(ana.tables.get(id).wagers.length, 3);
-  // Bo gets up: the other seat wins; the pool (175) goes to who bet on it, by stake
+  // Bo gets up: the seat stays his a minute (nothing lost yet), and he comes back
   const boSeat = seats.indexOf('bo');
   bo.leave(id);
+  assert.equal(ana.tables.get(id).state.final, undefined);
+  assert.equal(ana.tables.get(id).note, 'gNoteLeft{"name":"Bo"}');
+  bo.join(id);
+  assert.equal(ana.tables.get(id).note, 'gNoteBack{"name":"Bo"}');
+  ana.watchTurns(w.tick(70_000));
+  assert.equal(ana.tables.get(id).state.final, undefined, 'back in time: not lost');
+  // Up again, and gone for good: on his turn, the other seat wins; the pool (175) goes to who bet on it, by stake
+  bo.leave(id);
+  if (ana.tables.get(id).state.turn !== boSeat) ana.play(id, { cell: 0 });
+  ana.watchTurns(w.tick(61_000));
   const t = ana.tables.get(id);
   assert.equal(t.state.resigned, boSeat);
   assert.equal(t.state.why, 'gone');
@@ -721,6 +733,23 @@ test('hub: a duel left mid-game is lost; onlookers bet and are paid by stake', (
   else { assert.equal(w.kept.lei.cy.v, 900); assert.equal(w.kept.lei.di.v, 1100); }
   assert.equal(t.wagers.length, 0);
   assert.equal(t.note, 'gBetsPaid{"amount":"175 Lei"}');
+});
+
+test('hub: back at a casino table after getting up, and the cards sent again', () => {
+  const w = net();
+  const ana = w.person('ana', 'Ana'), bo = w.person('bo', 'Bo');
+  const id = ana.create('POKER');
+  bo.join(id);
+  ana.startGame(id);
+  const seat = ana.tables.get(id).players.findIndex((p) => p.uid === 'bo');
+  const cards = clone(bo.privates.get(id));
+  assert.ok(cards);
+  bo.leave(id);
+  assert.equal(ana.tables.get(id).state.left[seat], true);
+  bo.privates.delete(id); // the page was reloaded: his cards are gone here
+  bo.join(id);
+  assert.equal(ana.tables.get(id).state.left[seat], false);
+  assert.deepEqual(clone(bo.privates.get(id)), cards, 'his cards came again');
 });
 
 test('hub: closing a casino table gives back the chips on it', () => {

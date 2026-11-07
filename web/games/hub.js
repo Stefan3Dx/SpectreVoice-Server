@@ -41,7 +41,11 @@ export function createHub(env) {
   const privates = new Map();
   const talk = new Map();
   let invites = [];
-  const lastMove = new Map(), afk = new Map(), gotUp = new Map(), goneSince = new Map();
+  // gotUp: table → Map(uid → when they got up; a minute to come back). lastPrivates: table → Map(uid → their last
+  // private view, sent again when they come back). leftOnPurpose: tables we got up from (not rejoined by themselves)
+  const lastMove = new Map(), afk = new Map(), gotUp = new Map(), goneSince = new Map(), lastPrivates = new Map();
+  const leftOnPurpose = new Set(), rejoinAsked = new Map();
+  let autoRejoinUntil = 0, wasOnline = false;
   const listeners = [];
   let lastUid = '';
   let openId = null;
@@ -155,7 +159,8 @@ export function createHub(env) {
     announce(t);
     changed();
   }
-  const forget = (id) => { lastMove.delete(id); afk.delete(id); gotUp.delete(id); };
+  const forget = (id) => { lastMove.delete(id); afk.delete(id); gotUp.delete(id); lastPrivates.delete(id); };
+  const upTooLong = (id, uid, t0) => { const at = gotUp.get(id)?.get(uid); return at !== undefined && t0 - at >= GONE_MS; };
   const betsOpen = (t) => R.isDuel(t.kind) && t.started && t.wagers.length < 40 && now() - t.startedAt < BET_WINDOW_MS && t.state?.final !== true;
 
   // A table as it came over the bus, checked before it's taken (GameHub.tableFrom); null: not taken
@@ -197,6 +202,7 @@ export function createHub(env) {
         const t = tableFrom(from, m);
         if (!t) return;
         tables.set(id, t);
+        autoRejoin(t, my.uid);
         changed();
         return;
       }
@@ -222,6 +228,8 @@ export function createHub(env) {
         if (!t || t.host !== my.uid) return;
         const who = { uid: from, name: typeof m.name === 'string' ? m.name : '?' };
         if (m.op === 'join') {
+          // Already seated at a game under way: back at the table (after getting up, or a dropped link)
+          if (t.started && t.players.some((p) => p.uid === from)) { rejoined(t, who); return; }
           if (!t.started && !t.tour && !t.players.some((p) => p.uid === from) && t.players.length < R.kindMax(t.kind)) update({ ...t, players: [...t.players, who] });
         } else if (m.op === 'leave') leftTable(t, who);
         else if (m.m && typeof m.m === 'object' && !Array.isArray(m.m)) move(t.id, from, m.m, who.name);
@@ -234,14 +242,37 @@ export function createHub(env) {
     if (!cur) return;
     if (!cur.started) { update({ ...cur, players: cur.players.filter((p) => p.uid !== who.uid) }); return; }
     const seat = cur.players.findIndex((p) => p.uid === who.uid);
+    if (seat < 0) return;
     if (['BLACKJACK', 'POKER', 'ROULETTE'].includes(cur.kind)) move(cur.id, who.uid, { op: 'leave' }, who.name);
-    else if (seat >= 0 && cur.state?.final !== true && cur.state?.resigned == null && R.turnBased(cur.kind)) {
-      if (forfeits(cur)) { if (cur.state) settle(cur, R.forfeit(cur.kind, cur.state, seat, cur.players.length, 'gone')); return; }
-      if (!gotUp.has(cur.id)) gotUp.set(cur.id, new Set());
-      gotUp.get(cur.id).add(who.uid);
-    }
+    // The seat stays theirs for GONE_MS: back by then, they play on; else their turns are played for them (a duel is lost)
+    if (!gotUp.has(cur.id)) gotUp.set(cur.id, new Map());
+    gotUp.get(cur.id).set(who.uid, now());
     const n = tables.get(t0.id) || cur;
     update({ ...n, note: text('gNoteLeft', { name: who.name }) });
+  }
+
+  // `who`, seated at the game under way t0, is back: their seat, their clock and their cards (or role) again
+  function rejoined(t0, who) {
+    gotUp.get(t0.id)?.delete(who.uid);
+    afk.get(t0.id)?.delete(who.uid);
+    goneSince.delete(who.uid);
+    const seat = t0.players.findIndex((p) => p.uid === who.uid);
+    if (t0.state && R.waitingOn(t0.kind, t0.state, secret.get(t0.id)).includes(seat)) lastMove.set(t0.id, now());
+    if (['BLACKJACK', 'POKER', 'ROULETTE'].includes(t0.kind)) move(t0.id, who.uid, { op: 'back' }, who.name);
+    const v = lastPrivates.get(t0.id)?.get(who.uid);
+    if (v) { if (who.uid === me().uid) privates.set(t0.id, v); else send({ t: 'g', op: 'private', id: t0.id, to: who.uid, v }); }
+    const n = tables.get(t0.id);
+    if (n) update({ ...n, note: text('gNoteBack', { name: who.name }) });
+  }
+
+  // Just back on the server (or the page just opened): the games under way we sit at are sat at again by themselves
+  function autoRejoin(t, my) {
+    const t0 = now();
+    if (t0 > autoRejoinUntil || !my || t.host === my || !t.started || leftOnPurpose.has(t.id)) return;
+    if (!t.players.some((p) => p.uid === my) || t.state?.final === true) return;
+    if (t0 - (rejoinAsked.get(t.id) || 0) < 20000) return;
+    rejoinAsked.set(t.id, t0);
+    send({ t: 'g', op: 'join', id: t.id, name: me().name });
   }
 
   const forfeits = (t) => R.turnBased(t.kind) && t.players.length === 2;
@@ -269,7 +300,12 @@ export function createHub(env) {
     if (!t) return;
     const my = me();
     invites = invites.filter((i) => i.table !== id);
-    if (t.players.some((p) => p.uid === my.uid)) { openId = id; changed(); return; }
+    leftOnPurpose.delete(id);
+    if (t.players.some((p) => p.uid === my.uid)) {
+      // Seated at a game under way (got up, or the link dropped): back at it, the keeper sends our cards again
+      if (t.started && t.host !== my.uid) { rejoinAsked.set(id, now()); send({ t: 'g', op: 'join', id, name: my.name }); }
+      openId = id; changed(); return;
+    }
     if (t.host === my.uid) {
       if (!t.started && t.players.length < R.kindMax(t.kind)) update({ ...t, players: [...t.players, my] });
       openId = id; changed(); return;
@@ -290,7 +326,7 @@ export function createHub(env) {
       secret.delete(id);
       forget(id);
       prune();
-    } else send({ t: 'g', op: 'leave', id, name: my.name });
+    } else { leftOnPurpose.add(id); send({ t: 'g', op: 'leave', id, name: my.name }); }
     if (openId === id) openId = null;
     changed();
   }
@@ -363,6 +399,8 @@ export function createHub(env) {
     for (const [i, v] of Object.entries(o.privates || {})) {
       const pl = t.players[+i];
       if (!pl) continue;
+      if (!lastPrivates.has(t.id)) lastPrivates.set(t.id, new Map());
+      lastPrivates.get(t.id).set(pl.uid, v);
       if (pl.uid === my) privates.set(t.id, v);
       else send({ t: 'g', op: 'private', id: t.id, to: pl.uid, v });
     }
@@ -400,6 +438,10 @@ export function createHub(env) {
   // ====== The clock (the keeper watches the player to move, and who's gone) ======
 
   function watchTurns(t0) {
+    // Back on the server: for a minute, the games under way we sit at are rejoined by themselves
+    const on = env.online();
+    if (on && !wasOnline) autoRejoinUntil = t0 + 60000;
+    wasOnline = on;
     const my = me().uid;
     const mine = [...tables.values()].filter((t) => t.host === my && t.started && !R.isParty(t.kind));
     if (!mine.length) return;
@@ -421,8 +463,10 @@ export function createHub(env) {
       const limit = (seat) => (skipped.has(t.players[seat].uid) ? AFK_TURN_MS : TURN_MS);
       for (const seat of waiting) {
         const uid = t.players[seat].uid;
-        const gone = gotUp.get(t.id)?.has(uid) || (goneSince.has(uid) && t0 - goneSince.get(uid) >= GONE_MS);
-        if (gone || t0 - since >= limit(seat)) { timeUp(t.id, seat, uid, gone ? 'gone' : 'time'); return; }
+        const gone = upTooLong(t.id, uid, t0) || (goneSince.has(uid) && t0 - goneSince.get(uid) >= GONE_MS);
+        // Up from the table (or off the server) for less than that: their clock doesn't run out meanwhile
+        const away = gotUp.get(t.id)?.has(uid) || goneSince.has(uid);
+        if (gone || (!away && t0 - since >= limit(seat))) { timeUp(t.id, seat, uid, gone ? 'gone' : 'time'); return; }
       }
       const late = waiting.filter((s) => since + limit(s) - t0 <= WARN_MS);
       if (late.length) warn(t.id, late, since + Math.min(...late.map(limit)));
@@ -444,7 +488,7 @@ export function createHub(env) {
     const st = t.state;
     if (st.final === true || st.resigned != null || !R.waitingOn(t.kind, st, secret.get(id)).includes(seat)) return;
     const t0 = now();
-    const gone = gotUp.get(id)?.has(uid) || (goneSince.has(uid) && t0 - goneSince.get(uid) >= GONE_MS);
+    const gone = upTooLong(id, uid, t0) || (goneSince.has(uid) && t0 - goneSince.get(uid) >= GONE_MS);
     if (!gone) {
       const since = lastMove.get(id);
       if (since === undefined || t0 - since < (afk.get(id)?.has(uid) ? AFK_TURN_MS : TURN_MS)) return;
@@ -524,6 +568,7 @@ export function createHub(env) {
       for (const t of [...tables.values()]) if (t.host === my || t.players.some((p) => p.uid === my)) { try { leave(t.id); } catch { /* going anyway */ } }
     } finally { sendFn = was; }
     tables.clear(); secret.clear(); privates.clear(); talk.clear(); invites = [];
+    lastPrivates.clear(); leftOnPurpose.clear(); rejoinAsked.clear();
     openId = null;
     changed();
   }

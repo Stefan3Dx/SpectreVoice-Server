@@ -135,6 +135,12 @@ export const Roulette = {
         break;
       case 'undo': if (s.phase !== 'bet' || s.ready[p]) return 'not now'; s.bets[p].pop(); break;
       case 'clear': if (s.phase !== 'bet' || s.ready[p]) return 'not now'; s.bets[p].length = 0; break;
+      case 'back':
+        // Back at the table: bets from the next spin (now, if the bets are open and they've none down)
+        if (!s.left[p]) return 'not away';
+        s.left[p] = false;
+        if (s.phase === 'bet' && s.bets[p].length === 0) s.ready[p] = false;
+        break;
       case 'ready': case 'leave':
         if (op === 'leave') s.left[p] = true;
         if (s.phase !== 'bet') return op === 'leave' ? null : 'not now';

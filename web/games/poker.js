@@ -95,6 +95,8 @@ function everyoneAllIn(s) {
 
 // Player p: "fold", "check", "call", "raise" (to `to` in this round), "allin", "leave". null when done, else why not
 export function move(s, p, op, to) {
+  // Back at the table after getting up: dealt in again from the next hand
+  if (op === 'back') { if (!s.left[p]) return 'not away'; s.left[p] = false; return null; }
   if (op === 'leave') {
     s.left[p] = true;
     if (s.phase !== 'done' && inHand(s, p)) {

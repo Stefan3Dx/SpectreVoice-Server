@@ -194,7 +194,7 @@ function lobby() {
     const seated = tb.players.some((p) => p.uid === me);
     const full = tb.players.length >= R.kindMax(tb.kind);
     const ok = R.playable(tb.kind);
-    const label = seated ? t('gOpen') : !ok ? t('gInApp') : tb.started || full ? t('gWatch') : t('gSit');
+    const label = seated && tb.started ? t('gRejoin') : seated ? t('gOpen') : !ok ? t('gInApp') : tb.started || full ? t('gWatch') : t('gSit');
     list.append(el('div', { class: 'gm-table-row', dataset: { table: tb.id, kind: tb.kind } },
       el('span', { class: 'gm-kind-emoji', text: R.emoji(tb.kind) }),
       el('div', { class: 'grow' }, el('b', { text: kindName(tb.kind) }),
