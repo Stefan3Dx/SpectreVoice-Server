@@ -23,8 +23,10 @@ export const isOurs = (to) => typeof to === 'string' && (to.startsWith('c:') || 
 export function richText(s) {
   let h = esc(s);
   h = h.replace(/\[b\]([\s\S]*?)\[\/b\]/gi, '<b>$1</b>').replace(/\[i\]([\s\S]*?)\[\/i\]/gi, '<i>$1</i>');
-  h = h.replace(/\[url=(https?:\/\/[^\]\s]+)\]([\s\S]*?)\[\/url\]/gi, (_, u, l) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${l}</a>`);
-  h = h.replace(/\[url\](https?:\/\/[^\]\s]+)\[\/url\]/gi, (_, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
+  // A link's address never holds a tag, an entity or another [url] (nested ones put a link inside an href, and
+  // what followed became the tag's attributes); its label never holds another [url] either
+  h = h.replace(/\[url=(https?:\/\/[^\]\s<>"'&\[]+)\]((?:(?!\[url)[\s\S])*?)\[\/url\]/gi, (_, u, l) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${l}</a>`);
+  h = h.replace(/\[url\](https?:\/\/[^\]\s<>"'&\[]+)\[\/url\]/gi, (_, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
   // Bare links only outside the links made above (inside one they'd break its href); no quote ever in a link
   h = h.split(/(<a\b[^>]*>[\s\S]*?<\/a>)/).map((part, i) => i % 2 ? part
     : part.replace(/(https?:\/\/[^\s<"']+[^\s<"'.,;:!?)\]])/g, (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`)).join('');

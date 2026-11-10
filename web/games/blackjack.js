@@ -65,11 +65,12 @@ export function move(s, p, op, amount, purse, host, rnd = defaultRnd) {
     case 'bet': case 'skip':
       if (s.phase !== 'bet') return 'not betting now';
       if (op === 'bet') {
-        if (amount < 1 || amount > purse(p) + s.bets[p]) return 'bet ' + amount;
+        if (amount < 1 || amount > purse(p) + s.bets[p] || amount > 100000) return 'bet ' + amount;
         s.bets[p] = amount;
       } else s.bets[p] = 0;
       s.ready[p] = true;
       if (s.ready.every(Boolean) && s.bets.some((b) => b > 0)) deal(s, rnd);
+      else if (s.ready.every(Boolean)) for (let i = 0; i < s.ready.length; i++) s.ready[i] = s.left[i];
       break;
     case 'deal':
       if (s.phase !== 'bet' || !host) return 'not now';

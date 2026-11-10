@@ -152,7 +152,7 @@ function barbut(v) {
     kids.push(banner(myTurn ? t('gYourTurn') : t('gTurnOf', { name: name(v, thrower) })));
     if (myTurn) kids.push(el('button', { type: 'button', class: 'primary gm-big', id: 'gmRoll', text: '🎲 ' + t('gRoll'), onclick: () => v.play({ op: 'roll' }) }));
     if (v.host && s.turn === 0 && s.throwers.length === s.wins.length) {
-      const inp = stakeInput(v, 'stake', s.stake, 1000000);
+      const inp = stakeInput(v, 'stake', s.stake, 100000);
       inp.min = 0;
       kids.push(el('div', { class: 'row gm-ctl' }, el('span', { class: 'muted', text: t('gSetStake') }), inp,
         el('button', { type: 'button', text: t('gSet'), onclick: () => v.play({ op: 'stake', v: readStake(v, 'stake', s.stake) }) })));

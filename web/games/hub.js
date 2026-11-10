@@ -253,6 +253,13 @@ export function createHub(env) {
 
   // `who`, seated at the game under way t0, is back: their seat, their clock and their cards (or role) again
   function rejoined(t0, who) {
+    // Only someone who was up or off the server comes back (a join sent again while seated doesn't restart the clock)
+    const away = gotUp.get(t0.id)?.has(who.uid) || goneSince.has(who.uid);
+    const v0 = lastPrivates.get(t0.id)?.get(who.uid);
+    if (!away) {
+      if (v0) { if (who.uid === me().uid) privates.set(t0.id, v0); else send({ t: 'g', op: 'private', id: t0.id, to: who.uid, v: v0 }); }
+      return;
+    }
     gotUp.get(t0.id)?.delete(who.uid);
     afk.get(t0.id)?.delete(who.uid);
     goneSince.delete(who.uid);
@@ -538,7 +545,8 @@ export function createHub(env) {
   }
 
   function prune() {
-    for (const m of [privates, talk]) for (const k of [...m.keys()]) if (!tables.has(k)) m.delete(k);
+    for (const m of [privates, talk, rejoinAsked, lastPrivates]) for (const k of [...m.keys()]) if (!tables.has(k)) m.delete(k);
+    for (const k of [...leftOnPurpose]) if (!tables.has(k)) leftOnPurpose.delete(k);
   }
 
   // Every 15 s: our tables announced again, others' that went quiet dropped, idle casino tables closed, the daily bonus

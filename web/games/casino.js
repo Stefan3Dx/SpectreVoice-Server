@@ -14,7 +14,7 @@ export const Barbut = {
   },
 
   setStake(s, v) {
-    if (!(v >= 0 && v <= 1000000)) return 'stake';
+    if (!(v >= 0 && v <= 100000)) return 'stake';
     if (s.winner >= 0 || s.turn !== 0 || s.throwers.length !== s.wins.length) return 'mid-round';
     s.stake = v;
     return null;
@@ -131,6 +131,7 @@ export const Roulette = {
         if (!Roulette.valid(type, value) || amount < 1) return 'bet';
         if (amount > purse) return 'purse';
         if (s.bets[p].length >= 40) return 'too many';
+        if (s.bets[p].reduce((a, b) => a + b.amount, 0) + amount > 25000) return 'too much';
         s.bets[p].push({ type, value, amount });
         break;
       case 'undo': if (s.phase !== 'bet' || s.ready[p]) return 'not now'; s.bets[p].pop(); break;
@@ -146,6 +147,7 @@ export const Roulette = {
         if (s.phase !== 'bet') return op === 'leave' ? null : 'not now';
         s.ready[p] = true;
         if (s.ready.every(Boolean) && s.bets.some((b) => b.length)) Roulette.spin(s, rnd);
+        else if (s.ready.every(Boolean)) for (let i = 0; i < s.ready.length; i++) s.ready[i] = s.left[i];
         break;
       case 'spin':
         if (s.phase !== 'bet' || !host || s.bets.every((b) => !b.length)) return 'not now';

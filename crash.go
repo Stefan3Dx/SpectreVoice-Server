@@ -66,7 +66,20 @@ func (s *server) handleCrash(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(name, ".txt") && !strings.HasSuffix(name, ".log") {
 			name += ".txt"
 		}
-		header := fmt.Sprintf("From: %s · Spectre Voice %s · %s\n\n", q.Get("name"), q.Get("v"), q.Get("file"))
+		// One line each (a name with a newline could make a report look like it came from someone else)
+		oneLine := func(v string, n int) string {
+			v = strings.Map(func(r rune) rune {
+				if r < 32 || r == 127 {
+					return ' '
+				}
+				return r
+			}, v)
+			if len(v) > n {
+				v = v[:n]
+			}
+			return v
+		}
+		header := fmt.Sprintf("From: %s · Spectre Voice %s · %s\n\n", oneLine(q.Get("name"), 64), oneLine(q.Get("v"), 32), oneLine(q.Get("file"), 96))
 		if err := writeFileAtomic(filepath.Join(dir, name), append([]byte(header), data...), 0o600); err != nil {
 			http.Error(w, "not saved", http.StatusInternalServerError)
 			return
