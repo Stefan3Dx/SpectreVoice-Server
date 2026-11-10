@@ -226,7 +226,7 @@ function slots(v) {
   const msg = s.spins === 0 ? t('gGoodLuck') : s.last > 0 ? t('gYouWin', { amount: fmtLei(s.last + s.stake) }) : s.last === 0 ? t('gStakeBack') : t('gNothing');
   const kids = [el('div', { class: 'gm-slots-title', text: '★ GHOST SLOTS ★' }), reels, banner(msg, s.spins && s.last > 0 ? 'good' : '')];
   if (v.seat >= 0) {
-    const inp = stakeInput(v, 'stake', Math.min(s.stake, Math.max(1, v.purse)), v.purse);
+    const inp = stakeInput(v, 'stake', Math.min(s.stake, Math.max(1, Math.min(v.purse, Slots.MAX_STAKE))), Math.min(v.purse, Slots.MAX_STAKE));
     const stake = () => readStake(v, 'stake', s.stake);
     kids.push(el('div', { class: 'row gm-ctl' }, el('span', { class: 'muted', text: t('gStakeLabel') }), inp,
       el('button', { type: 'button', class: 'primary gm-big', id: 'gmSpin', text: '🎰 ' + t('gSpin'), disabled: v.purse < 1, onclick: () => v.play({ op: 'spin', v: stake() }) })));

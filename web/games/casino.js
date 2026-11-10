@@ -177,7 +177,10 @@ const WEIGHTS = [300, 250, 200, 120, 70, 40, 15, 5];
 export const Slots = {
   SYMBOLS: ['🍒', '🍋', '🍊', '🍇', '🔔', '⭐', '7', '💎'],
   THREE: [6, 8, 12, 16, 25, 50, 150, 500],
-  start: () => ({ reels: [6, 6, 6], stake: 10, last: 0, spins: 0, history: [] }),
+  // The most a spin can stake: the biggest win (💎 × 500) stays within what the server moves at once
+  MAX_STAKE: 2000,
+  // Not 7 7 7 before the first spin: it looked like a win that paid nothing
+  start: () => ({ reels: [0, 1, 2], stake: 10, last: 0, spins: 0, history: [] }),
   encode: (s) => ({ reels: s.reels.slice(), stake: s.stake, last: s.last, spins: s.spins, history: s.history.slice() }),
   decode: (m) => ({ reels: ints(m.reels), stake: mustInt(m.stake), last: mustInt(m.last), spins: mustInt(m.spins), history: ints(m.history) }),
   pick(rnd) {
@@ -193,7 +196,7 @@ export const Slots = {
   },
   // Spins for stake: the change to the purse; null when it can't
   spin(s, stake, purse, rnd = defaultRnd) {
-    if (stake < 1 || stake > purse) return null;
+    if (stake < 1 || stake > purse || stake > Slots.MAX_STAKE) return null;
     s.reels = [Slots.pick(rnd), Slots.pick(rnd), Slots.pick(rnd)];
     s.stake = stake;
     s.last = Slots.payout(s.reels, stake) - stake;

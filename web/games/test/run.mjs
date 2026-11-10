@@ -256,12 +256,13 @@ test('slots through the rules: one spin, the change to the purse', () => {
   const picks = [0, 0, 0]; // three cherries: stake × 6
   const rnd = { nextInt: () => picks.shift() };
   const st = R.start('SLOTS', ctx([two[0]]), null).state;
-  assert.deepEqual(st, { reels: [6, 6, 6], stake: 10, last: 0, spins: 0, history: [] });
+  assert.deepEqual(st, { reels: [0, 1, 2], stake: 10, last: 0, spins: 0, history: [] });
   const o = R.move('SLOTS', st, null, 0, { op: 'spin', v: 20 }, ctx([two[0]]), rnd);
   assert.deepEqual(o.state, { reels: [0, 0, 0], stake: 20, last: 100, spins: 1, history: [100] });
   assert.deepEqual(o.pay, { 0: 100 });
   assert.deepEqual(o.over, [0]);
   assert.equal(R.move('SLOTS', st, null, 0, { op: 'spin', v: 2000 }, ctx([two[0]], 1000)), null);
+  assert.equal(R.move('SLOTS', st, null, 0, { op: 'spin', v: 2001 }, ctx([two[0]], 100000)), null, 'over the most a spin can stake');
 });
 
 test('blackjack: hands (GamesTest.blackjackPlaysAHand)', () => {
