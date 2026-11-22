@@ -203,6 +203,59 @@ func dirSize(dir string) int64 {
 	return n
 }
 
+// diskCacheFor: how long the data folder's size is shown before it's walked again (a var so a test can shorten it).
+// The admin page asks every 30 s, and a walk of a large data folder is a lot of disk work for each.
+var diskCacheFor = 5 * time.Minute
+
+// diskCache: the data folder's last size; busy names the folder being walked ("": none).
+var diskCache struct {
+	mu   sync.Mutex
+	dir  string
+	n    int64
+	at   time.Time
+	busy string
+}
+
+// cachedDirSize: dirSize, remembered for diskCacheFor and walked again in the background after that, one walk at a
+// time. The first time (or for another folder) it's walked at once, so the number is real from the start.
+func cachedDirSize(dir string) int64 {
+	c := &diskCache
+	c.mu.Lock()
+	if c.dir == dir && !c.at.IsZero() {
+		n := c.n
+		if time.Since(c.at) >= diskCacheFor && c.busy == "" {
+			c.busy = dir
+			go func() {
+				m := dirSize(dir)
+				c.mu.Lock()
+				if c.dir == dir {
+					c.n, c.at = m, time.Now()
+				}
+				if c.busy == dir {
+					c.busy = ""
+				}
+				c.mu.Unlock()
+			}()
+		}
+		c.mu.Unlock()
+		return n
+	}
+	if c.busy == dir {
+		c.mu.Unlock()
+		return 0 // being walked for another request right now
+	}
+	c.busy = dir
+	c.mu.Unlock()
+	n := dirSize(dir)
+	c.mu.Lock()
+	c.dir, c.n, c.at = dir, n, time.Now()
+	if c.busy == dir {
+		c.busy = ""
+	}
+	c.mu.Unlock()
+	return n
+}
+
 func (s *server) adminOverview() map[string]any {
 	var users, msgs int64
 	db := s.store.db
@@ -219,7 +272,7 @@ func (s *server) adminOverview() map[string]any {
 	return map[string]any{
 		"name": s.serverName(), "version": version, "uptime": int64(time.Since(started).Seconds()), "license": s.lic.statusMsg(),
 		"now": now, "users": users, "active7d": active7, "messages": msgs,
-		"disk": dirSize(s.cfg.data), "maxUsers": s.maxUsers(), "music": s.music.enabled(), "backup": s.backupStatus(),
+		"disk": cachedDirSize(s.cfg.data), "maxUsers": s.maxUsers(), "music": s.music.enabled(), "backup": s.backupStatus(),
 	}
 }
 

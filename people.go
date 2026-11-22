@@ -63,6 +63,23 @@ func (h *hub) blocked(a, b string) bool {
 	return a != b && h.s.store.blockedBetween(a, b)
 }
 
+// blockedWith: everyone uid blocked or is blocked by, in one look (empty on an error, like blockedBetween).
+func (st *store) blockedWith(uid string) map[string]bool {
+	out := map[string]bool{}
+	rows, err := st.db.Query(`SELECT other FROM blocks WHERE uid=? UNION SELECT uid FROM blocks WHERE other=?`, uid, uid)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var o string
+		if rows.Scan(&o) == nil {
+			out[o] = true
+		}
+	}
+	return out
+}
+
 func (st *store) blocksOf(uid string) []string {
 	rows, err := st.db.Query(`SELECT other FROM blocks WHERE uid=? ORDER BY at`, uid)
 	if err != nil {

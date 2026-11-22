@@ -23,6 +23,6 @@ func (s *server) newRelayPusher() (*pusher, error) {
 		}
 		return err
 	}
-	go p.loop()
+	p.start()
 	return p, nil
 }

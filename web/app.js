@@ -115,6 +115,8 @@ async function handle(m) {
       return;
     }
     case 'welcome': welcome(m); break;
+    // A new token before the welcome's runs out (hub.go tokenLoop); links and the bus read S.token when used
+    case 'token': if (typeof m.token === 'string' && m.token) S.token = m.token; break;
     case 'error': {
       if (m.op === 'hello') {
         const wrong = !!S.pass;

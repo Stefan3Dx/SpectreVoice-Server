@@ -11,6 +11,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -21,6 +22,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
@@ -29,6 +31,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,6 +48,11 @@ type pusher struct {
 	access  string
 	expires time.Time
 	queue   chan pushJob
+	// urgent: a call's pushes (ring, end), apart from the rest so a mention to hundreds or a slow relay can't hold
+	// a ring back past its life. A lane per device (by its token): a call's end never overtakes its ring.
+	// Empty (tests): they go in queue like the rest.
+	urgent  []chan pushJob
+	dropped atomic.Int64 // general pushes dropped on a full queue (logged now and then)
 	// relay: no credentials of its own, the pushes go through the donation service (pushrelay.go)
 	relay func(token string, data map[string]string, ttl string) error
 }
@@ -92,8 +100,26 @@ func newPusher(credFile string, st *store) (*pusher, error) {
 	}
 	p := &pusher{project: a.ProjectID, email: a.ClientEmail, tokenURI: a.TokenURI, key: rk, api: "https://fcm.googleapis.com",
 		http: &http.Client{Timeout: 15 * time.Second}, st: st, queue: make(chan pushJob, 1000)}
-	go p.loop()
+	p.start()
 	return p, nil
+}
+
+const (
+	pushWorkers  = 4                // senders of the general queue (nudges: their order doesn't matter)
+	pushLanes    = 4                // a call's lanes, each its own sender
+	callPushWait = 10 * time.Second // the longest a call's push may take: less than its ring lasts (45 s)
+)
+
+// start makes the call lanes and starts the senders.
+func (p *pusher) start() {
+	p.urgent = make([]chan pushJob, pushLanes)
+	for i := range p.urgent {
+		p.urgent[i] = make(chan pushJob, 64)
+		go p.lane(p.urgent[i])
+	}
+	for range pushWorkers {
+		go p.loop()
+	}
 }
 
 func (st *store) migratePush() error {
@@ -172,6 +198,23 @@ func (p *pusher) notify(uid string, data map[string]string) {
 	select {
 	case p.queue <- pushJob{uid: uid, data: data}:
 	default:
+		p.drop()
+	}
+}
+
+// drop counts a general push the full queue had no room for: logged the first time and every 100th after.
+func (p *pusher) drop() {
+	if n := p.dropped.Add(1); n%100 == 1 {
+		log.Printf("push: queue full, %d notifications dropped so far", n)
+	}
+}
+
+// lane sends a call's pushes, one after the other.
+func (p *pusher) lane(ch chan pushJob) {
+	for j := range ch {
+		if err := p.sendWithin(j.only, j.data, j.ttl, callPushWait); err != nil {
+			log.Printf("push %s: %v", j.uid, err)
+		}
 	}
 }
 
@@ -179,7 +222,7 @@ func (p *pusher) loop() {
 	for j := range p.queue {
 		if j.only != "" {
 			// One device, already sealed for it (a call's push, calls.go)
-			if err := p.sendTTL(j.only, j.data, j.ttl); err != nil {
+			if err := p.sendWithin(j.only, j.data, j.ttl, callPushWait); err != nil {
 				log.Printf("push %s: %v", j.uid, err)
 			}
 			continue
@@ -202,32 +245,69 @@ func (p *pusher) notifyOne(uid, token string, data map[string]string, ttl string
 	if p == nil {
 		return
 	}
+	q := p.queue
+	if len(p.urgent) > 0 {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(token))
+		q = p.urgent[h.Sum32()%uint32(len(p.urgent))]
+	}
 	select {
-	case p.queue <- pushJob{uid: uid, data: data, ttl: ttl, only: token}:
+	case q <- pushJob{uid: uid, data: data, ttl: ttl, only: token}:
 	default:
+		log.Printf("push: call push for %s dropped, queue full", uid)
 	}
 }
 
 func (p *pusher) sendTTL(token string, data map[string]string, ttl string) error {
+	return p.sendWithin(token, data, ttl, 0)
+}
+
+// relayed sends through the donation service, forgetting a token it says is gone.
+func (p *pusher) relayed(token string, data map[string]string, ttl string) error {
+	err := p.relay(token, data, ttl)
+	if errors.Is(err, errGoneToken) {
+		_, _ = p.st.db.Exec(`DELETE FROM push_tokens WHERE token=?`, token)
+	}
+	return err
+}
+
+// sendWithin sends one push, giving up after wait (0: the client's own timeout).
+func (p *pusher) sendWithin(token string, data map[string]string, ttl string, wait time.Duration) error {
 	if ttl == "" {
 		ttl = "86400s"
 	}
 	if p.relay != nil {
-		err := p.relay(token, data, ttl)
-		if errors.Is(err, errGoneToken) {
-			_, _ = p.st.db.Exec(`DELETE FROM push_tokens WHERE token=?`, token)
+		if wait <= 0 {
+			return p.relayed(token, data, ttl)
 		}
-		return err
+		// The relay's own client waits up to a minute: past wait, the sender goes on to the next push and this
+		// one finishes (a gone token still forgotten) on its own
+		done := make(chan error, 1)
+		go func() { done <- p.relayed(token, data, ttl) }()
+		t := time.NewTimer(wait)
+		defer t.Stop()
+		select {
+		case err := <-done:
+			return err
+		case <-t.C:
+			return fmt.Errorf("relay: no answer in %s", wait)
+		}
 	}
 	at, err := p.accessToken()
 	if err != nil {
 		return err
 	}
+	ctx := context.Background()
+	if wait > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, wait)
+		defer cancel()
+	}
 	body, _ := json.Marshal(map[string]any{"message": map[string]any{
 		"token": token, "data": data,
 		"android": map[string]any{"priority": "HIGH", "ttl": ttl},
 	}})
-	req, _ := http.NewRequest("POST", p.api+"/v1/projects/"+p.project+"/messages:send", bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, "POST", p.api+"/v1/projects/"+p.project+"/messages:send", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+at)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.http.Do(req)

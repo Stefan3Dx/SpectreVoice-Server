@@ -753,3 +753,55 @@ func TestBusLeiLimits(t *testing.T) {
 		t.Fatalf("over the minute's budget: %v", m)
 	}
 }
+
+// A person's scores record (id: their uid) is theirs to put or clear whole; the tables' keepers still write to it
+// with incr, and the shared records stay open.
+func TestBusScoresOwnRecord(t *testing.T) {
+	bt := newBusTest(t, nil, nil)
+	ua, ub := "AAAAAAAAAAAAAAAAAAAA", "_BBBBBBBBBBBBBBBBBBB"
+	a := bt.dial("o", ua)
+	b := bt.dial("o", ub)
+	adm := bt.dialAdmin("o", "CCCCCCCCCCCCCCCCCCCC")
+	all := func(t0 string) {
+		t.Helper()
+		for _, c := range []*busConn{a, b, adm} {
+			c.expect(t0)
+		}
+	}
+	refused := func(c *busConn) {
+		t.Helper()
+		if m := c.expect("error"); m["why"] != "owner" {
+			t.Fatalf("wanted refusal: %v", m)
+		}
+	}
+	put := func(c *busConn, id string) {
+		c.write(map[string]any{"t": "put", "kind": "scores", "id": id, "v": map[string]any{"w": 1}})
+	}
+	del := func(c *busConn, id string) { c.write(map[string]any{"t": "del", "kind": "scores", "id": id}) }
+
+	put(a, ua)
+	all("put")
+	put(b, ua)
+	refused(b)
+	del(b, ua)
+	refused(b)
+	// A keeper's incr on someone else's record
+	b.write(map[string]any{"t": "incr", "kind": "scores", "id": ua, "inc": map[string]any{"w": 1}})
+	all("put")
+	del(a, ua)
+	all("del")
+	// The other uid (starts with '_') is a person's too
+	put(b, ub)
+	all("put")
+	put(a, ub)
+	refused(a)
+	del(adm, ub)
+	all("del")
+	// Shared ones: anyone
+	put(a, "_day:2026-11-22")
+	all("put")
+	put(b, "_day:2026-11-22")
+	all("put")
+	del(b, "_day:2026-11-22")
+	all("del")
+}

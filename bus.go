@@ -542,6 +542,13 @@ func (sp *busSpace) mayChange(c *busClient, op, kind, id string) string {
 		} else if raw != nil {
 			return "owner"
 		}
+	case kind == "scores" && uidRe.MatchString(id):
+		// A person's own record: only they put or clear it whole. incr stays open to all: the tables' keepers
+		// write the players' results that way, so a made-up result through incr is still possible (the same
+		// rework as the Lei's would close it)
+		if (op == "put" || op == "del") && id != c.uid {
+			return "owner"
+		}
 	}
 	return ""
 }

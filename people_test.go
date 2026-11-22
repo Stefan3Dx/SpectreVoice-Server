@@ -437,4 +437,19 @@ func TestBlockStopsWhisper(t *testing.T) {
 	if got := targets(ana); len(got) != 1 || got[0] != carl.sid {
 		t.Fatalf("ana whispers to %v", got)
 	}
+	// Oneself and the people not blocked stay
+	carl.send(map[string]any{"t": "whisper", "on": true, "sids": []int{carl.sid, ana.sid, bob.sid}})
+	if got := targets(carl); len(got) != 3 {
+		t.Fatalf("carl whispers to %v", got)
+	}
+	// Both ways, in one look
+	if w := s.store.blockedWith(ana.uid); len(w) != 1 || !w[bob.uid] {
+		t.Fatalf("ana's: %v", w)
+	}
+	if w := s.store.blockedWith(bob.uid); len(w) != 1 || !w[ana.uid] {
+		t.Fatalf("bob's: %v", w)
+	}
+	if w := s.store.blockedWith(carl.uid); len(w) != 0 {
+		t.Fatalf("carl's: %v", w)
+	}
 }

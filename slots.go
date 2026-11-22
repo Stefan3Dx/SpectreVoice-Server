@@ -218,13 +218,22 @@ func newLicensing(s *server) (*licensing, error) {
 	entries, _ := os.ReadDir(l.dir)
 	now := time.Now().UnixMilli()
 	for _, e := range entries {
-		if b, err := os.ReadFile(filepath.Join(l.dir, e.Name())); err == nil {
-			if c, err := l.parse(strings.TrimSpace(string(b))); err == nil && l.ours(c) == nil && c.Tier == "gift" && c.Exp > now {
-				l.tokens[e.Name()] = c
-				continue
-			}
+		b, err := os.ReadFile(filepath.Join(l.dir, e.Name()))
+		if err != nil {
+			continue // can't be read now: not a reason to lose it
 		}
-		_ = os.Remove(filepath.Join(l.dir, e.Name())) // ended, or not for this server or machine
+		c, err := l.parse(strings.TrimSpace(string(b)))
+		if err != nil || c.Tier != "gift" || c.Exp <= now {
+			_ = os.Remove(filepath.Join(l.dir, e.Name())) // ended, or not a donation token at all
+			continue
+		}
+		if err := l.ours(c); err != nil {
+			// Kept, not loaded: a machine part unreadable or changed at this start must not lose a donation for
+			// good (only add, which checks ours, writes here; an expired one goes at a later start)
+			log.Printf("places: %s not used: %v", e.Name(), err)
+			continue
+		}
+		l.tokens[e.Name()] = c
 	}
 	l.ed.start(l)
 	log.Printf("places: %s (server %s, %s edition, %d machine parts)", placesText(l.limits().MaxUsers), l.fp, l.ed.name(), len(l.hw))

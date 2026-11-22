@@ -135,6 +135,11 @@ func (s *server) useInvite(code string) (*invite, error) {
 	return in, nil
 }
 
+// unuseInvite gives back a use counted for someone then refused (the server full).
+func (s *server) unuseInvite(code string) {
+	_, _ = s.store.db.Exec(`UPDATE invites SET uses=uses-1 WHERE code=? AND uses>0`, code)
+}
+
 // inviteURL: the link for code, from the server's setting or the address the app used.
 func (s *server) inviteURL(base, code string) string {
 	if s.cfg.inviteBase != "" {

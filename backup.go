@@ -20,6 +20,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -160,6 +161,53 @@ func (s *server) backupNow() (string, error) {
 	return f, err
 }
 
+// copyDB writes a consistent copy of db to dst (VACUUM INTO). On a connection of its own to the same file when it
+// can: the server's pool has one connection, and a copy on it would hold every query (and the watchdog's) for as
+// long as it takes; in WAL mode the copy is a read, so the server goes on reading and writing meanwhile. An
+// in-memory database, or a file the second connection can't open, is copied on db itself as before.
+func copyDB(db *sql.DB, data, dst string) error {
+	if file := dbFile(db, data); file != "" {
+		own, err := sql.Open("sqlite", "file:"+file+"?_pragma=busy_timeout(5000)")
+		if err == nil {
+			own.SetMaxOpenConns(1)
+			err = own.Ping()
+			if err == nil {
+				_, err = own.Exec(`VACUUM INTO ?`, dst)
+				_ = own.Close()
+				return err
+			}
+			_ = own.Close()
+		}
+	}
+	_, err := db.Exec(`VACUUM INTO ?`, dst)
+	return err
+}
+
+// dbFile: the file behind db's main database ("" for an in-memory one). Asked of db for a moment only: if its one
+// connection is busy, the usual file in data.
+func dbFile(db *sql.DB, data string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, `PRAGMA database_list`)
+	if err != nil {
+		if p := filepath.Join(data, backupDBName); data != "" {
+			if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+				return p
+			}
+		}
+		return ""
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq int
+		var name, file string
+		if rows.Scan(&seq, &name, &file) == nil && name == "main" {
+			return file
+		}
+	}
+	return ""
+}
+
 // makeBackup writes one backup of data (db is its database, open) into dir and keeps the newest keep there.
 func makeBackup(db *sql.DB, data, dir string, keep int) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -177,7 +225,7 @@ func makeBackup(db *sql.DB, data, dir string, keep int) (string, error) {
 	}
 	defer os.RemoveAll(tmp)
 	dbCopy := filepath.Join(tmp, backupDBName)
-	if _, err := db.Exec(`VACUUM INTO ?`, dbCopy); err != nil {
+	if err := copyDB(db, data, dbCopy); err != nil {
 		return "", fmt.Errorf("database copy: %w", err)
 	}
 	sum, err := fileSHA256(dbCopy)

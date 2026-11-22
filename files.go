@@ -129,7 +129,12 @@ func cleanFileName(n string) string {
 		if len(ext) > 12 {
 			ext = ""
 		}
-		n = n[:120-len(ext)] + ext
+		// The cut may end on a space or a dot: trimmed again, so the name comes out the same when cleaned twice
+		// (handleFile checks the link's name that way)
+		n = strings.TrimRight(n[:120-len(ext)]+ext, ". ")
+		if n == "" {
+			n = "file"
+		}
 	}
 	return n
 }

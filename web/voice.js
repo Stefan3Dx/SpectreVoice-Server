@@ -6,7 +6,9 @@
 import { $, S, send, store, toast, emit, on, rtcConfig } from './core.js';
 import { t } from './i18n.js';
 
-export const V = { pc: null, stream: null, track: null, audios: new Map(), early: [], gen: 0 };
+// fails: connections that failed in a row (retried later each time, then given up); micFailed: the microphone was
+// refused or missing, so this visit goes on listening only without asking again
+export const V = { pc: null, stream: null, track: null, audios: new Map(), early: [], gen: 0, fails: 0, retryTimer: 0, micFailed: false };
 
 // Choices kept in this browser
 export const prefs = {
@@ -124,13 +126,45 @@ async function openMic() {
   }
 }
 
+// One microphone being opened at a time: a second start while the browser still asks waits for the same one
+let micPending = null;
+// Counted up each time the microphone is let go for good: one opened after that is closed again at once
+let micEpoch = 0;
+function openMicOnce() {
+  if (!micPending) {
+    const p = openMic().finally(() => { if (micPending === p) micPending = null; });
+    micPending = p;
+  }
+  return micPending;
+}
+
+// Leaving for good (Leave, kicked, refused): the microphone is closed, so the browser stops recording
+function releaseMic() {
+  V.stream?.getTracks().forEach((x) => x.stop());
+  V.stream = null;
+  V.track = null;
+  V.micFailed = false;
+  micPending = null;
+  micEpoch++;
+  updatePTT();
+}
+
 export async function voiceStart() {
   voiceStop();
   const gen = ++V.gen;
-  if (!V.stream) {
-    const m = await openMic();
-    V.stream = m.stream;
-    V.track = m.track;
+  if (!V.stream && !V.micFailed) {
+    const epoch = micEpoch;
+    const m = await openMicOnce();
+    if (epoch !== micEpoch) {
+      // Left while the browser was asking: this one is not needed any more
+      m.stream?.getTracks().forEach((x) => x.stop());
+      return;
+    }
+    if (!V.stream) {
+      if (m.stream) { V.stream = m.stream; V.track = m.track; } else V.micFailed = true;
+    } else if (m.stream && m.stream !== V.stream) {
+      m.stream.getTracks().forEach((x) => x.stop()); // another start or a new device got one first
+    }
   }
   if (gen !== V.gen || !S.ws) return;
   const pc = new RTCPeerConnection(rtcConfig());
@@ -160,8 +194,17 @@ export async function voiceStart() {
     if (V.pc !== pc) return;
     document.body.dataset.rtc = pc.connectionState;
     emit('app:rtc');
-    if (pc.connectionState === 'connected') toast(t('voiceOn') + (V.track ? '' : ' (' + t('listenOnly') + ')'));
-    if (pc.connectionState === 'failed') { toast(t('voiceOff'), true); voiceStart(); }
+    if (pc.connectionState === 'connected') {
+      V.fails = 0;
+      toast(t('voiceOn') + (V.track ? '' : ' (' + t('listenOnly') + ')'));
+    }
+    if (pc.connectionState === 'failed') {
+      // Tried again later each time (1 s, 2 s, 4 s… up to 30 s), and given up after a few: said once, and when giving up
+      if (V.fails === 0) toast(t('voiceOff'), true);
+      if (V.fails >= 6) { toast(t('voiceOff'), true); return; }
+      V.retryTimer = setTimeout(voiceStart, Math.min(30000, 1000 * 2 ** V.fails));
+      V.fails++;
+    }
   };
   if (V.track) pc.addTrack(V.track, V.stream);
   else pc.addTransceiver('audio', { direction: 'recvonly' });
@@ -175,6 +218,7 @@ export async function voiceStart() {
 }
 
 export function voiceStop() {
+  clearTimeout(V.retryTimer);
   if (V.pc) { V.pc.onconnectionstatechange = null; V.pc.close(); }
   V.pc = null;
   for (const a of V.audios.values()) { unwire(a); a.el.pause(); a.el.srcObject = null; }
@@ -286,6 +330,7 @@ async function reopenMic() {
   const had = !!V.track;
   const m = await openMic();
   if (!m.track) return;
+  V.micFailed = false;
   const old = V.stream;
   V.stream = m.stream;
   V.track = m.track;
@@ -373,5 +418,7 @@ $('deafen').onclick = () => { if (S.snd) setSelf(micBeforeDeaf, false); else { m
 on('rtc', voiceSignal);
 on('ice', voiceSignal);
 on('rtc-reset', voiceSignal);
-on('app:down', voiceStop);
+// A reconnect keeps the microphone (no new prompt); leaving for good lets it go. Either way a new welcome gets a fresh
+// number of tries
+on('app:down', (d) => { voiceStop(); V.fails = 0; if (!d?.retry) releaseMic(); });
 on('app:ptt', () => { $('pttKey').textContent = keyName(prefs.pttKey); });

@@ -540,3 +540,51 @@ func TestClientCanCall(t *testing.T) {
 		}
 	}
 }
+
+// Answered while the caller was between sessions: the rejoin brings the call-accepted it missed, once.
+func TestCallAcceptedWhileCallerAway(t *testing.T) {
+	s, hs := newTestServer(t, func(c *config) { c.callsRoute = "p2p" })
+	ka := newKey(t)
+	a, _ := dialV(t, hs, ka, "Alice", "")
+	b, _ := dialV(t, hs, newKey(t), "Bob", "")
+	id := ring(t, a, b)
+	_ = a.ws.Close()
+	time.Sleep(300 * time.Millisecond)
+	s.calls.mu.Lock()
+	away := s.calls.calls[id] != nil && s.calls.calls[id].from.sid == 0
+	s.calls.mu.Unlock()
+	if !away {
+		t.Fatal("the caller's side still has a session")
+	}
+	b.send(map[string]any{"t": "call-accept", "id": id})
+	b.wait(isCall("call-accepted", id))
+	a2, _ := dialV(t, hs, ka, "Alice", "")
+	a2.send(map[string]any{"t": "call-rejoin", "id": id})
+	if r := a2.wait(isCall("call-rejoined", id)); r["active"] != true {
+		t.Fatalf("rejoin: %v", r)
+	}
+	acc := a2.wait(isCall("call-accepted", id))
+	if _, ice := acc["ice"]; acc["peer"] != b.uid || acc["route"] != "p2p" || !ice || acc["name"] != "Bob" {
+		t.Fatalf("accepted: %v", acc)
+	}
+	a2.send(map[string]any{"t": "call-rejoin", "id": id})
+	a2.wait(isCall("call-rejoined", id))
+	noMsg(t, a2, 400*time.Millisecond, isCall("call-accepted", id))
+}
+
+// The caller there when answered: a later rejoin doesn't send call-accepted again.
+func TestCallRejoinNoSecondAccepted(t *testing.T) {
+	_, hs := newTestServer(t, func(c *config) { c.callsRoute = "p2p" })
+	ka := newKey(t)
+	a, _ := dialV(t, hs, ka, "Alice", "")
+	b, _ := dialV(t, hs, newKey(t), "Bob", "")
+	id := ring(t, a, b)
+	b.send(map[string]any{"t": "call-accept", "id": id})
+	a.wait(isCall("call-accepted", id))
+	_ = a.ws.Close()
+	time.Sleep(200 * time.Millisecond)
+	a2, _ := dialV(t, hs, ka, "Alice", "")
+	a2.send(map[string]any{"t": "call-rejoin", "id": id})
+	a2.wait(isCall("call-rejoined", id))
+	noMsg(t, a2, 400*time.Millisecond, isCall("call-accepted", id))
+}

@@ -235,6 +235,9 @@ type hub struct {
 	leftAt        map[string]time.Time
 	watchGrace    time.Duration
 	followPending atomic.Bool
+	// One ch-save or ch-del at a time: each lets go of mu for the database (and a password's hashing), and
+	// mustn't undo the other. Taken before mu, never while holding it
+	chanMu sync.Mutex
 }
 
 func newHub(s *server) (*hub, error) {
@@ -253,7 +256,23 @@ func newHub(s *server) (*hub, error) {
 		}
 	}
 	go h.tempLoop(tempTick)
+	go h.tokenLoop(tokenRefresh)
 	return h, nil
+}
+
+// tokenLoop gives every connected app a new token now and then: the one from the welcome runs out after
+// tokenLife, and a socket kept up by pings never gets another welcome, so files, streams and the bus would stop
+func (h *hub) tokenLoop(every time.Duration) {
+	for range time.Tick(every) {
+		h.mu.Lock()
+		for _, ss := range h.sessions {
+			if ss.bot && !ss.api {
+				continue // the music bot lives in this process and has no use for one
+			}
+			ss.send(map[string]any{"t": "token", "token": h.s.makeToken(ss.uid)})
+		}
+		h.mu.Unlock()
+	}
 }
 
 // broadcast sends v to every session that passes keep (nil: all); h.mu held.
@@ -425,8 +444,9 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Nothing is written for a visitor until the password and bans let them in. The password: the server's, or an
-	// invite that skips it (invites.go), or let in that way before; the server's owners and admins never need it
-	rl := h.s.store.role(uid)
+	// invite that skips it (invites.go), or let in that way before; the server's owners and admins never need it.
+	// The role read again from the database: the role command may have changed it while the server runs
+	rl := h.s.store.loadRole(uid)
 	var inv *invite
 	if hello.Invite != "" && bot == nil {
 		if in, err := h.s.store.invite(hello.Invite); err == nil && in.Comm == spaceID && in.valid() {
@@ -443,16 +463,31 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		fail("banned", "you are banned from this server")
 		return
 	}
-	if inv != nil {
-		// Counted once it lets someone in; one that skipped the password lets them back without it later
+	// Counted once it lets someone in: not for a member coming back with it (an app that sends it again on each
+	// reconnect), unless it's what skips the password for them
+	already := h.s.store.isMember(spaceID, uid)
+	counted, admittedNow := false, false
+	if inv != nil && (!already || !passOK) {
+		// One that skipped the password lets them back without it later
 		used, err := h.s.useInvite(inv.Code)
 		if err != nil && !passOK {
 			fail("password", "wrong server password")
 			return
 		}
 		inv = used
+		counted = inv != nil
 		if inv != nil && inv.Bypass && !passOK {
 			h.s.store.admit(uid, inv.Code)
+			admittedNow = true // needPass: they weren't before
+		}
+	}
+	// refund: refused after all (too many places, full), the use and the admission are given back
+	refund := func() {
+		if counted {
+			h.s.unuseInvite(inv.Code)
+		}
+		if admittedNow {
+			h.s.store.unadmit(uid)
 		}
 	}
 	rl = h.s.store.seen(uid, hello.Pub, name)
@@ -483,16 +518,19 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if mine >= maxSessionsPerUID && !rl.atLeast(roleAdmin) {
 		h.mu.Unlock()
+		refund()
 		fail("many", "you're connected from too many places")
 		return
 	}
 	if mu := h.s.maxUsers(); mu > 0 && h.people()-gone >= mu && !rl.atLeast(roleAdmin) && bot == nil {
 		h.mu.Unlock()
+		refund()
 		fail("full", "the server is full")
 		return
 	}
 	if bot != nil && h.botSessions() >= maxBotSessions {
 		h.mu.Unlock()
+		refund()
 		fail("full", "too many bots on this server")
 		return
 	}
@@ -1088,6 +1126,8 @@ func (h *hub) poke(ss *session, uid, text string) {
 }
 
 func (h *hub) saveChannel(ss *session, m map[string]any) {
+	h.chanMu.Lock()
+	defer h.chanMu.Unlock()
 	h.mu.Lock()
 	allowed := ss.comm != 0 && h.may(ss, pManageChannels)
 	h.mu.Unlock()
@@ -1177,6 +1217,12 @@ func (h *hub) saveChannel(ss *session, m map[string]any) {
 		return
 	}
 	h.mu.Lock()
+	if id != 0 && (h.chans[c.ID] == nil || h.chans[c.ID].Temp) {
+		// Gone meanwhile: not brought back
+		h.mu.Unlock()
+		ss.refuse("ch-save", "gone", "no such channel")
+		return
+	}
 	if c.Default {
 		for _, o := range h.chans {
 			if o.Default && o.ID != c.ID && o.Comm == c.Comm {
@@ -1232,17 +1278,21 @@ func (h *hub) isUnder(ch, anc int64) bool {
 }
 
 func (h *hub) deleteChannel(ss *session, id int64) {
+	h.chanMu.Lock()
 	h.mu.Lock()
 	c := h.chans[id]
 	if c == nil || c.Comm != ss.comm {
 		h.mu.Unlock()
+		h.chanMu.Unlock()
 		return
 	}
 	if c.Temp {
 		h.mu.Unlock()
+		h.chanMu.Unlock()
 		h.tempOp(ss, "temp-del", map[string]any{"id": float64(id)})
 		return
 	}
+	defer h.chanMu.Unlock()
 	if !h.may(ss, pManageChannels) {
 		h.mu.Unlock()
 		ss.refuse("ch-del", "role", "not allowed")
@@ -1266,11 +1316,10 @@ func (h *hub) deleteChannel(ss *session, id int64) {
 		return
 	}
 	h.mu.Unlock()
-	for _, g := range gone {
-		if err := h.s.store.deleteChannel(g); err != nil {
-			ss.refuse("ch-del", "server", err.Error())
-			return
-		}
+	// All in one step: a failure leaves the database as it was, like what's kept here
+	if err := h.s.store.deleteChannels(gone); err != nil {
+		ss.refuse("ch-del", "server", err.Error())
+		return
 	}
 	h.s.chfiles.dropChannels(gone)
 	if h.s.mods != nil {
@@ -1436,6 +1485,11 @@ func (h *hub) whisper(ss *session, m map[string]any) {
 			on = false
 		}
 	}
+	// The blocks read before the lock: the whole hub doesn't wait on the database
+	var blk map[string]bool
+	if on && len(sids) > 0 {
+		blk = h.s.store.blockedWith(ss.uid)
+	}
 	h.mu.Lock()
 	if on {
 		// A channel one may not hear (locked, not in it) isn't whispered to, unless an admin
@@ -1451,7 +1505,7 @@ func (h *hub) whisper(ss *session, m map[string]any) {
 		// Only people in the same community, and not where one blocked the other (people.go)
 		kept := sids[:0]
 		for _, sid := range sids {
-			if o := h.sessions[sid]; o != nil && o.comm == ss.comm && !h.blocked(ss.uid, o.uid) {
+			if o := h.sessions[sid]; o != nil && o.comm == ss.comm && (o.uid == ss.uid || !blk[o.uid]) {
 				kept = append(kept, sid)
 			}
 		}

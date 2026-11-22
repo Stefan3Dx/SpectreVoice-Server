@@ -77,6 +77,8 @@ type store struct {
 	db    *sql.DB
 	mu    sync.Mutex
 	roles map[string]role // cached
+	// roleGen counts setRole's changes to roles, so a loadRole that read the database before one doesn't undo it
+	roleGen uint64
 }
 
 const schema = `
@@ -136,7 +138,31 @@ func (st *store) close() { _ = st.db.Close() }
 func (st *store) seen(uid, pub, name string) role {
 	now := time.Now().UnixMilli()
 	_, _ = st.db.Exec(`INSERT INTO users(uid,pub,name,created,seen) VALUES(?,?,?,?,?) ON CONFLICT(uid) DO UPDATE SET name=excluded.name, seen=excluded.seen`, uid, pub, name, now, now)
-	return st.role(uid)
+	return st.loadRole(uid)
+}
+
+// loadRole reads a uid's role from the database again and keeps it in the cache: the role command (main.go)
+// writes it from another process while this one runs. On a database error the cached one stays.
+func (st *store) loadRole(uid string) role {
+	st.mu.Lock()
+	gen := st.roleGen
+	st.mu.Unlock()
+	var r string
+	err := st.db.QueryRow(`SELECT role FROM users WHERE uid=?`, uid).Scan(&r)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return st.role(uid)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.roleGen != gen {
+		return st.roles[uid] // changed here meanwhile: that one is newer
+	}
+	if role(r) == roleMember {
+		delete(st.roles, uid)
+	} else {
+		st.roles[uid] = role(r)
+	}
+	return role(r)
 }
 
 func (st *store) role(uid string) role {
@@ -157,6 +183,7 @@ func (st *store) setRole(uid string, r role) error {
 		}
 	}
 	st.mu.Lock()
+	st.roleGen++
 	if r == roleMember {
 		delete(st.roles, uid)
 	} else {
@@ -252,18 +279,32 @@ func (st *store) migrateChannels() error {
 	return nil
 }
 
-func (st *store) deleteChannel(id int64) error {
-	if _, err := st.db.Exec(`DELETE FROM channels WHERE id=?`, id); err != nil {
+func (st *store) deleteChannel(id int64) error { return st.deleteChannels([]int64{id}) }
+
+// deleteChannels deletes channels, their messages and bans in one step: all of them, or (an error) none.
+func (st *store) deleteChannels(ids []int64) error {
+	// Asked before the transaction: the one connection is the transaction's until it ends
+	var mods int
+	_ = st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='mods'`).Scan(&mods)
+	tx, err := st.db.Begin()
+	if err != nil {
 		return err
 	}
-	if _, err := st.db.Exec(`DELETE FROM messages WHERE conv=?`, chanConv(id)); err != nil {
-		return err
+	defer func() { _ = tx.Rollback() }()
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM channels WHERE id=?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM messages WHERE conv=?`, chanConv(id)); err != nil {
+			return err
+		}
+		if mods > 0 {
+			if _, err := tx.Exec(`DELETE FROM mods WHERE kind='ch-ban' AND ch=?`, id); err != nil {
+				return err
+			}
+		}
 	}
-	_, err := st.db.Exec(`DELETE FROM mods WHERE kind='ch-ban' AND ch=?`, id)
-	if err != nil && strings.Contains(err.Error(), "no such table") {
-		err = nil
-	}
-	return err
+	return tx.Commit()
 }
 
 func chanConv(id int64) string { return fmt.Sprintf("c:%d", id) }

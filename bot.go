@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -340,11 +341,37 @@ func (b *musicBot) play(sg *song) error {
 		return err
 	}
 	defer func() { cancel(); _ = cmd.Wait() }()
+	// A stream that stays open but sends nothing (a dead server at the other end) ends the song after botStall
+	// instead of holding the queue for maxSongTime. Only the time spent waiting for ffmpeg counts, not a pause.
+	var waiting atomic.Int64 // since when (UnixNano) the next packet is awaited; 0: not waiting
+	var stalled atomic.Bool
+	go func() {
+		stall := botStall
+		t := time.NewTicker(min(time.Second, max(stall/10, 10*time.Millisecond)))
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if w := waiting.Load(); w != 0 && time.Since(time.Unix(0, w)) > stall {
+					stalled.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 	r := newOggPackets(bufio.NewReaderSize(out, 64<<10))
 	next := time.Now()
 	for {
+		waiting.Store(time.Now().UnixNano())
 		pkt, err := r.next()
+		waiting.Store(0)
 		if err != nil {
+			if stalled.Load() {
+				return errors.New("the stream stopped sending")
+			}
 			if err == io.EOF {
 				return nil
 			}
@@ -377,12 +404,17 @@ func (b *musicBot) play(sg *song) error {
 	}
 }
 
+// botStall: how long a song may wait for its next packet before it's given up (a var so a test can shorten it);
+// room enough for ffmpeg to connect and look at the stream before the first one
+var botStall = 30 * time.Second
+
 // ffmpegInput: how ffmpeg opens a song (tests give it a generated tone).
 var ffmpegInput = defaultFFmpegInput
 
 func defaultFFmpegInput(u string) []string {
 	// Only web streams: no local files, no other protocols
-	return []string{"-protocol_whitelist", "https,http,tls,tcp,crypto,hls,httpproxy", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4", "-i", u}
+	return []string{"-protocol_whitelist", "https,http,tls,tcp,crypto,hls,httpproxy", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4",
+		"-rw_timeout", "15000000", "-i", u} // 15 s without data: ffmpeg gives up (reconnects first)
 }
 
 // oggPackets reads Opus packets out of an Ogg stream (the two header packets skipped). One buffer, reused.

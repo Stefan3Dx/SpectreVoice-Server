@@ -48,6 +48,10 @@ func signedV2(host string, nonce []byte) []byte {
 
 const tokenLife = 24 * time.Hour
 
+// tokenRefresh: how often a connected app gets a new token over its socket (hub.go tokenLoop), well before the
+// old one runs out; a var so a test can shorten it
+var tokenRefresh = tokenLife / 2
+
 // uidOf gives the uid of a public key (base64 SPKI): 20 characters, URL safe.
 func uidOf(spki []byte) string {
 	h := sha256.Sum256(spki)

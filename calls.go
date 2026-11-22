@@ -71,6 +71,7 @@ type callSide struct {
 	sid       int // the session carrying the call (the callee's: once it answered); 0: gone, waiting for a rejoin
 	cands     int
 	lost      *time.Timer
+	told      bool // got call-accepted (or is the one who accepted); not yet: it's sent on a rejoin
 }
 
 type call struct {
@@ -415,6 +416,8 @@ func (h *hub) callAccept(ss *session, c *call) {
 		c.ring.Stop()
 	}
 	from := c.from.sid
+	// A caller between sessions (sid 0) doesn't get it now: it goes with the rejoin
+	c.to.told, c.from.told = true, from != 0
 	ch.mu.Unlock()
 	h.sendUID(c.to.uid, map[string]any{"t": "call-end", "id": c.id, "why": "elsewhere"}, ss.sid)
 	h.s.callPush(c, h.s.callDevices(c.to.uid), "end", "elsewhere")
@@ -446,8 +449,21 @@ func (h *hub) callRejoin(ss *session, c *call) {
 		me.lost.Stop()
 		me.lost = nil
 	}
+	active := c.active
+	// Answered while this side was between sessions: the call-accepted it missed, once. (What the callee sent
+	// meanwhile is lost, but the caller makes the offer, so it starts once it has this.)
+	resend := active && !me.told
+	var peer, peerName string
+	if resend {
+		me.told = true
+		_, o := c.side(ss.uid)
+		peer, peerName = o.uid, o.name
+	}
 	ch.mu.Unlock()
-	ss.send(map[string]any{"t": "call-rejoined", "id": c.id, "active": c.active})
+	ss.send(map[string]any{"t": "call-rejoined", "id": c.id, "active": active})
+	if resend {
+		ss.send(map[string]any{"t": "call-accepted", "id": c.id, "route": c.route, "ice": h.s.publicICE(ss.uid), "peer": peer, "name": peerName})
+	}
 }
 
 func (h *hub) callPass(ss *session, t string, c *call, m map[string]any) {

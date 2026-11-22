@@ -13,6 +13,8 @@ package main
 
 import (
 	"database/sql"
+	"errors"
+	"io/fs"
 	"sync"
 
 	"fmt"
@@ -56,7 +58,54 @@ CREATE INDEX IF NOT EXISTS chfiles_comm ON chfiles(comm);`)
 	if err != nil {
 		return nil, err
 	}
-	return &channelFiles{s: s, dir: dir, db: s.store.db}, nil
+	cf := &channelFiles{s: s, dir: dir, db: s.store.db}
+	cf.sweepPartial()
+	return cf, nil
+}
+
+// sweepPartial removes, at start, the files an upload left unfinished when the server stopped in the middle (the
+// row keeps its reserved size until the upload ends): a blob shorter than its row, or none at all. A folder with no
+// blobs at all while rows say there are files is left alone: more likely the wrong or an unmounted folder.
+func (cf *channelFiles) sweepPartial() {
+	ents, err := os.ReadDir(cf.dir)
+	if err != nil {
+		return
+	}
+	type row struct{ id, size int64 }
+	var all []row
+	rows, err := cf.db.Query(`SELECT id, size FROM chfiles WHERE dir=0`)
+	if err != nil {
+		return
+	}
+	for rows.Next() {
+		var x row
+		if rows.Scan(&x.id, &x.size) == nil {
+			all = append(all, x)
+		}
+	}
+	rows.Close() // before deleting: the database has one connection
+	gone, missing := 0, 0
+	for _, x := range all {
+		fi, err := os.Stat(filepath.Join(cf.dir, strconv.FormatInt(x.id, 10)))
+		switch {
+		case err == nil && fi.Size() < x.size:
+		case errors.Is(err, fs.ErrNotExist):
+			if len(ents) == 0 {
+				missing++
+				continue
+			}
+		default:
+			continue
+		}
+		cf.removeTree(x.id)
+		gone++
+	}
+	if missing > 0 {
+		log.Printf("channel files: %s is empty but %d files are listed; left as they are (is the data folder right?)", cf.dir, missing)
+	}
+	if gone > 0 {
+		log.Printf("channel files: %d left unfinished by an upload removed", gone)
+	}
 }
 
 // readable: uid may see channel ch's files now (a member of its community, in it or allowed past its lock).

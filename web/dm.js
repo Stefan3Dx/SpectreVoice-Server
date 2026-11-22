@@ -153,26 +153,47 @@ function dropPending(o, why) {
   if (D.open === o.peer) render();
 }
 
-async function flush() {
+// One flush at a time: a message sealed by one must not be sealed and sent again by another (the send, the timer
+// and the keys arriving all start one). One asked for while it runs goes round once more after it
+let flushing = null;
+let flushAgain = false;
+function flush() {
+  if (flushing) { flushAgain = true; return flushing; }
+  flushing = (async () => {
+    do { flushAgain = false; await flushOnce(); } while (flushAgain);
+  })().finally(() => { flushing = null; });
+  return flushing;
+}
+
+// Each message leaves the queue once it's sent or given up; one still waiting for keys stays. Messages queued
+// meanwhile stay too, and one taken out while it was being sealed (the keys refused, the connection gone) isn't sent
+async function flushOnce() {
   const now = Date.now();
-  const keep = [];
-  for (const o of D.queue) {
+  const done = (o) => { D.queue = D.queue.filter((x) => x !== o); };
+  for (const o of [...D.queue]) {
+    if (!D.queue.includes(o)) continue;
     const theirs = D.devices.get(o.peer);
     const mine = D.devices.get(S.uid);
     if (!theirs || !mine || now - theirs.at > FRESH + 5000 || now - mine.at > FRESH + 5000) {
-      if (now - o.at > 15000) dropPending(o); else keep.push(o);
+      if (now - o.at > 15000) { done(o); dropPending(o); }
       continue;
     }
-    if (!theirs.list.length) { dropPending(o, t('dmUnsupported')); continue; }
+    if (!theirs.list.length) { done(o); dropPending(o, t('dmUnsupported')); continue; }
     const seen = new Set();
     const rec = [...theirs.list, ...mine.list.filter((r) => r.dev !== S.dev), { uid: S.uid, dev: S.dev, key: D.key.pub, raw: D.key.raw }]
       .filter((r) => { const k = r.uid + '\n' + r.dev; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 32);
+    let env;
     try {
-      const env = await E.seal(S.id, S.dev, o.peer, o.payload, rec);
-      if (!send({ t: 'e2e-say', to: 'u:' + o.peer, e: env, n: o.n })) dropPending(o);
-    } catch (e) { console.warn('e2e seal', e?.name); dropPending(o); }
+      env = await E.seal(S.id, S.dev, o.peer, o.payload, rec);
+    } catch (e) {
+      console.warn('e2e seal', e?.name);
+      if (D.queue.includes(o)) { done(o); dropPending(o); }
+      continue;
+    }
+    if (!D.queue.includes(o)) continue; // taken out meanwhile, its bubble with it
+    done(o);
+    if (!send({ t: 'e2e-say', to: 'u:' + o.peer, e: env, n: o.n })) dropPending(o);
   }
-  D.queue = keep;
 }
 setInterval(() => { if (D.queue.length) flush(); }, 5000);
 
@@ -364,7 +385,16 @@ function tabs() {
 }
 on('app:view', ({ view: v }) => { tabs(); if (v === 'dm') render(); });
 on('app:lang', () => { tabs(); render(); });
-on('app:down', () => { D.queue = []; });
+// The connection went: what still waited isn't sent later by itself (sealed for that session), so its bubbles go,
+// with one word that they weren't sent
+on('app:down', () => {
+  const q = D.queue;
+  D.queue = [];
+  if (!q.length) return;
+  for (const o of q) { const c = conv(o.peer); c.items = c.items.filter((x) => x.n !== o.n); }
+  toast(t('dmCantSend'), true);
+  if (q.some((o) => o.peer === D.open)) render();
+});
 
 function lockLabel(x) {
   return { sealed: '🔒 ' + t('dmE2e'), plain: '⚠ ' + t('dmPlain'), broken: '⛔ ' + t('dmBroken'), before: '🔒' }[x.lock] || '';
