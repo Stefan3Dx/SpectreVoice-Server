@@ -43,15 +43,13 @@ function svgEl(tag, attrs, ...kids) {
   return e;
 }
 function ghost(c) {
-  const g1 = 'avb' + (++ids);
-  const g2 = 'avg' + ids;
+  const g2 = 'avg' + (++ids);
+  // A flat disc in the person's colour (Theme.kt Initials: c at α .28), the ghost's body lit from the top
   return svgEl('svg', { viewBox: '0 0 100 100', class: 'ghost', 'aria-hidden': 'true' },
     svgEl('defs', {},
-      svgEl('linearGradient', { id: g1, x1: '0', y1: '0', x2: '1', y2: '1' },
-        svgEl('stop', { offset: '0', 'stop-color': rgba(c, 0.55) }), svgEl('stop', { offset: '1', 'stop-color': rgba(c, 0.25) })),
       svgEl('linearGradient', { id: g2, x1: '0', y1: '0', x2: '0', y2: '1' },
         svgEl('stop', { offset: '0', 'stop-color': rgba(mix(c, 0.6), 1) }), svgEl('stop', { offset: '1', 'stop-color': rgba(c, 1) }))),
-    svgEl('circle', { cx: 50, cy: 50, r: 50, fill: `url(#${g1})` }),
+    svgEl('circle', { cx: 50, cy: 50, r: 50, fill: rgba(c, 0.28) }),
     svgEl('path', { d: 'M20 46C20 10 80 10 80 46L80 90Q70 80 60 90Q50 92 40 90Q30 80 20 90Z', fill: `url(#${g2})` }),
     svgEl('circle', { cx: 41, cy: 42, r: 5.5, fill: '#101020' }),
     svgEl('circle', { cx: 59, cy: 42, r: 5.5, fill: '#101020' }),
@@ -72,10 +70,10 @@ export function avatar(name, uid, px) {
     img.src = pic;
     img.loading = 'lazy';
     img.decoding = 'async';
-    img.onerror = () => img.replaceWith(ghost(hsv(hueOf(uid, name), 0.6, 0.85)));
+    img.onerror = () => img.replaceWith(ghost(hsv(hueOf(uid, name), 0.45, 0.80)));
     e.append(img);
   } else {
-    e.append(ghost(hsv(hueOf(uid, name), 0.6, 0.85)));
+    e.append(ghost(hsv(hueOf(uid, name), 0.45, 0.80)));
   }
   return e;
 }

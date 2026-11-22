@@ -1,32 +1,32 @@
 /* Games (web/games/): the dialog, the list of tables, a table and its board. Felt for the casino, wood for chess. */
 
 .gm-open { position: relative; }
-.gm-open.ping::after { content: ""; position: absolute; top: 3px; right: 3px; width: 9px; height: 9px; border-radius: 50%; background: var(--warn, #f59e0b); box-shadow: 0 0 0 2px var(--bg, #0b0d14); }
+.gm-open.ping::after { content: ""; position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--surface); }
 
 .dlg.games { width: min(1120px, calc(100% - 24px)); height: min(860px, calc(100% - 40px)); }
 .dlg.games .dlg-body { flex: 1; display: flex; flex-direction: column; min-height: 0; padding-bottom: 16px; }
 .gm { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.gm h3 { font-size: .95rem; margin: 16px 0 8px; color: var(--muted, #a0a0b0); font-weight: 600; letter-spacing: .02em; }
+.gm h3 { font-size: 11px; line-height: 16px; text-transform: uppercase; margin: 16px 0 8px; color: var(--muted); font-weight: 600; letter-spacing: .6px; }
 
 .gm-head { display: flex; align-items: center; gap: 10px; }
 .gm-purse { font-weight: 700; color: #ffd54f; background: #ffd54f14; border: 1px solid #ffd54f40; border-radius: 999px; padding: 3px 12px; white-space: nowrap; }
 .gm-warn { color: var(--warn, #f59e0b); font-size: .9rem; }
 
 .gm-kinds { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
-.gm-kind { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 14px 8px; border-radius: 16px; background: linear-gradient(160deg, #20253a, #151826); }
-.gm-kind:hover:not(:disabled) { transform: translateY(-1px); }
-.gm-kind small { color: var(--muted, #a0a0b0); }
+.gm-kind { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 8px; border-radius: var(--r-panel); background: var(--glass); border: 1px solid var(--edge); }
+.gm-kind:hover:not(:disabled) { background: var(--glass-hover); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.gm-kind small { color: var(--muted); }
 .gm-kind-emoji { font-size: 1.7rem; line-height: 1.2; }
 .gm-tables { display: flex; flex-direction: column; gap: 6px; }
-.gm-table-row, .gm-invite { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 14px; background: var(--card2, #1b1f31); border: 1px solid var(--line, #262a3d); }
-.gm-invite { border-color: var(--accent, #7c5cff); margin-top: 8px; justify-content: space-between; }
+.gm-table-row, .gm-invite { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: var(--r-ctl); background: var(--glass); border: 1px solid var(--edge); }
+.gm-invite { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); margin-top: 8px; justify-content: space-between; }
 
 /* A table */
 .gm-tableview { flex: 1; display: flex; flex-direction: column; min-height: 0; gap: 8px; }
 .gm-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.gm-title { font-size: 1.15rem; font-weight: 700; }
+.gm-title { font-size: 16px; line-height: 22px; font-weight: 600; color: var(--bright); }
 .gm-split { flex: 1; display: flex; gap: 12px; min-height: 0; }
-.gm-play { flex: 1; min-width: 0; overflow: auto; border-radius: 18px; padding: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center;
+.gm-play { flex: 1; min-width: 0; overflow: auto; border-radius: var(--r-panel); padding: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center;
   background: linear-gradient(180deg, #1a1d26, #0c0e14); border: 1px solid var(--line, #262a3d); }
 .gm-play[data-kind="BARBUT"], .gm-play[data-kind="BLACKJACK"], .gm-play[data-kind="ROULETTE"] { background: radial-gradient(1000px 600px at 50% 30%, #1f7a4d, #0e4a2c 60%, #07301c); border-color: #2c6b48; }
 .gm-play[data-kind="SLOTS"] { background: radial-gradient(800px 500px at 50% 20%, #4a1f6e, #1d0f33 70%); }
@@ -51,7 +51,7 @@
 .gm-seat-txt small { color: #fffc; font-size: .78rem; }
 .gm-badge { font-size: 1.05rem; }
 @keyframes gm-glow { from { box-shadow: 0 0 0 0 #ffd54f00; } to { box-shadow: 0 0 14px 1px #ffd54f88; } }
-.gm-avatar { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; font-weight: 700; background: linear-gradient(135deg, #7c5cff, #3d8bfd); color: #fff; }
+.gm-avatar { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; font-weight: 600; background: var(--accent); color: #fff; }
 .gm-avatar.big { width: 64px; height: 64px; font-size: 1.6rem; }
 
 .gm-waiting { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 30px; }
@@ -60,7 +60,7 @@
 .gm-lobby-seat.free .gm-avatar { background: transparent; border: 2px dashed #fff5; color: #fff8; }
 
 /* Talk at the table */
-.gm-talk { width: 250px; flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 18px; background: var(--card2, #1b1f31); border: 1px solid var(--line, #262a3d); min-height: 0; }
+.gm-talk { width: 250px; flex: none; display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--r-panel); background: var(--glass); border: 1px solid var(--edge); min-height: 0; }
 .gm-talk-lines { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 6px; min-height: 60px; }
 .gm-talk-line { display: flex; flex-direction: column; font-size: .9rem; }
 .gm-talk-line b { color: #ffd54f; font-size: .8rem; }
@@ -222,7 +222,7 @@
 .gm-play[data-kind="TRIVIA"], .gm-play[data-kind="HANGMAN"] { background: radial-gradient(900px 600px at 50% 0%, #3b1f6e, #1a1033 65%, #0d0a1c); border-color: #3d2a6b; }
 .gm-party { max-width: 820px; }
 .gm-clock { position: relative; align-self: stretch; height: 22px; border-radius: 11px; background: #0006; overflow: hidden; }
-.gm-clock i { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, #22d3ee, #7c5cff); transition: width 1s linear; }
+.gm-clock i { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 1s linear; }
 .gm-clock span { position: relative; display: block; text-align: center; font-size: .8rem; font-weight: 700; line-height: 22px; }
 .gm-question { font-size: 1.45rem; font-weight: 800; text-align: center; color: #fff; }
 .gm-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-self: stretch; }
