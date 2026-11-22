@@ -401,6 +401,49 @@ func (s *server) endRoom(rm *room, only *webrtc.PeerConnection) {
 	log.Printf("[%s] ended", rm.name)
 }
 
+// endStreamsOf ends uid's streams through the server (banned, kicked, no longer allowed to stream): its stream
+// socket is apart from its session, so closing the session alone left them broadcasting. dev: only that device's
+// streams (and those whose device isn't known), "" all of them; comm: only that community's, 0 any; calls: their
+// calls' sound too. The server's TV and P2P streams (p2p.go) aren't touched. No lock held.
+func (s *server) endStreamsOf(uid, dev string, comm int64, calls bool) {
+	if uid == "" {
+		return
+	}
+	s.mu.Lock()
+	var rms []*room
+	for name, rm := range s.rooms {
+		if rm.local || name == tvRoom || strings.HasPrefix(name, tvRoomPrefix) || (name != uid && !strings.HasPrefix(name, uid+":")) {
+			continue
+		}
+		if isCallRoom(name) && !calls {
+			continue
+		}
+		rms = append(rms, rm)
+	}
+	s.mu.Unlock()
+	for _, rm := range rms {
+		if (dev != "" || comm != 0) && !isCallRoom(rm.name) && s.hub != nil {
+			// The live entry says which device streams it, and where (h.mu taken on its own, never with s.mu)
+			s.hub.mu.Lock()
+			ls, ok := s.hub.live[rm.name]
+			s.hub.mu.Unlock()
+			if dev != "" && (!ok || (ls.Dev != "" && ls.Dev != dev)) {
+				continue // not live (yet), or another device's
+			}
+			if comm != 0 && ok && ls.Comm != comm {
+				continue // streaming in another community
+			}
+		}
+		rm.mu.Lock()
+		pc := rm.pubConn
+		rm.mu.Unlock()
+		s.endRoom(rm, nil)
+		if pc != nil {
+			go pc.send(message{Type: "ended"}) // the app stops sending its picture
+		}
+	}
+}
+
 func (s *server) newPC(c *conn) (*webrtc.PeerConnection, error) {
 	pc, err := s.webrtcAPI().NewPeerConnection(webrtc.Configuration{ICEServers: s.ice})
 	if err != nil {

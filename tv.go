@@ -502,12 +502,21 @@ func (tm *tvManager) play(i int, name, by, byName string) (string, error) {
 		tm.mu.Unlock()
 		return "rate", errors.New("the channel was changed a moment ago")
 	}
+	prev, prevPlay := tm.now, tm.lastPlay
 	tm.lastPlay = time.Now()
-	tm.now = &tvChoice{I: i, Name: chs[i].Name, By: by, ByName: byName, At: time.Now().UnixMilli()}
+	c := &tvChoice{I: i, Name: chs[i].Name, By: by, ByName: byName, At: time.Now().UnixMilli()}
+	tm.now = c
 	tm.saveNow()
 	tm.mu.Unlock()
 	p, err := tm.startPlayer()
 	if err != nil {
+		// Not started: the choice before stays (unless someone chose or stopped meanwhile), and may be tried again
+		tm.mu.Lock()
+		if tm.now == c {
+			tm.now, tm.lastPlay = prev, prevPlay
+			tm.saveNow()
+		}
+		tm.mu.Unlock()
 		tm.changed()
 		return "busy", err
 	}

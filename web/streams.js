@@ -155,13 +155,33 @@ function watchSfu(w) {
   };
   ws.onclose = () => { if (w.gen === gen && !w.ended) ended(w, gen, w.up ? null : t('streamNoConn')); };
   later(w, UP_TIMEOUT, () => { if (!w.up && !w.ended) ended(w, gen, t('streamUdp')); });
-  // No picture yet (the share's key frame got lost on the way): subscribed again, twice at most
+  // No picture yet (the share's key frame got lost on the way): subscribed again, twice at most. Not when only
+  // sound comes (the TV on a radio channel, a share with no picture): there is no picture to wait for
   later(w, NO_PICTURE, () => {
     if (w.ended || w.video.videoWidth > 0 || w.resub >= 2) return;
-    w.resub++;
-    closeConn(w, false);
-    watchSfu(w);
+    soundOnly(pc).then((only) => {
+      if (w.gen !== gen || W.get(w.room) !== w || w.ended || w.pc !== pc || w.video.videoWidth > 0) return;
+      if (only) { if (w.up) tileMsg(w, ''); return; }
+      w.resub++;
+      closeConn(w, false);
+      watchSfu(w);
+    });
   });
+}
+
+// soundOnly: sound arrives on pc and no video packets at all (a lost key frame still brings video packets)
+async function soundOnly(pc) {
+  try {
+    const r = await pc.getStats();
+    let audio = 0, video = 0;
+    r.forEach((s) => {
+      if (s.type !== 'inbound-rtp') return;
+      const kind = s.kind || s.mediaType;
+      if (kind === 'audio') audio += s.packetsReceived || 0;
+      if (kind === 'video') video += s.packetsReceived || 0;
+    });
+    return audio > 0 && video === 0;
+  } catch { return false; }
 }
 
 function ended(w, gen, why) {

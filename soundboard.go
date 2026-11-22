@@ -90,6 +90,7 @@ type soundboard struct {
 	chLast  map[int64]time.Time    // per channel
 	uploads map[string][]time.Time // per person, the last 10 minutes
 	sem     chan struct{}          // transcodes at once
+	fileMu  sync.Mutex             // a sound's row and its file change together (taken before mu, never inside it)
 	encode  func(ctx context.Context, data []byte, format string) ([]byte, float64, error)
 }
 
@@ -346,11 +347,14 @@ func (sb *soundboard) take(uid string, ch int64, now time.Time) (string, time.Du
 }
 
 func (sb *soundboard) remove(snd sound) {
+	// fileMu: an upload of the same sound can't take the file as there while it's being removed
+	sb.fileMu.Lock()
 	_, _ = sb.s.store.db.Exec(`DELETE FROM sounds WHERE id=?`, snd.ID)
 	_ = sb.load()
 	if !sb.hasHash(snd.Hash) {
 		_ = os.Remove(sb.path(snd.Hash))
 	}
+	sb.fileMu.Unlock()
 	log.Printf("soundboard: sound %d removed", snd.ID)
 }
 
@@ -517,23 +521,39 @@ func (s *server) handleSoundUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	sum := sha256.Sum256(out)
 	hash := hex.EncodeToString(sum[:])
-	if !sb.hasHash(hash) {
-		if err := writeFileAtomic(sb.path(hash), out, 0o640); err != nil {
-			sbJSON(w, http.StatusInternalServerError, map[string]string{"error": "the sound couldn't be kept", "why": "server"})
-			return
-		}
-	}
 	q := r.URL.Query()
 	name := sbName(q.Get("name"), "Sound")
 	emoji := sbEmoji(q.Get("emoji"), "🔊")
 	byName := s.store.userName(uid)
+	// The limit, the file and the row in one step: two uploads at once can't both take the last place, and a
+	// delete of the same sound meanwhile can't take the file this row then counts on
+	sb.fileMu.Lock()
+	if len(sb.items()) >= sb.max() {
+		sb.fileMu.Unlock()
+		sbJSON(w, http.StatusConflict, map[string]any{"error": fmt.Sprintf("the server has %d sounds, as many as it may", sb.max()), "why": "full"})
+		return
+	}
+	wrote := false
+	if _, err := os.Stat(sb.path(hash)); !sb.hasHash(hash) || err != nil {
+		if err := writeFileAtomic(sb.path(hash), out, 0o640); err != nil {
+			sb.fileMu.Unlock()
+			sbJSON(w, http.StatusInternalServerError, map[string]string{"error": "the sound couldn't be kept", "why": "server"})
+			return
+		}
+		wrote = true
+	}
 	res, err := s.store.db.Exec(`INSERT INTO sounds(hash,name,emoji,ms,size,by_uid,by_name,created) VALUES(?,?,?,?,?,?,?,?)`, hash, name, emoji, ms, len(out), uid, byName, time.Now().UnixMilli())
 	if err != nil {
+		if wrote && !sb.hasHash(hash) {
+			_ = os.Remove(sb.path(hash))
+		}
+		sb.fileMu.Unlock()
 		sbJSON(w, http.StatusInternalServerError, map[string]string{"error": "the sound couldn't be kept", "why": "server"})
 		return
 	}
 	id, _ := res.LastInsertId()
 	_ = sb.load()
+	sb.fileMu.Unlock()
 	sb.changed()
 	log.Printf("soundboard: sound %d (%d ms, %d bytes) from %s", id, ms, len(out), uid)
 	sbJSON(w, http.StatusOK, map[string]any{"id": id, "hash": hash, "ms": ms, "cut": inSec > sbMaxSeconds+0.05})

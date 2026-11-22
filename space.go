@@ -18,6 +18,7 @@ package main
 // The welcome carries: server, community (the space, for older apps), roles, perms, channels, members.
 
 import (
+	"errors"
 	"log"
 	"time"
 )
@@ -58,6 +59,9 @@ func (h *hub) enterWith(ss *session, pre *enterPre) map[string]any {
 	ss.role, ss.roles = h.legacyRole(comm, ss.uid), a.member[ss.uid]
 	ss.vmuted, ss.talker = h.s.mods.voiceMuted(ss.uid, comm), false
 	ss.ch = h.defaultChannel(comm)
+	if ss.ch != 0 && h.s.mods != nil && h.s.mods.channelBanned(ss.uid, ss.ch) && !h.may(ss, pChannelBan) {
+		ss.ch = 0 // banned from the default channel: a reconnect doesn't undo it
+	}
 	if pre != nil && pre.wantCh != 0 && h.mayLandIn(ss, pre.wantCh) {
 		ss.ch = pre.wantCh
 	}
@@ -102,6 +106,21 @@ func (h *hub) mayLandIn(ss *session, ch int64) bool {
 	return !h.s.mods.channelBanned(ss.uid, ch) || h.may(ss, pChannelBan)
 }
 
+// checkInvite: code is one of this server's invites and may still be used; nothing counted (useInvite counts).
+func (s *server) checkInvite(code string) (*invite, error) {
+	if !inviteCodeRe.MatchString(code) {
+		return nil, errors.New("not an invite")
+	}
+	in, err := s.store.invite(code)
+	if err != nil || in.Comm != spaceID {
+		return nil, errors.New("this invite doesn't exist (any more)")
+	}
+	if !in.valid() {
+		return nil, errors.New("this invite has expired")
+	}
+	return in, nil
+}
+
 func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 	st := h.s.store
 	if goneOps[t] {
@@ -111,12 +130,20 @@ func (h *hub) communityOp(ss *session, t string, m map[string]any) bool {
 	case "server-save", "community-save":
 		h.serverSave(ss, t, m)
 	case "invite-use", "community-join":
-		// An invite opened while already on its server (older apps: community-join): counted, into its channel
+		// An invite opened while already on its server (older apps: community-join): into its channel. Not
+		// counted for a member (everyone with a session is one; an app may send it again on each open), as in hello
 		code := str(m, "invite")
 		if code == "" {
 			return true
 		}
-		inv, err := h.s.useInvite(code)
+		if h.s.mods.banned(ss.uid, 0) || h.s.mods.banned(ss.uid, spaceID) {
+			ss.refuse(t, "banned", "you are banned from this server")
+			return true
+		}
+		inv, err := h.s.checkInvite(code)
+		if err == nil && !st.isMember(spaceID, ss.uid) {
+			inv, err = h.s.useInvite(code)
+		}
 		if err != nil {
 			ss.refuse(t, "invite", err.Error())
 			return true

@@ -230,6 +230,7 @@ type hub struct {
 	gate     ipGate
 	tempNext int64                  // the last temporary channel's id (tempch.go)
 	tempMade map[string][]time.Time // when each person made their last temporary channels (rate)
+	pokeAt   map[string]time.Time   // the last poke from one person to another ("from\x00to"), for pokeGap
 	// Streams watched from the streamer's channel (watchch.go): when each person's last session went, and
 	// whether a look at the channels is on its way
 	leftAt        map[string]time.Time
@@ -241,7 +242,7 @@ type hub struct {
 }
 
 func newHub(s *server) (*hub, error) {
-	h := &hub{s: s, sessions: map[int]*session{}, chans: map[int64]*channel{}, live: map[string]liveStream{}, acc: map[int64]*commAccess{}, tempMade: map[string][]time.Time{}, leftAt: map[string]time.Time{}, watchGrace: watchGrace}
+	h := &hub{s: s, sessions: map[int]*session{}, chans: map[int64]*channel{}, live: map[string]liveStream{}, acc: map[int64]*commAccess{}, tempMade: map[string][]time.Time{}, pokeAt: map[string]time.Time{}, leftAt: map[string]time.Time{}, watchGrace: watchGrace}
 	cs, err := s.store.channels()
 	if err != nil {
 		return nil, err
@@ -314,6 +315,20 @@ func (h *hub) defaultChannel(comm int64) int64 {
 		}
 	}
 	return first
+}
+
+// landingFor: where o goes when it is taken out of channel from: the default channel, or nowhere (0) when that is
+// the channel it leaves or one it is banned from (as in mayLandIn; its password and limit don't count, it's where
+// newcomers land); h.mu held.
+func (h *hub) landingFor(o *session, from int64) int64 {
+	def := h.defaultChannel(o.comm)
+	if def == 0 || def == from {
+		return 0
+	}
+	if h.s.mods != nil && h.s.mods.channelBanned(o.uid, def) && !h.may(o, pChannelBan) {
+		return 0
+	}
+	return def
 }
 
 func (h *hub) sortedChannels(comm int64) []*channel {
@@ -481,13 +496,17 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 			admittedNow = true // needPass: they weren't before
 		}
 	}
-	// refund: refused after all (too many places, full), the use and the admission are given back
-	refund := func() {
+	// refund: refused after all (too many places, full), the use and the admission are given back, and a newcomer
+	// isn't left a member (dropMember: no other session of theirs is in, which a sibling hello may have just made)
+	refund := func(dropMember bool) {
 		if counted {
 			h.s.unuseInvite(inv.Code)
 		}
 		if admittedNow {
 			h.s.store.unadmit(uid)
+		}
+		if dropMember && !already && bot == nil {
+			_ = h.s.store.leave(spaceID, uid)
 		}
 	}
 	rl = h.s.store.seen(uid, hello.Pub, name)
@@ -517,20 +536,23 @@ func (h *hub) handle(w http.ResponseWriter, r *http.Request) {
 		mine++
 	}
 	if mine >= maxSessionsPerUID && !rl.atLeast(roleAdmin) {
+		dropMember := mine == 0 && gone == 0
 		h.mu.Unlock()
-		refund()
+		refund(dropMember)
 		fail("many", "you're connected from too many places")
 		return
 	}
 	if mu := h.s.maxUsers(); mu > 0 && h.people()-gone >= mu && !rl.atLeast(roleAdmin) && bot == nil {
+		dropMember := mine == 0 && gone == 0
 		h.mu.Unlock()
-		refund()
+		refund(dropMember)
 		fail("full", "the server is full")
 		return
 	}
 	if bot != nil && h.botSessions() >= maxBotSessions {
+		dropMember := mine == 0 && gone == 0
 		h.mu.Unlock()
-		refund()
+		refund(dropMember)
 		fail("full", "too many bots on this server")
 		return
 	}
@@ -1101,8 +1123,16 @@ func (h *hub) edit(ss *session, t string, id int64, text string) {
 	h.mu.Unlock()
 }
 
+// pokeGap: one poke per this from one person to another (staff aside); a var for the tests.
+var pokeGap = 5 * time.Second
+
 func (h *hub) poke(ss *session, uid, text string) {
 	text = clip(strings.TrimSpace(text), 200)
+	// Muted from writing: no text through a poke either (as say)
+	if comm := h.commOf(ss); comm != 0 && h.s.mods.muted(ss.uid, comm) {
+		ss.refuse("poke", "muted", "you can't write here for now")
+		return
+	}
 	if !uidRe.MatchString(uid) || !h.s.store.isMember(spaceID, uid) {
 		ss.refuse("poke", "gone", "they aren't here")
 		return
@@ -1113,6 +1143,11 @@ func (h *hub) poke(ss *session, uid, text string) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	key, now := ss.uid+"\x00"+uid, time.Now()
+	if now.Sub(h.pokeAt[key]) < pokeGap && !h.staff(ss.uid) {
+		ss.refuse("poke", "rate", "wait a moment before poking them again")
+		return
+	}
 	n := 0
 	for _, o := range h.sessions {
 		if o.uid == uid {
@@ -1122,7 +1157,16 @@ func (h *hub) poke(ss *session, uid, text string) {
 	}
 	if n == 0 {
 		ss.refuse("poke", "gone", "they aren't here")
+		return
 	}
+	if len(h.pokeAt) > 1024 {
+		for k, at := range h.pokeAt {
+			if now.Sub(at) >= pokeGap {
+				delete(h.pokeAt, k)
+			}
+		}
+	}
+	h.pokeAt[key] = now
 }
 
 func (h *hub) saveChannel(ss *session, m map[string]any) {
@@ -1233,13 +1277,16 @@ func (h *hub) saveChannel(ss *session, m map[string]any) {
 	cp := c
 	h.chans[c.ID] = &cp
 	h.toComm(c.Comm, map[string]any{"t": "channel", "c": cp})
-	// Turned into a text channel or a spacer: who was talking in it goes to the default channel
+	// Turned into a text channel or a spacer: who was talking in it goes to the default channel (nowhere when
+	// banned from it)
 	var def int64
+	nowhere := false
 	if c.Kind != "" {
 		def = h.defaultChannel(c.Comm)
 		for _, o := range h.sessions {
 			if o.ch == c.ID && o.comm == c.Comm {
-				o.ch, o.talk, o.talker = def, false, false
+				o.ch, o.talk, o.talker = h.landingFor(o, c.ID), false, false
+				nowhere = nowhere || o.ch == 0
 				h.memberChanged(o)
 			}
 		}
@@ -1247,7 +1294,11 @@ func (h *hub) saveChannel(ss *session, m map[string]any) {
 	h.mu.Unlock()
 	log.Printf("channel %d %q saved by %s", c.ID, c.Name, ss.uid)
 	if id != 0 {
-		h.s.voice.sync(c.ID, def) // moderated or not changes who's heard
+		chs := []int64{c.ID, def} // moderated or not changes who's heard
+		if nowhere {
+			chs = append(chs, 0)
+		}
+		h.s.voice.sync(chs...)
 	}
 }
 
@@ -1327,9 +1378,11 @@ func (h *hub) deleteChannel(ss *session, id int64) {
 	}
 	h.mu.Lock()
 	var moved []*session
+	nowhere := false
 	for _, o := range h.sessions {
 		if isGone[o.ch] {
-			o.ch = def
+			o.ch = h.landingFor(o, o.ch) // the default channel, or nowhere when banned from it
+			nowhere = nowhere || o.ch == 0
 			o.talk, o.talker = false, false
 			moved = append(moved, o)
 		}
@@ -1342,6 +1395,9 @@ func (h *hub) deleteChannel(ss *session, id int64) {
 		h.memberChanged(o)
 	}
 	h.mu.Unlock()
+	if nowhere {
+		gone = append(gone, 0)
+	}
 	h.s.voice.sync(append(gone, def)...)
 }
 
@@ -1384,6 +1440,17 @@ func (h *hub) refreshRoles(comm int64) {
 	}
 	if h.s.voice != nil {
 		h.s.voice.syncAllSoon() // the speak permission may have changed (h.mu is held here)
+	}
+	// Streaming is checked when a stream starts: one whose streamer may no longer stream ends now (through the
+	// SFU; p2p.go has its own). Apart, since ending a room takes h.mu.
+	cut := map[string]bool{}
+	for room, ls := range h.live {
+		if ls.Comm == comm && ls.Mode != "p2p" && room != tvRoom && !isCallRoom(room) && h.permsOf(comm, ls.UID)&pStream == 0 {
+			cut[ls.UID] = true
+		}
+	}
+	for uid := range cut {
+		go h.s.endStreamsOf(uid, "", comm, false)
 	}
 }
 

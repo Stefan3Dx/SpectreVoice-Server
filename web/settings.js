@@ -29,19 +29,31 @@ export async function openSettings() {
   ns.onchange = () => setNoiseSuppression(ns.checked);
 
   const ptt = el('button', { type: 'button', id: 'setPtt', class: 'keycap', text: keyName(prefs.pttKey) });
+  // stopGrab: waiting for the new key ends (a key came, or the dialog closed, or something else was clicked first),
+  // so a key pressed later elsewhere isn't taken for it
+  let stopGrab = null;
   ptt.onclick = () => {
+    if (stopGrab) stopGrab();
     ptt.textContent = t('pressKey');
     ptt.classList.add('on');
     const grab = (ev) => {
+      // The dialog was replaced meanwhile: this key is someone else's
+      if (!ptt.isConnected) { if (stopGrab) stopGrab(); return; }
       ev.preventDefault();
       ev.stopPropagation();
-      document.removeEventListener('keydown', grab, true);
-      ptt.classList.remove('on');
+      if (stopGrab) stopGrab();
       if (ev.code !== 'Escape') setPttKey(ev.code);
       ptt.textContent = keyName(prefs.pttKey);
     };
+    stopGrab = () => {
+      document.removeEventListener('keydown', grab, true);
+      ptt.classList.remove('on');
+      ptt.textContent = keyName(prefs.pttKey);
+      stopGrab = null;
+    };
     document.addEventListener('keydown', grab, true);
   };
+  ptt.onblur = () => { if (stopGrab) stopGrab(); };
 
   // Max volume: no voice louder than this (a cough, a shout); the slider's end is off
   const maxLabel = (db) => (db >= 0 ? t('maxOff') : db + ' dB');
@@ -66,5 +78,5 @@ export async function openSettings() {
     el('div', { class: 'setrow' }, el('span', { class: 'setlabel' }, t('pttKey'), el('small', { class: 'muted', text: t('pttNote') })), ptt),
     el('h3', { text: t('notifications') }),
     row(t('notifyHidden'), notify, notifyOK ? t('notifyNote') : t('notifyNo')));
-  openDialog({ title: t('settings'), body, actions: [{ text: t('done'), primary: true }] });
+  openDialog({ title: t('settings'), body, actions: [{ text: t('done'), primary: true }], onclose: () => { if (stopGrab) stopGrab(); } });
 }

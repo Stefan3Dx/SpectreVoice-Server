@@ -37,8 +37,13 @@ import (
 const (
 	botName     = "🎵 Music"
 	botFrame    = 20 * time.Millisecond
-	botIdle     = 3 * time.Minute // with nothing queued, the bot leaves after this
 	maxSongTime = 3 * time.Hour
+)
+
+// Vars, so tests can shorten them
+var (
+	botIdle       = 3 * time.Minute // with nothing queued, the bot leaves after this
+	botPausedIdle = 2 * time.Hour   // paused with songs queued: it waits this long for a !resume before leaving
 )
 
 type song struct {
@@ -280,9 +285,26 @@ func (b *musicBot) run() {
 			b.queue = b.queue[1:]
 			next = &s
 		}
+		// Paused with songs queued: not idle, the queue is kept for a !resume (only a much longer wait ends it)
+		waiting := b.paused && len(b.queue) > 0
 		b.now = next
 		b.votes = map[string]bool{}
 		b.mu.Unlock()
+		if next == nil && waiting {
+			b.tell()
+			paused := time.NewTimer(botPausedIdle)
+			select {
+			case <-b.wake:
+				paused.Stop()
+				idle.Reset(botIdle)
+			case <-paused.C:
+				b.say("Plec, am stat prea mult pe pauză.")
+				b.mu.Lock()
+				b.stopped = true
+				b.mu.Unlock()
+			}
+			continue
+		}
 		if next == nil {
 			b.tell()
 			select {

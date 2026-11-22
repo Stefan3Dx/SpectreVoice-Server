@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -205,5 +206,33 @@ func TestNewPermsMigration(t *testing.T) {
 	_ = st.db.QueryRow(`SELECT perms FROM roles WHERE everyone=1`).Scan(&p)
 	if perm(p)&pTempChannel != 0 {
 		t.Fatal("given back")
+	}
+}
+
+// Creates refused after the rate check (a too long password) don't spend the rate's places.
+func TestTempRateOnlyCountsMade(t *testing.T) {
+	oldN := tempRateN
+	tempRateN = 2
+	t.Cleanup(func() { tempRateN = oldN })
+	_, hs := newTestServer(t, nil)
+	bob, _ := dialV(t, hs, newKey(t), "Bob", "")
+	long := strings.Repeat("p", 73)
+	for range 2 {
+		bob.send(map[string]any{"t": "temp-create", "name": "b", "password": long})
+		if e := bob.wait(isErrOp("temp-create")); e["why"] != "bad" {
+			t.Fatal(e)
+		}
+	}
+	bob.send(map[string]any{"t": "temp-create", "name": "b1"})
+	bid := int64(bob.wait(isDone("temp-create"))["id"].(float64))
+	bob.send(map[string]any{"t": "temp-del", "id": bid})
+	bob.wait(isDone("temp-del"))
+	bob.send(map[string]any{"t": "temp-create", "name": "b2"})
+	bid = int64(bob.wait(isDone("temp-create"))["id"].(float64))
+	bob.send(map[string]any{"t": "temp-del", "id": bid})
+	bob.wait(isDone("temp-del"))
+	bob.send(map[string]any{"t": "temp-create", "name": "b3"})
+	if e := bob.wait(isErrOp("temp-create")); e["why"] != "rate" {
+		t.Fatal(e)
 	}
 }

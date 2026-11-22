@@ -45,6 +45,9 @@ type channelFiles struct {
 	db  *sql.DB
 	// upMu: checking the space left and taking it is one step (parallel uploads can't each see it all free)
 	upMu sync.Mutex
+	// pending: files still being uploaded (their row holds the reserved size): not listed, served or changed yet
+	pendMu  sync.Mutex
+	pending map[int64]bool
 }
 
 func newChannelFiles(s *server, dir string) (*channelFiles, error) {
@@ -58,7 +61,7 @@ CREATE INDEX IF NOT EXISTS chfiles_comm ON chfiles(comm);`)
 	if err != nil {
 		return nil, err
 	}
-	cf := &channelFiles{s: s, dir: dir, db: s.store.db}
+	cf := &channelFiles{s: s, dir: dir, db: s.store.db, pending: map[int64]bool{}}
 	cf.sweepPartial()
 	return cf, nil
 }
@@ -134,6 +137,24 @@ func (cf *channelFiles) item(id int64) (cfItem, int64, int64, error) {
 	return it, ch, comm, err
 }
 
+func (cf *channelFiles) isPending(id int64) bool {
+	cf.pendMu.Lock()
+	defer cf.pendMu.Unlock()
+	return cf.pending[id]
+}
+
+func (cf *channelFiles) setPending(id int64) {
+	cf.pendMu.Lock()
+	cf.pending[id] = true
+	cf.pendMu.Unlock()
+}
+
+func (cf *channelFiles) clearPending(id int64) {
+	cf.pendMu.Lock()
+	delete(cf.pending, id)
+	cf.pendMu.Unlock()
+}
+
 func (cf *channelFiles) used(comm int64) int64 {
 	var n sql.NullInt64
 	_ = cf.db.QueryRow(`SELECT SUM(size) FROM chfiles WHERE comm=?`, comm).Scan(&n)
@@ -165,7 +186,7 @@ func (cf *channelFiles) list(ss *session, ch, folder int64) {
 	for rows.Next() {
 		var it cfItem
 		var dir int
-		if rows.Scan(&it.ID, &it.Name, &dir, &it.Size, &it.By, &it.At, &it.ByName) == nil {
+		if rows.Scan(&it.ID, &it.Name, &dir, &it.Size, &it.By, &it.At, &it.ByName) == nil && !cf.isPending(it.ID) {
 			it.Dir = dir == 1
 			items = append(items, it)
 		}
@@ -217,6 +238,17 @@ func (cf *channelFiles) op(ss *session, t string, m map[string]any) bool {
 		it, ch, comm, err := cf.item(id)
 		if err != nil {
 			ss.refuse(t, "gone", "no such file")
+			return true
+		}
+		// A file still being uploaded (or a folder with one in it) waits for the upload to end
+		busy := cf.isPending(id)
+		if t == "cf-del" && it.Dir {
+			for _, x := range cf.tree(id) {
+				busy = busy || cf.isPending(x)
+			}
+		}
+		if busy {
+			ss.refuse(t, "busy", "still uploading")
 			return true
 		}
 		if c, ok := cf.readable(ss.uid, ch); !ok || c != comm {
@@ -397,12 +429,16 @@ func (cf *channelFiles) handleUpload(w http.ResponseWriter, r *http.Request) {
 		reserve = min(reserve, r.ContentLength)
 	}
 	res, err := cf.db.Exec(`INSERT INTO chfiles(ch,comm,parent,name,size,by,at) VALUES(?,?,?,?,?,?,?)`, ch, comm, folder, name, reserve, uid, time.Now().UnixMilli())
-	cf.upMu.Unlock()
 	if err != nil {
+		cf.upMu.Unlock()
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	id, _ := res.LastInsertId()
+	// Hidden until its real size is in the row (marked before upMu goes, so nobody sees it unmarked)
+	cf.setPending(id)
+	cf.upMu.Unlock()
+	defer cf.clearPending(id)
 	path := filepath.Join(cf.dir, strconv.FormatInt(id, 10))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o640)
 	if err != nil {
@@ -419,7 +455,20 @@ func (cf *channelFiles) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upload failed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	_, _ = cf.db.Exec(`UPDATE chfiles SET size=? WHERE id=?`, n, id)
+	// The row may have gone meanwhile (its channel deleted, its uploader's account wiped): so does the file
+	up, err := cf.db.Exec(`UPDATE chfiles SET size=? WHERE id=?`, n, id)
+	if err == nil {
+		var rows int64
+		rows, err = up.RowsAffected()
+		if err == nil && rows == 0 {
+			err = errors.New("gone")
+		}
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		http.Error(w, "the file was deleted meanwhile", http.StatusGone)
+		return
+	}
 	log.Printf("channel file %d %q in %d (%d KB) by %s", id, name, ch, n>>10, uid)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = fmt.Fprintf(w, `{"id":%d,"size":%d}`, id, n)
@@ -442,7 +491,7 @@ func (cf *channelFiles) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	it, ch, _, err := cf.item(id)
-	if err != nil || it.Dir {
+	if err != nil || it.Dir || cf.isPending(id) {
 		http.NotFound(w, r)
 		return
 	}

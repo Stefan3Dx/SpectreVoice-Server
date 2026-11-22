@@ -57,26 +57,31 @@ func (h *hub) tempCount(uid string) (all, mine int) {
 	return
 }
 
-// tempRate: uid may make another one now (a few per window); h.mu held.
-func (h *hub) tempRate(uid string) bool {
-	now := time.Now()
+// tempRateOK: uid may make another one now (a few per window); nothing counted, tempRateNote does once one is
+// made (a create refused later on, a too long password, doesn't spend one); h.mu held.
+func (h *hub) tempRateOK(uid string, now time.Time) bool {
 	kept := h.tempMade[uid][:0]
 	for _, at := range h.tempMade[uid] {
 		if now.Sub(at) < tempRateWindow {
 			kept = append(kept, at)
 		}
 	}
-	if len(kept) >= tempRateN {
+	if len(kept) == 0 {
+		delete(h.tempMade, uid)
+	} else {
 		h.tempMade[uid] = kept
-		return false
 	}
-	h.tempMade[uid] = append(kept, now)
+	return len(kept) < tempRateN
+}
+
+// tempRateNote counts one made by uid now; h.mu held.
+func (h *hub) tempRateNote(uid string, now time.Time) {
+	h.tempMade[uid] = append(h.tempMade[uid], now)
 	for u, l := range h.tempMade { // forgotten after the window
 		if len(l) > 0 && now.Sub(l[len(l)-1]) >= tempRateWindow {
 			delete(h.tempMade, u)
 		}
 	}
-	return true
 }
 
 func (h *hub) tempOp(ss *session, t string, m map[string]any) bool {
@@ -131,7 +136,7 @@ func (h *hub) tempCreate(ss *session, m map[string]any) {
 		h.mu.Unlock()
 		ss.refuse(t, "full", "the server has as many temporary channels as it takes")
 		return
-	case !h.tempRate(ss.uid):
+	case !h.tempRateOK(ss.uid, time.Now()):
 		h.mu.Unlock()
 		ss.refuse(t, "rate", "slow down")
 		return
@@ -151,7 +156,15 @@ func (h *hub) tempCreate(ss *session, m map[string]any) {
 		ss.refuse(t, "many", "you have a temporary channel already")
 		return
 	}
-	id := max(h.tempNext+1, tempBase+time.Now().UnixMilli())
+	// Again too: two creates may have been through bcrypt at once
+	now := time.Now()
+	if !h.tempRateOK(ss.uid, now) {
+		h.mu.Unlock()
+		ss.refuse(t, "rate", "slow down")
+		return
+	}
+	h.tempRateNote(ss.uid, now)
+	id := max(h.tempNext+1, tempBase+now.UnixMilli())
 	h.tempNext = id
 	c := &channel{ID: id, Comm: ss.comm, Name: name, Pos: 100000, MaxUsers: maxU, Temp: true, Owner: ss.uid, pass: hash}
 	c.HasPass = hash != ""
@@ -226,9 +239,11 @@ func (h *hub) tempDelete(id int64, why string) {
 	}
 	def := h.defaultChannel(c.Comm)
 	var moved []*session
+	nowhere := false
 	for _, o := range h.sessions {
 		if o.ch == id {
-			o.ch, o.talk, o.talker = def, false, false
+			o.ch, o.talk, o.talker = h.landingFor(o, id), false, false // nowhere when banned from the default
+			nowhere = nowhere || o.ch == 0
 			moved = append(moved, o)
 		}
 	}
@@ -245,7 +260,11 @@ func (h *hub) tempDelete(id int64, why string) {
 	}
 	log.Printf("temporary channel %d %q gone (%s)", id, c.Name, why)
 	if len(moved) > 0 {
-		h.s.voice.sync(id, def)
+		chs := []int64{id, def}
+		if nowhere {
+			chs = append(chs, 0)
+		}
+		h.s.voice.sync(chs...)
 	}
 }
 

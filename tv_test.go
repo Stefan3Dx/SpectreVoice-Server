@@ -468,3 +468,45 @@ func (c *client) readKeepingCandidates() {
 		}
 	}
 }
+
+// A TV start that fails (no stream room left) leaves no choice behind: none shown or kept, the one before stays,
+// and trying again isn't refused as too soon.
+func TestTVPlayFailedStartKeepsNothing(t *testing.T) {
+	// maxRooms 0: the player's room can't open. Any program stands in for ffmpeg (it's never run)
+	s, _ := newTestServer(t, func(c *config) { c.tv = true; c.maxRooms = 0; c.ffmpeg = os.Args[0] })
+	tm := s.tv
+	tm.mu.Lock()
+	tm.src = &tvSource{Kind: "url", URL: "http://iptv.example/x.m3u", N: 2}
+	tm.list = []tvChannel{{Name: "Unu", URL: "http://iptv.example/1.ts"}, {Name: "Doi", URL: "http://iptv.example/2.ts"}}
+	tm.mu.Unlock()
+	for range 2 {
+		if why, err := tm.play(0, "Unu", "u1", "Ana"); why != "busy" || err == nil {
+			t.Fatalf("play: %q %v", why, err)
+		}
+	}
+	tm.mu.Lock()
+	now := tm.now
+	tm.mu.Unlock()
+	if _, saved := s.store.setting("tv_now"); now != nil || saved {
+		t.Fatalf("a failed start stays chosen: %+v (saved %v)", now, saved)
+	}
+	if st := tm.state(false); st["now"] != nil {
+		t.Fatalf("state shows a choice: %v", st["now"])
+	}
+	// A choice from before (chosen, the player off): it stays
+	prev := &tvChoice{I: 1, Name: "Doi", By: "u2", ByName: "Bob", At: 1}
+	tm.mu.Lock()
+	tm.now = prev
+	tm.saveNow()
+	tm.mu.Unlock()
+	if why, _ := tm.play(0, "Unu", "u1", "Ana"); why != "busy" {
+		t.Fatalf("play: %q", why)
+	}
+	tm.mu.Lock()
+	now = tm.now
+	tm.mu.Unlock()
+	want, _ := json.Marshal(prev)
+	if v, _ := s.store.setting("tv_now"); now != prev || v != string(want) {
+		t.Fatalf("the choice before: %+v, saved %s", now, v)
+	}
+}

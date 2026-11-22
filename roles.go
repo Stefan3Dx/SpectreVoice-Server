@@ -176,8 +176,12 @@ func (m *mods) dropScope(kinds []string, scopes ...int64) {
 	m.list = kept
 }
 
+// maxModMinutes: the longest timed ban or mute, ten years; more is forever (and would overflow time.Duration,
+// putting the end in the past).
+const maxModMinutes = 10 * 365 * 24 * 60
+
 func until(minutes int64) int64 {
-	if minutes <= 0 {
+	if minutes <= 0 || minutes > maxModMinutes {
 		return 0
 	}
 	return time.Now().Add(time.Duration(minutes) * time.Minute).UnixMilli()
@@ -255,6 +259,8 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 		o.send(map[string]any{"t": "kicked", "by": ss.name, "why": why})
 		log.Printf("kick: %s by %s (%s)", o.uid, ss.uid, why)
 		time.AfterFunc(300*time.Millisecond, o.close)
+		// Their stream from that device goes too (its socket is apart from the session); not their calls
+		m.s.endStreamsOf(o.uid, o.dev, comm, false)
 		return true
 	case "role":
 		// The older apps' simple roles, as the community's preset roles
@@ -323,6 +329,7 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 		}
 		h.afterRemoval(comm, uid, "banned")
 		m.s.bus.kick(spaceOf(comm), uid)
+		m.s.endStreamsOf(uid, "", comm, true) // a live stream isn't ended by closing the session
 	case "unban":
 		m.remove(uid, "ban", comm)
 	case "server-ban":
@@ -333,6 +340,7 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 		}
 		m.s.store.unadmit(uid)
 		m.s.bus.kick("", uid)
+		m.s.endStreamsOf(uid, "", 0, true)
 	case "server-unban":
 		m.remove(uid, "sban", 0)
 	case "mute":
@@ -342,23 +350,29 @@ func (m *mods) dispatch(ss *session, t string, msg map[string]any) bool {
 	case "ch-ban":
 		ch := i64(msg, "ch")
 		m.put(ban{UID: uid, Kind: "ch-ban", Ch: ch, Until: until(i64(msg, "minutes")), Why: why, By: ss.uid})
+		// Out to the default channel, or nowhere when that's the one they're banned from (or another ban)
 		var moved []*session
+		var to []int64
+		chs := []int64{ch}
 		h.mu.Lock()
-		def := h.defaultChannel(comm)
 		for _, o := range h.sessions {
 			if o.uid == uid && o.ch == ch {
-				o.ch = def
-				o.talk = false
+				o.ch = h.landingFor(o, ch)
+				o.talk, o.talker = false, false
 				h.memberChanged(o)
 				moved = append(moved, o)
+				to = append(to, o.ch)
+				if !slices.Contains(chs, o.ch) {
+					chs = append(chs, o.ch)
+				}
 			}
 		}
 		h.mu.Unlock()
-		for _, o := range moved {
-			o.send(map[string]any{"t": "moved", "ch": def, "by": ss.name})
+		for i, o := range moved {
+			o.send(map[string]any{"t": "moved", "ch": to[i], "by": ss.name})
 		}
 		if len(moved) > 0 {
-			m.s.voice.sync(ch, def)
+			m.s.voice.sync(chs...)
 		}
 	case "ch-unban":
 		m.remove(uid, "ch-ban", i64(msg, "ch"))

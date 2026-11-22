@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -304,4 +305,96 @@ func TestSoundboardFormats(t *testing.T) {
 	if code, _ := sbUpload(t, hs.URL, admin.tok, "junk", "", append([]byte("RIFF\x00\x00\x00\x00WAVE"), bytes.Repeat([]byte{7}, 500)...)); code != http.StatusUnprocessableEntity {
 		t.Fatalf("junk: %d", code)
 	}
+}
+
+// fakeOgg: a one-page Ogg whose granule says one second; tag makes its bytes (and hash) its own.
+func fakeOgg(tag byte) []byte {
+	p := make([]byte, 27, 29)
+	copy(p, "OggS")
+	binary.LittleEndian.PutUint64(p[6:14], 48000)
+	p[26] = 1
+	return append(p, 1, tag)
+}
+
+// Two uploads at once can't both take the last place.
+func TestSoundboardUploadLimitRace(t *testing.T) {
+	adminKey := newKey(t)
+	s, hs := newTestServer(t, func(c *config) { c.owners = uidOfKey(adminKey); c.soundsMax = 1 })
+	admin, _ := dialV(t, hs, adminKey, "Boss", "")
+	sb := s.sb
+	in, release := make(chan struct{}, 2), make(chan struct{})
+	sb.encode = func(ctx context.Context, data []byte, format string) ([]byte, float64, error) {
+		in <- struct{}{}
+		<-release
+		return fakeOgg(data[len(data)-1]), 1, nil
+	}
+	codes := make(chan int, 2)
+	for i := range 2 {
+		go func() {
+			code, _ := sbUpload(t, hs.URL, admin.tok, "S", "🔊", append(testWav(0.1), byte(i)))
+			codes <- code
+		}()
+	}
+	<-in
+	<-in
+	close(release)
+	got := map[int]int{}
+	for range 2 {
+		got[<-codes]++
+	}
+	if got[200] != 1 || got[http.StatusConflict] != 1 {
+		t.Fatalf("answers: %v", got)
+	}
+	var rows int
+	_ = s.store.db.QueryRow(`SELECT COUNT(*) FROM sounds`).Scan(&rows)
+	if rows != 1 {
+		t.Fatalf("%d sounds kept, at most 1", rows)
+	}
+}
+
+// A sound uploaded again after its file went (deleted with its last row, or lost from the disk) has its file back.
+func TestSoundboardFileKept(t *testing.T) {
+	adminKey := newKey(t)
+	s, hs := newTestServer(t, func(c *config) { c.owners = uidOfKey(adminKey); c.soundsMax = 5 })
+	admin, _ := dialV(t, hs, adminKey, "Boss", "")
+	sb := s.sb
+	sb.encode = func(ctx context.Context, data []byte, format string) ([]byte, float64, error) {
+		return fakeOgg(7), 1, nil
+	}
+	fileOK := func(hash string) {
+		t.Helper()
+		res, err := http.Get(hs.URL + "/sb/f/" + hash + ".opus?token=" + url.QueryEscape(admin.tok))
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != 200 {
+			t.Fatalf("the sound's file: %d", res.StatusCode)
+		}
+	}
+	upload := func() string {
+		t.Helper()
+		code, m := sbUpload(t, hs.URL, admin.tok, "Same", "🔊", testWav(0.1))
+		if code != 200 {
+			t.Fatalf("upload: %d %v", code, m)
+		}
+		return m["hash"].(string)
+	}
+	hash := upload()
+	// Its only row deleted, then the same sound again
+	for _, snd := range sb.items() {
+		if snd.Hash == hash {
+			sb.remove(snd)
+		}
+	}
+	if upload() != hash {
+		t.Fatal("not the same sound")
+	}
+	fileOK(hash)
+	// The file lost from the disk while a row still holds it: the next upload of it puts it back
+	if err := os.Remove(sb.path(hash)); err != nil {
+		t.Fatal(err)
+	}
+	upload()
+	fileOK(hash)
 }

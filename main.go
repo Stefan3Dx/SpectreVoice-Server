@@ -11,9 +11,11 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,10 +23,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pion/ice/v4"
@@ -301,7 +305,40 @@ func main() {
 	go s.backupLoop()
 	// Idle keep-alive connections close; uploads set their own longer deadline (files.go, chfiles.go)
 	srv := &http.Server{Addr: cfg.listen, Handler: s.handler(), ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second}
-	log.Fatal(srv.ListenAndServe())
+	// systemctl restart, the auto-update and install.sh --update send SIGTERM: the state goes to disk first
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	served := make(chan error, 1)
+	go func() { served <- srv.ListenAndServe() }()
+	select {
+	case err := <-served:
+		if !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	case <-ctx.Done():
+		log.Printf("stopping")
+		stop() // a second signal ends it at once
+		s.shutdown(srv)
+	}
+}
+
+// shutdown stops the server cleanly: what the bus changed in its last seconds is written first (its saver runs
+// every 3 s), then requests in flight get a few seconds to end, the TV player stops and the database closes.
+func (s *server) shutdown(srv *http.Server) {
+	save := func() {
+		if s.bus != nil && s.bus.dir != "" {
+			s.bus.saveDirty()
+		}
+	}
+	save()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		_ = srv.Close()
+	}
+	s.tv.stopAll()
+	save() // what came over the sockets still open meanwhile
+	s.store.close()
 }
 
 func newServer(cfg config) (*server, error) {

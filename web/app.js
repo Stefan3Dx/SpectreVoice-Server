@@ -49,6 +49,8 @@ function connect() {
   ws.onclose = () => {
     if (ws !== S.ws) return;
     S.ws = null;
+    // Never got in (the server can't be reached): back to the form with the error, not retried for ever
+    if (S.phase !== 'off' && !S.wasOn) { failed(t('errWs')); return; }
     emit('app:down', { retry: S.phase !== 'off' });
     if (S.phase === 'off') return;
     // Back off: 1, 2, 4 … 30 s

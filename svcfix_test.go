@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -388,5 +391,227 @@ func TestCachedDirSize(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(other, "c"), make([]byte, 7), 0o600)
 	if n := cachedDirSize(other); n != 7 {
 		t.Fatalf("other folder: %d", n)
+	}
+}
+
+// A stop (SIGTERM) writes what the bus changed in its last seconds at once, not at the saver's next tick.
+func TestShutdownSavesBus(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	b := s.bus
+	b.fileMu.Lock()
+	b.mu.Lock()
+	sp, err := b.load("shut")
+	if err == nil {
+		sp.set("lei", "u1", json.RawMessage(`{"v":42}`))
+		sp.dirty = true
+	}
+	b.mu.Unlock()
+	b.fileMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.shutdown(&http.Server{})
+	data, err := os.ReadFile(spaceFile(b.dir, "shut"))
+	if err != nil || !strings.Contains(string(data), `"v":42`) {
+		t.Fatalf("not saved at the stop: %s %v", data, err)
+	}
+}
+
+// A bot paused with songs queued isn't idle: it keeps the queue past botIdle and plays on at !resume. With
+// nothing queued it still leaves after botIdle.
+func TestMusicBotPausedKeepsQueue(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("no ffmpeg")
+	}
+	old := botIdle
+	botIdle = 300 * time.Millisecond
+	defer func() { botIdle = old }()
+	s, hs := newTestServer(t, func(c *config) { c.music = true; c.ytdlp = "ffmpeg"; c.ffmpeg = "ffmpeg" })
+	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
+	n := 0
+	s.music.resolveFn = func(q string) (song, error) { n++; return song{Title: "Ton" + itoa(n), URL: "lavfi"}, nil }
+	ffmpegInput = func(u string) []string { return []string{"-f", "lavfi", "-i", "sine=frequency=440:duration=30"} }
+	defer func() { ffmpegInput = defaultFFmpegInput }()
+	lobby := "c:" + itoa(int(chanID(t, ana.wel, "Lobby")))
+	say := func(text string) { ana.send(map[string]any{"t": "say", "to": lobby, "text": text}) }
+	botSaid := func(part string) func(map[string]any) bool {
+		return func(m map[string]any) bool {
+			mm, _ := m["m"].(map[string]any)
+			return m["t"] == "msg" && strings.Contains(str(mm, "text"), part)
+		}
+	}
+	// Reads what came for d, failing on a goodbye
+	noGoodbye := func(d time.Duration) {
+		end := time.After(d)
+		for {
+			select {
+			case m := <-ana.in:
+				if botSaid("Plec")(m) {
+					t.Fatalf("the paused bot left: %v", m)
+				}
+				ana.seen = append(ana.seen, m)
+			case <-end:
+				return
+			}
+		}
+	}
+	say("!play unu")
+	ana.wait(botSaid("▶ Ton1"))
+	say("!play doi")
+	ana.wait(botSaid("➕ Ton2"))
+	say("!pause")
+	time.Sleep(200 * time.Millisecond)
+	say("!skip") // the paused song ends, the next one waits for !resume
+	noGoodbye(4 * botIdle)
+	s.music.mu.Lock()
+	b := s.music.bots[spaceID]
+	s.music.mu.Unlock()
+	if b == nil {
+		t.Fatal("the paused bot is gone")
+	}
+	b.mu.Lock()
+	queued, stopped := len(b.queue), b.stopped
+	b.mu.Unlock()
+	if queued != 1 || stopped {
+		t.Fatalf("queue %d, stopped %v", queued, stopped)
+	}
+	say("!resume")
+	ana.wait(botSaid("▶ Ton2"))
+	// Nothing left once this one is skipped: botIdle later it goes
+	say("!skip")
+	ana.wait(botSaid("Plec, nu mai e nimic"))
+}
+
+// A channel file still being uploaded isn't listed, served or deleted; one whose row goes meanwhile (its channel
+// deleted) doesn't answer as stored and leaves no blob behind.
+func TestChannelFileUploadPending(t *testing.T) {
+	s, hs := newTestServer(t, func(c *config) { c.fileMB = 10 })
+	cf := s.chfiles
+	ana, _ := dialV(t, hs, newKey(t), "Ana", "")
+	lobby := chanID(t, ana.wel, "Lobby")
+	type answer struct {
+		code int
+		body string
+	}
+	start := func(name string) (*io.PipeWriter, int64, chan answer) {
+		pr, pw := io.Pipe()
+		req, _ := http.NewRequest("POST", hs.URL+"/cf/upload?ch="+itoa(int(lobby))+"&folder=0&name="+name, pr)
+		req.Header.Set("Authorization", "Bearer "+ana.tok)
+		done := make(chan answer, 1)
+		go func() {
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				done <- answer{code: -1, body: err.Error()}
+				return
+			}
+			b, _ := io.ReadAll(res.Body)
+			res.Body.Close()
+			done <- answer{res.StatusCode, string(b)}
+		}()
+		if _, err := pw.Write([]byte("hello ")); err != nil {
+			t.Fatal(err)
+		}
+		var id int64
+		deadline := time.Now().Add(5 * time.Second)
+		for id == 0 || !cf.isPending(id) {
+			if time.Now().After(deadline) {
+				t.Fatal("the upload never started")
+			}
+			_ = cf.db.QueryRow(`SELECT id FROM chfiles WHERE name=?`, name).Scan(&id)
+			time.Sleep(20 * time.Millisecond)
+		}
+		return pw, id, done
+	}
+	list := func() []any {
+		ana.send(map[string]any{"t": "cf-list", "ch": lobby, "folder": 0})
+		items, _ := ana.wait(isT("cf"))["items"].([]any)
+		return items
+	}
+	get := func(id int64) (int, string) {
+		res, err := http.Get(hs.URL + "/cf/" + itoa(int(id)) + "?token=" + ana.tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		return res.StatusCode, string(b)
+	}
+
+	pw, id, done := start("a.txt")
+	if items := list(); len(items) != 0 {
+		t.Fatalf("listed while uploading: %v", items)
+	}
+	if code, _ := get(id); code != 404 {
+		t.Fatalf("served while uploading: %d", code)
+	}
+	ana.send(map[string]any{"t": "cf-del", "id": id})
+	if e := ana.wait(isT("error")); e["why"] != "busy" {
+		t.Fatalf("deleted while uploading: %v", e)
+	}
+	_, _ = pw.Write([]byte("world"))
+	pw.Close()
+	if a := <-done; a.code != 200 {
+		t.Fatalf("upload: %v", a)
+	}
+	items := list()
+	if len(items) != 1 || items[0].(map[string]any)["size"] != float64(11) {
+		t.Fatalf("after the upload: %v", items)
+	}
+	if code, body := get(id); code != 200 || body != "hello world" {
+		t.Fatalf("download: %d %q", code, body)
+	}
+
+	// Its channel goes in the middle (dropChannels): no 200, no blob left
+	pw, id, done = start("b.txt")
+	cf.removeTree(id)
+	_, _ = pw.Write([]byte("world"))
+	pw.Close()
+	if a := <-done; a.code == 200 {
+		t.Fatalf("a deleted upload answered as stored: %v", a)
+	}
+	if _, err := os.Stat(filepath.Join(cf.dir, strconv.FormatInt(id, 10))); !os.IsNotExist(err) {
+		t.Fatalf("the blob stays: %v", err)
+	}
+	if cf.isPending(id) {
+		t.Fatal("still marked as uploading")
+	}
+}
+
+// The web client's fixes that need a browser to run (no e2e here): their shape, checked in the files served.
+//   - app.js: a first connection that never got its welcome stops at the form with the error, not retried for ever
+//   - settings.js: waiting for the push-to-talk key ends when the dialog closes or the button loses focus
+//   - streams.js: no picture after NO_PICTURE asks the stats first; sound only isn't subscribed again
+func TestWebClientFixesShape(t *testing.T) {
+	read := func(name string) string {
+		b, err := webFiles.ReadFile("web/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(b), "\r\n", "\n")
+	}
+	app := read("app.js")
+	i := strings.Index(app, "ws.onclose = () => {")
+	j := strings.Index(app, "emit('app:down', { retry: S.phase !== 'off' });")
+	if i < 0 || j < i || !strings.Contains(app[i:j], "if (S.phase !== 'off' && !S.wasOn) { failed(t('errWs')); return; }") {
+		t.Fatal("app.js: a never-welcomed socket's close is retried")
+	}
+	set := read("settings.js")
+	for _, want := range []string{"onclose: () => { if (stopGrab) stopGrab(); }", "ptt.onblur = () => { if (stopGrab) stopGrab(); };",
+		"document.removeEventListener('keydown', grab, true);"} {
+		if !strings.Contains(set, want) {
+			t.Fatalf("settings.js lacks %q", want)
+		}
+	}
+	str := read("streams.js")
+	i = strings.Index(str, "later(w, NO_PICTURE, () => {")
+	if i < 0 {
+		t.Fatal("streams.js: no NO_PICTURE timer")
+	}
+	cb := str[i:]
+	if k, c := strings.Index(cb, "soundOnly(pc)"), strings.Index(cb, "closeConn(w, false)"); k < 0 || c < k {
+		t.Fatal("streams.js: subscribed again without looking at what arrives")
+	}
+	if !strings.Contains(str, "async function soundOnly(pc)") || !strings.Contains(str, "s.type !== 'inbound-rtp'") {
+		t.Fatal("streams.js: soundOnly missing")
 	}
 }
