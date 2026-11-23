@@ -90,7 +90,10 @@ if (document.readyState === 'loading') document.addEventListener('DOMContentLoad
 
 on('bus:g', (m) => hub.handle(m));
 on('bus:gchat', (m) => hub.handle(m));
-on('bus:open', () => schedule());
+on('bus:open', () => { hub.server({ t: 'open' }); schedule(); });
+// The server's own answers: a game it deals (house.go), a refusal (a pot gone: the table starts again)
+on('bus:housed', (m) => hub.server(m));
+on('bus:error', (m) => hub.server(m));
 on('bus:down', () => schedule());
 on('bus:kept', (k) => { if (!k || !k.kind || k.kind === 'lei') schedule(); });
 // Where the bus was: the closing messages of a page that left go there if its own connection is already down

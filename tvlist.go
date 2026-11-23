@@ -150,7 +150,9 @@ func parseExtinf(s string) tvChannel {
 }
 
 // fetchM3U downloads and reads the playlist at u (an error never holds the address: it may hold a password).
-func fetchM3U(u string, lan bool) ([]tvChannel, bool, error) {
+// [insecure]: the owner allows an untrusted certificate for this provider (the playlist's host's isn't checked).
+// A certificate that doesn't check out is errTVUntrusted (wrapped, with the host).
+func fetchM3U(u string, lan, insecure bool) ([]tvChannel, bool, error) {
 	pu, err := tvCheckURL(u, lan)
 	if err != nil {
 		return nil, false, err
@@ -160,11 +162,19 @@ func fetchM3U(u string, lan bool) ([]tvChannel, bool, error) {
 		return nil, false, errors.New("bad playlist address")
 	}
 	req.Header.Set("User-Agent", tvUserAgent)
-	res, err := tvClient(lan, tvListTimeout).Do(req)
+	var untrusted func(string) bool
+	if insecure {
+		own := strings.ToLower(pu.Hostname())
+		untrusted = func(h string) bool { return h == own }
+	}
+	res, err := tvClient(lan, tvListTimeout, untrusted).Do(req)
 	if err != nil {
 		err = cleanErr(err)
 		if errors.Is(err, errTVBlocked) {
 			return nil, false, err
+		}
+		if errors.Is(err, errTVUntrusted) {
+			return nil, false, fmt.Errorf("couldn't download the playlist from %s: %w", pu.Hostname(), err)
 		}
 		return nil, false, fmt.Errorf("couldn't download the playlist from %s: %v", pu.Hostname(), err)
 	}

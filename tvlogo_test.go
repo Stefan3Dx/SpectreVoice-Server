@@ -30,7 +30,7 @@ func TestTVLogosAccounting(t *testing.T) {
 		_, _ = w.Write(pic.Bytes())
 	}))
 	defer hs.Close()
-	l := newTVLogos(false)
+	l := newTVLogos(false, nil)
 
 	// A logo on its way when the playlist changes: once it comes, it isn't counted (nor kept)
 	slow := hs.URL + "/a.png?slow=1"

@@ -6,9 +6,9 @@
 // Ana opens a tic-tac-toe table, Bob sits down, Ana starts; they play it out by clicking the cells (whoever the
 // keeper's shuffle made first wins on the top row) and both pages show the same state and the winner. Then a chess
 // table: the Ruy Lopez to White castling (1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O), clicked square to square,
-// the same board on both sides. Last, Ana spins the slot machine once and her purse on the server moves by what the
-// spin says; and Ana, keeping a roulette with Bob's chip on it, leaves the server: the table closes and the chip
-// comes back. Prints a line per step and OK at the end. Screenshots (with a folder): games-list.png, games-ttt.png,
+// the same board on both sides. Last, Ana spins the slot machine once, dealt by the server (house.go: the spin goes
+// there, its answer is the table's state) and her purse on the server moves by what the spin says; and Ana, keeping a
+// roulette with Bob's chip in its pot (pots.go), leaves the server: the table closes and the chip comes back. Prints a line per step and OK at the end. Screenshots (with a folder): games-list.png, games-ttt.png,
 // games-chess-white.png, games-chess-black.png, games-slots.png.
 
 const { chromium } = require('playwright');
@@ -117,6 +117,9 @@ const table = (page, id) => page.evaluate((i) => { const t = window.svGames.hub.
     await ana.waitForFunction(() => { const t = window.svGames.hub.tables.get(window.svGames.hub.open); return t?.state.spins === 1; }, null, { timeout: 10000 });
     const last = await ana.evaluate(() => window.svGames.hub.tables.get(window.svGames.hub.open).state.last);
     const me = await uid(ana);
+    // Dealt by the server: the table has its pot there, and the server answered the spin
+    const slotsPot = await ana.evaluate(() => window.svGames.bus.kept().pots?.[window.svGames.hub.open] || null);
+    if (!slotsPot || slotsPot.kind !== 'SLOTS' || slotsPot.k !== me || slotsPot.v !== 0) throw new Error('slots pot: ' + JSON.stringify(slotsPot));
     // The server's own record (a put back from the bus), on Bob's page too
     for (const p of [ana, bob]) await p.waitForFunction(([u, v]) => window.svGames.bus.kept().lei?.[u]?.v === v, [me, before + last], { timeout: 10000 });
     await ana.waitForTimeout(1000);
@@ -138,10 +141,13 @@ const table = (page, id) => page.evaluate((i) => { const t = window.svGames.hub.
     const bobBefore = await bob.evaluate((u) => window.svGames.hub.Lei.of(u), bobUid);
     await bob.click('.gm-rc[data-bet="red:0"]:not([disabled])', { timeout: 10000 });
     await bob.waitForFunction(([u, v]) => window.svGames.bus.kept().lei?.[u]?.v === v, [bobUid, bobBefore - 10], { timeout: 10000 });
+    // The chip is in the table's pot on the server
+    await bob.waitForFunction((i) => window.svGames.bus.kept().pots?.[i]?.v === 10, ro, { timeout: 10000 });
     await ana.keyboard.press('Escape');
     await ana.click('#leave');
     await bob.waitForFunction((i) => !window.svGames.hub.tables.has(i), ro, { timeout: 10000 });
     await bob.waitForFunction(([u, v]) => window.svGames.bus.kept().lei?.[u]?.v === v, [bobUid, bobBefore], { timeout: 10000 });
+    await bob.waitForFunction((i) => !window.svGames.bus.kept().pots?.[i], ro, { timeout: 10000 });
     console.log('REFUNDED on leaving');
     console.log('OK');
   } catch (e) {

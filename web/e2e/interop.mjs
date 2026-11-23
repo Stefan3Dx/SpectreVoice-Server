@@ -7,10 +7,9 @@
 // all of it with WebCrypto, then answers as Bob: a reply sealed here for Ana's device, Bob's device record signed
 // here, a file encrypted here. The test opens those in Kotlin. Exit 0 when everything here checked.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 
-const E = await import(join(dirname(fileURLToPath(import.meta.url)), '..', 'e2e.js'));
+// A URL, not a path: on Windows import() takes "D:\..." for a URL with the scheme "d:".
+const E = await import(new URL('../e2e.js', import.meta.url).href);
 const subtle = globalThis.crypto.subtle;
 const [inPath, outPath] = process.argv.slice(2);
 const v = JSON.parse(readFileSync(inPath, 'utf8'));

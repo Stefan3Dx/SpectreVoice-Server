@@ -4,6 +4,12 @@
 // onlookers' bets and watches the clock. A table nobody announced for 45 s is gone; a keeper that leaves closes its
 // tables ({"op":"closed"}), giving back the chips and bets on them.
 //
+// The Lei: on a server that holds them ("pot" in its ops, pots.go) each table's Lei are in its pot there: a player's
+// page allows the keeper to take up to its purse ({"t":"pot","op":"allow"}), the keeper takes and pays through the pot
+// ({"op":"move"}), closes it when the table goes; the games the server deals ("house": Roulette, Slots, Blackjack)
+// are passed on to it ({"t":"house"}) and its answer ({"t":"housed"}) is the table's state. An older server takes the
+// keeper's own "add"s to the purses, as before.
+//
 // No DOM: createHub(env) takes the bus and the person (env.send, env.kept, env.caps, env.online, env.me,
 // env.present, env.now, env.text, env.rnd, env.toast), so node can drive it in the tests.
 
@@ -21,6 +27,8 @@ export const LEI_START = 1000, LEI_REFILL = 100, LEI_DAILY = 100;
 export const fmtLei = (v) => String(Math.abs(Math.trunc(v))).replace(/\B(?=(\d{3})+(?!\d))/g, '.').replace(/^/, v < 0 ? '-' : '') + ' Lei';
 
 const pad = (n, w = 2) => String(n).padStart(w, '0');
+// The same value whatever the order of its keys (the server writes them sorted)
+const canon = (x) => JSON.stringify(x, (k, v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((y) => [y, v[y]])) : v));
 export const localDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 // "2026-W44" (ISO week, as Scores.thisWeek)
 export function isoWeek(d) {
@@ -56,10 +64,39 @@ export function createHub(env) {
   const send = (msg) => sendFn(msg);
   const title = (k) => text('g_' + k);
 
-  // ====== Lei: one purse per player, kept by the server (bus kind "lei"); the keeper pays out and takes in ======
+  // ====== Lei: one purse per player, kept by the server (bus kind "lei"); each table's in its pot there (or, on an
+  // older server, the keeper pays out and takes in) ======
 
   const fresh = new Map(); // uid → {v: entry, base, at}: what was just written, until the server's answer
   const keptLei = () => (env.kept().lei || {});
+  const potMode = () => env.caps().has('pot');
+  const moneyKind = (k) => R.isChance(k) || R.isDuel(k);
+  // The server deals this table (its moves go to it; its answer is the state)
+  const houseOn = (t) => !!t && R.isHouse(t.kind) && potMode() && env.caps().has('house');
+  let refN = 0;
+  const newRef = (x) => x + (++refN).toString(36) + rnd.nextInt(1000);
+  const Pots = {
+    of: (id) => { const p = (env.kept().pots || {})[id]; return p && typeof p === 'object' ? p : null; },
+    // A pot for the table (on one there already: what's in it goes back first); players: the server deals it
+    open(t, players) {
+      const m = { t: 'pot', op: 'open', id: t.id, kind: t.kind, ref: 'open:' + t.id };
+      if (players) m.players = players;
+      send(m);
+    },
+    // The keeper of t may take up to n of my Lei (add: n more)
+    allow(t, n, add = false) {
+      if (!potMode() || !t || t.host === me().uid) return;
+      const m = { t: 'pot', op: 'allow', id: t.id, keeper: t.host, n: Math.max(0, Math.trunc(n) || 0) };
+      if (add) m.add = true;
+      send(m);
+    },
+    // uid → ±Lei: taken into the pot (−) and paid from it (+), in this order
+    move(id, d) {
+      const e = Object.entries(d).filter(([, v]) => v);
+      if (e.length) send({ t: 'pot', op: 'move', id, d: Object.fromEntries(e), ref: newRef('m') });
+    },
+    close(id) { send({ t: 'pot', op: 'close', id }); },
+  };
   function leiEntry(uid) {
     const server = keptLei()[uid];
     const f = fresh.get(uid);
@@ -83,16 +120,32 @@ export function createHub(env) {
       return v;
     },
     add(uid, name, delta) { return Lei.write(uid, name, delta); },
+    // What uid may stake at table id: the purse, within what they allowed its keeper (the keeper: all of it)
+    free(uid, id) {
+      const v = Lei.of(uid);
+      if (!potMode() || !id) return v;
+      const p = Pots.of(id);
+      if (!p || p.k === uid) return v;
+      return Math.max(0, Math.min(v, toInt(p.al?.[uid]) ?? 0));
+    },
     daily: (v) => Math.max(LEI_DAILY, LEI_REFILL - v),
     claimDaily(uid, name) {
       if (!uid || !('lei' in env.kept())) return 0;
       const today = localDate(new Date(now()));
       if (leiEntry(uid).d === today) return 0;
       const give = Lei.daily(Lei.of(uid));
+      if (env.caps().has('lei')) {
+        // The server's: asked once a day here, given once a day there
+        if (dailyAsked === today) return 0;
+        dailyAsked = today;
+        send({ t: 'lei', op: 'daily', day: today, name });
+        return give;
+      }
       Lei.write(uid, name, give, today);
       return give;
     },
   };
+  let dailyAsked = '';
 
   // ====== Scores (bus kind "scores"): wins, games, streaks, Lei won; this week's kings archived once ======
 
@@ -264,7 +317,7 @@ export function createHub(env) {
     afk.get(t0.id)?.delete(who.uid);
     goneSince.delete(who.uid);
     const seat = t0.players.findIndex((p) => p.uid === who.uid);
-    if (t0.state && R.waitingOn(t0.kind, t0.state, secret.get(t0.id)).includes(seat)) lastMove.set(t0.id, now());
+    if (t0.state && R.waitingOn(t0.kind, t0.state, sec(t0)).includes(seat)) lastMove.set(t0.id, now());
     if (['BLACKJACK', 'POKER', 'ROULETTE'].includes(t0.kind)) move(t0.id, who.uid, { op: 'back' }, who.name);
     const v = lastPrivates.get(t0.id)?.get(who.uid);
     if (v) { if (who.uid === me().uid) privates.set(t0.id, v); else send({ t: 'g', op: 'private', id: t0.id, to: who.uid, v }); }
@@ -283,9 +336,13 @@ export function createHub(env) {
   }
 
   const forfeits = (t) => R.turnBased(t.kind) && t.players.length === 2;
-  const ctxOf = (players, host) => ({ players, host, purse: (i) => Lei.of(players[i].uid) });
+  const ctxOf = (players, host, id = '') => ({ players, host, purse: (i) => Lei.free(players[i].uid, id) });
+  // What the clock and the rules read as the keeper's secret (a table the server deals: what everyone sees)
+  const sec = (t) => (houseOn(t) ? t.state : secret.get(t.id) || null);
 
   function refund(t) {
+    // The pot: opened again or closed, the server gives back what's in it
+    if (potMode()) return;
     for (const w of t.wagers) Lei.add(w.uid, w.name, w.amount);
     if (t.started) for (const [seat, v] of Object.entries(R.committed(t.kind, t.state, secret.get(t.id)))) { const p = t.players[+seat]; if (p) Lei.add(p.uid, p.name, v); }
   }
@@ -297,6 +354,8 @@ export function createHub(env) {
     if (!my.uid || !R.playable(kind)) return null;
     const t = { id: newId(), kind, host: my.uid, players: [my], started: false, state: null, note: '', seen: now(), startedAt: 0, wagers: [], tour: '' };
     update(t);
+    // Its pot now, so who sits down can allow it their Lei (a game for one opens it when it starts)
+    if (potMode() && moneyKind(kind) && R.kindMax(kind) > 1) Pots.open(t);
     openId = t.id;
     if (R.kindMin(kind) === 1 && R.kindMax(kind) === 1) startGame(t.id);
     return t.id;
@@ -308,6 +367,7 @@ export function createHub(env) {
     const my = me();
     invites = invites.filter((i) => i.table !== id);
     leftOnPurpose.delete(id);
+    if (R.isChance(t.kind)) Pots.allow(t, Lei.of(my.uid));
     if (t.players.some((p) => p.uid === my.uid)) {
       // Seated at a game under way (got up, or the link dropped): back at it, the keeper sends our cards again
       if (t.started && t.host !== my.uid) { rejoinAsked.set(id, now()); send({ t: 'g', op: 'join', id, name: my.name }); }
@@ -327,13 +387,18 @@ export function createHub(env) {
     if (!t) return;
     const my = me();
     if (t.host === my.uid) {
+      if (potMode() && moneyKind(t.kind)) Pots.close(id);
       refund(t);
       send({ t: 'g', op: 'closed', id });
       tables.delete(id);
       secret.delete(id);
       forget(id);
       prune();
-    } else { leftOnPurpose.add(id); send({ t: 'g', op: 'leave', id, name: my.name }); }
+    } else {
+      leftOnPurpose.add(id);
+      if (R.isChance(t.kind)) Pots.allow(t, 0);
+      send({ t: 'g', op: 'leave', id, name: my.name });
+    }
     if (openId === id) openId = null;
     changed();
   }
@@ -343,8 +408,11 @@ export function createHub(env) {
     if (!t || t.host !== me().uid || (t.players.length < R.kindMin(t.kind) && !t.tour) || !R.playable(t.kind)) return;
     refund(t);
     const players = shuffle && t.kind !== 'POKER' && t.kind !== 'ROULETTE' ? shuffled(t.players, rnd) : t.players.slice();
-    const o = R.start(t.kind, ctxOf(players, true), t.state, rnd, now());
-    if (o.secret) secret.set(id, o.secret); else secret.delete(id);
+    // The pot again (what was in it goes back); a game the server deals starts there too
+    const house = houseOn(t);
+    if (potMode() && moneyKind(t.kind)) Pots.open(t, house ? players.map((p) => p.uid) : undefined);
+    const o = R.start(t.kind, ctxOf(players, true, id), t.state, rnd, now());
+    if (o.secret && !house) secret.set(id, o.secret); else secret.delete(id);
     forget(id);
     lastMove.set(id, now());
     update({ ...t, players, started: true, state: o.state, note: '', startedAt: now(), wagers: [] });
@@ -356,7 +424,11 @@ export function createHub(env) {
     if (!t) return;
     const my = me();
     if (t.host === my.uid) move(t.id, my.uid, m, my.name);
-    else send({ t: 'g', op: 'move', id, m, name: my.name });
+    else {
+      // What the keeper may take for it: up to the purse
+      if (R.isChance(t.kind) && m.op !== 'wager') Pots.allow(t, Lei.of(my.uid));
+      send({ t: 'g', op: 'move', id, m, name: my.name });
+    }
   }
 
   // The keeper applies from's move m if the rules allow it, and settles what it decided; true when taken
@@ -373,10 +445,21 @@ export function createHub(env) {
       settle(t, R.forfeit(t.kind, st, p, t.players.length, 'resign'));
       return true;
     }
+    if (houseOn(t)) {
+      // The server deals it: the move goes there, its answer (housed) is the table's next state
+      if (p < 0) return false;
+      const ref = newRef('h');
+      pendingHouse.set(ref, { id, at: now() });
+      if (pendingHouse.size > 200) pendingHouse.delete(pendingHouse.keys().next().value);
+      send({ t: 'house', id, seat: p, host: (from || t.host) === t.host, m, ref });
+      if (!auto) afk.get(id)?.delete(from);
+      return true;
+    }
+    const ctx = ctxOf(t.players, (from || t.host) === t.host, t.id);
     let o;
-    try { o = R.move(t.kind, st, secret.get(t.id) || null, p, m, ctxOf(t.players, (from || t.host) === t.host), rnd, now()); } catch (e) { o = null; }
+    try { o = R.move(t.kind, st, secret.get(t.id) || null, p, m, ctx, rnd, now()); } catch (e) { o = null; }
     if (!o) return false;
-    if (p >= 0 && o.pay[p] !== undefined && o.pay[p] < 0 && -o.pay[p] > Lei.of(from)) return false;
+    if (p >= 0 && o.pay[p] !== undefined && o.pay[p] < 0 && -o.pay[p] > ctx.purse(p)) return false;
     if (!auto && p >= 0) afk.get(id)?.delete(from);
     settle(t, o);
     return true;
@@ -385,7 +468,11 @@ export function createHub(env) {
   function settle(t, o) {
     if (o.secret) secret.set(t.id, o.secret);
     lastMove.set(t.id, now());
-    for (const [i, d] of Object.entries(o.pay)) { const pl = t.players[+i]; if (pl) Lei.add(pl.uid, pl.name, d); }
+    if (potMode() && moneyKind(t.kind)) {
+      const d = {};
+      for (const [i, v] of Object.entries(o.pay)) { const pl = t.players[+i]; if (pl && v) d[pl.uid] = (d[pl.uid] || 0) + v; }
+      Pots.move(t.id, d);
+    } else for (const [i, d] of Object.entries(o.pay)) { const pl = t.players[+i]; if (pl) Lei.add(pl.uid, pl.name, d); }
     for (const [i, d] of Object.entries(o.profit ?? o.pay)) { const pl = t.players[+i]; if (pl) Scores.profit(pl.uid, pl.name, t.kind, d); }
     if (o.over) {
       const seats = o.played ?? [...t.players.keys()];
@@ -417,8 +504,8 @@ export function createHub(env) {
     const on = toInt(m.on), amount = toInt(m.v);
     if (on === null || amount === null) return;
     if (!betsOpen(t) || on < 0 || on >= t.players.length || t.players.some((p) => p.uid === from)) return;
-    if (amount < 1 || amount > Lei.of(from)) return;
-    Lei.add(from, name, -amount);
+    if (amount < 1 || amount > Lei.free(from, t.id)) return;
+    if (potMode()) Pots.move(t.id, { [from]: -amount }); else Lei.add(from, name, -amount);
     update({ ...t, wagers: [...t.wagers, { uid: from, name, on, amount }] });
   }
 
@@ -427,19 +514,73 @@ export function createHub(env) {
     if (!t.wagers.length) return t;
     const pool = t.wagers.reduce((a, w) => a + w.amount, 0);
     const right = t.wagers.filter((w) => winners.includes(w.on));
-    if (!right.length) for (const w of t.wagers) Lei.add(w.uid, w.name, w.amount);
+    const back = {}; // through the pot: uid → all that comes back to them
+    const give = (w, v) => { if (potMode()) back[w.uid] = (back[w.uid] || 0) + v; else Lei.add(w.uid, w.name, v); };
+    if (!right.length) for (const w of t.wagers) give(w, w.amount);
     else {
       const stake = right.reduce((a, w) => a + w.amount, 0);
       const shares = right.map((w) => Math.floor(pool * w.amount / stake));
       const rest = pool - shares.reduce((a, b) => a + b, 0);
       right.forEach((w, k) => {
-        const back = shares[k] + (k === 0 ? rest : 0);
-        Lei.add(w.uid, w.name, back);
-        Scores.profit(w.uid, w.name, t.kind, back - w.amount);
+        const won = shares[k] + (k === 0 ? rest : 0);
+        give(w, won);
+        Scores.profit(w.uid, w.name, t.kind, won - w.amount);
       });
       for (const w of t.wagers) if (!right.includes(w)) Scores.profit(w.uid, w.name, t.kind, -w.amount);
     }
+    if (potMode()) Pots.move(t.id, back);
     return { ...t, wagers: [], note: right.length ? text('gBetsPaid', { amount: fmtLei(pool) }) : text('gBetsBack') };
+  }
+
+  // ====== What the server says: a game it dealt, a refusal, the bus back ======
+
+  const pendingHouse = new Map(); // ref → {id, at}: moves passed on to the server, not answered yet
+
+  // A move the server dealt (or the game it started): the table's next state, scored as the keeper scores its own
+  function housed(m) {
+    if (typeof m.ref === 'string') pendingHouse.delete(m.ref);
+    const t = tables.get(m.id);
+    if (!t || t.host !== me().uid || !t.started || !houseOn(t)) return;
+    if (!m.state || typeof m.state !== 'object' || Array.isArray(m.state) || !R.validState(t.kind, m.state, t.players.length)) return;
+    if (typeof m.ref === 'string' && m.ref.startsWith('open:')) {
+      // The game as the server started it (what the rules here started, as a rule: then nothing to redraw)
+      if (canon(m.state) !== canon(t.state)) update({ ...t, state: m.state });
+      return;
+    }
+    const seats = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x : {});
+    const list = (x) => (Array.isArray(x) ? x.map(toInt).filter((i) => i !== null) : null);
+    settle(t, { state: m.state, secret: null, pay: {}, profit: seats(m.profit), over: list(m.over), played: list(m.played), final: false, privates: {} });
+  }
+
+  // An own table whose pot (or game) the server no longer has: started again, the hand void (the server gave back
+  // what was in it)
+  function lostPot(t) {
+    if (!t || t.host !== me().uid) return;
+    if (t.started) startGame(t.id, false);
+    else if (moneyKind(t.kind) && R.kindMax(t.kind) > 1) Pots.open(t);
+  }
+
+  function server(m) {
+    if (!m || typeof m !== 'object') return;
+    switch (m.t) {
+      case 'housed': housed(m); return;
+      case 'error':
+        if (m.op === 'house') {
+          if (typeof m.ref === 'string') pendingHouse.delete(m.ref);
+          if (m.why === 'gone') lostPot(tables.get(m.id));
+        } else if (m.op === 'pot' && m.why === 'gone' && typeof m.id === 'string') lostPot(tables.get(m.id));
+        return;
+      case 'open': {
+        // Back on the bus: our money tables whose pot went meanwhile start again
+        if (!potMode()) return;
+        const my = me().uid;
+        for (const t of [...tables.values()]) {
+          if (t.host !== my || !moneyKind(t.kind) || Pots.of(t.id)) continue;
+          if (t.started && !R.isChance(t.kind) && !t.wagers.length) continue;
+          lostPot(t);
+        }
+      }
+    }
   }
 
   // ====== The clock (the keeper watches the player to move, and who's gone) ======
@@ -462,7 +603,7 @@ export function createHub(env) {
     for (const t of mine) {
       const st = t.state;
       if (!st || st.final === true || st.resigned != null) continue;
-      const waiting = R.waitingOn(t.kind, st, secret.get(t.id)).filter((i) => i >= 0 && i < t.players.length);
+      const waiting = R.waitingOn(t.kind, st, sec(t)).filter((i) => i >= 0 && i < t.players.length);
       if (!lastMove.has(t.id)) lastMove.set(t.id, t0);
       const since = lastMove.get(t.id);
       if (!waiting.length) continue;
@@ -493,7 +634,7 @@ export function createHub(env) {
     const pl = t?.players[seat];
     if (!pl || pl.uid !== uid || !t.state) return;
     const st = t.state;
-    if (st.final === true || st.resigned != null || !R.waitingOn(t.kind, st, secret.get(id)).includes(seat)) return;
+    if (st.final === true || st.resigned != null || !R.waitingOn(t.kind, st, sec(t)).includes(seat)) return;
     const t0 = now();
     const gone = upTooLong(id, uid, t0) || (goneSince.has(uid) && t0 - goneSince.get(uid) >= GONE_MS);
     if (!gone) {
@@ -502,12 +643,19 @@ export function createHub(env) {
     }
     if (forfeits(t)) { settle(t, R.forfeit(t.kind, st, seat, t.players.length, why)); return; }
     if (why === 'time') { if (!afk.has(id)) afk.set(id, new Set()); afk.get(id).add(uid); }
+    if (houseOn(t)) {
+      // The server plays the quietest move there is for them (or gets them up, gone)
+      move(id, uid, why === 'gone' ? { op: 'leave' } : { op: 'auto' }, pl.name, true);
+      lastMove.set(id, now());
+      update({ ...t, note: text(why === 'time' ? 'gNoteTime' : 'gNoteGone', { name: pl.name }) });
+      return;
+    }
     let played = false;
     for (let k = 0; k < 3; k++) {
       const cur = tables.get(id)?.state;
       if (!cur) return;
-      if (!R.waitingOn(t.kind, cur, secret.get(id)).includes(seat)) break;
-      const tries = R.isChance(t.kind) && why === 'gone' ? [{ op: 'leave' }] : R.autoMoves(t.kind, cur, secret.get(id), seat);
+      if (!R.waitingOn(t.kind, cur, sec(t)).includes(seat)) break;
+      const tries = R.isChance(t.kind) && why === 'gone' ? [{ op: 'leave' }] : R.autoMoves(t.kind, cur, sec(t), seat);
       if (!tries.some((m) => move(id, uid, m, pl.name, true))) break;
       played = true;
     }
@@ -596,10 +744,16 @@ export function createHub(env) {
     get invites() { return invites; },
     get open() { return openId; }, set open(v) { openId = v; changed(); },
     onChange: (f) => listeners.push(f),
-    handle, tableFrom, create, join, leave, startGame, play, again: (id) => startGame(id),
-    resign: (id) => play(id, { op: 'resign' }), bet: (id, seat, amount) => play(id, { op: 'wager', on: seat, v: amount }),
+    handle, server, tableFrom, create, join, leave, startGame, play, again: (id) => startGame(id), Pots,
+    resign: (id) => play(id, { op: 'resign' }),
+    bet: (id, seat, amount) => {
+      // The keeper takes the bet into the table's pot: allowed first
+      const t = tables.get(id);
+      if (t && t.host !== me().uid) Pots.allow(t, amount, true);
+      play(id, { op: 'wager', on: seat, v: amount });
+    },
     invite: (id, uid) => send({ t: 'g', op: 'invite', id, to: uid, name: me().name }),
     say, betsOpen, watchTurns, partyTick, slowTick, leftServer, start, stop, me,
-    secretOf: (id) => secret.get(id),
+    secretOf: (id) => { const t = tables.get(id); return t ? sec(t) : secret.get(id); },
   };
 }

@@ -1,20 +1,33 @@
 package main
 
-// The owner gives Lei: the server's owner, and those the owner gave "give_lei" (no one else can give it, and being
-// an administrator doesn't include it), add Lei to anyone's purse or take some away, with a reason. The purse is the
-// bus's own (kind "lei", id = the uid, bus.go): the server changes it itself, so everyone's apps get the new balance
-// as a put, as after a game. Apps' own "add" stays as it was (games, bounded per message); this is the only way to
-// a purse that checks who asks.
+// Lei, the play money: one purse per person in a space (bus kind "lei", id = the uid, bus.go). Only the server
+// changes a purse; apps never write one, and new apps never add to one. Old apps (before 0.10.1) still add, bounded,
+// while SV_LEI_LEGACY is on (the default); with SV_LEI_LEGACY=0 that is refused too (why "old"). Lei move through:
+//
+//   - the owner's grants: the server's owner, and those the owner gave "give_lei" (being an administrator doesn't
+//     include it), add Lei to anyone's purse or take some away, with a reason (below; on the hub's connection);
+//   - the daily bonus and gifts between people (bus "lei", below), the shop ("buy", shop.go);
+//   - the game tables' pots (pots.go) and the games the server deals (house.go).
 //
 //	<- {"t":"lei-give","uid","amount":±N,"reason"?}   -> {"t":"done","op":"lei-give","uid","amount","balance"}
 //	                                                     the recipient's apps: {"t":"lei-gift","amount","by","byName","reason","balance"}
 //	<- {"t":"lei-log"}   (give_lei, administrator)   -> {"t":"lei-log","items":[{at,by,byName,to,toName,amount,reason,balance}]}
 //
+//	bus <- {"t":"lei","op":"daily","day":"YYYY-MM-DD","name"}   the day's bonus (max(100, 100-v)), once a day: "day"
+//	                                                            within a day of the server's (UTC) and after the last
+//	                                                            one ("d" in the purse)
+//	bus <- {"t":"lei","op":"send","to","n","ref"}               a gift: 1..100000 Lei of one's own to another member,
+//	                                                            all or nothing, 10 a minute; the recipient's apps get
+//	                                                            {"t":"lei-got","from","n"}
+//	    -> {"t":"error","op":"lei","why":"bad|day|once|funds|member|rate|full",…}   with the "ref" it had
+//
 // Every grant is kept in the lei_log table (who, to whom, how much, why) and shown in the admin panel.
 // SV_LEI_MAX (100000) is the most one grant moves; 30 grants per minute per giver.
+//
+// An app from before all this still adds to purses itself: refused, and its person is told once a run (on the hub,
+// as an announcement) to update.
 
 import (
-	"encoding/json"
 	"errors"
 	"log"
 	"strings"
@@ -75,23 +88,118 @@ func (b *bus) grantLei(space, uid string, d float64, by string) (float64, error)
 	if err != nil {
 		return 0, err
 	}
-	purses := sp.state["lei"]
-	purse := decodeRecord(purses[uid])
-	v, has := purse["v"].(float64)
-	if !has {
-		v = leiStart
+	return sp.movePurse(uid, d, by)
+}
+
+// Gifts: the most one moves, and how many one person sends a minute.
+const (
+	leiSendMax   = 100_000
+	leiDaily     = 100 // Lei.DAILY
+	leiOldNotice = "Update Spectre Voice to play for Lei on this server."
+)
+
+var (
+	leiSendRate    = 10
+	leiSendLimiter = &eventRate{got: map[string][]time.Time{}}
+)
+
+// busLei: the daily bonus and gifts (see the top of the file).
+func (b *bus) busLei(sp *busSpace, c *busClient, m map[string]any) {
+	op, _ := m["op"].(string)
+	refuse := func(why, msg string) { c.refuse(m, "lei", why, msg) }
+	if !safeID.MatchString(c.uid) {
+		refuse("bad", "no uid")
+		return
 	}
-	v = max(0, v+d)
-	purse["v"] = v
-	purse["_by"], purse["_a"] = by, true
-	raw, _ := json.Marshal(purse)
-	if len(raw) > busMaxValue || (purses[uid] == nil && len(purses) >= busKinds["lei"]) || sp.size+len(raw)-len(purses[uid]) > busMaxSpace {
-		return 0, errLeiFull
+	switch op {
+	case "daily":
+		day, _ := m["day"].(string)
+		d, err := time.Parse("2006-01-02", day)
+		now := time.Now().UTC()
+		today, _ := time.Parse("2006-01-02", now.Format("2006-01-02"))
+		if err != nil || d.Sub(today) > 24*time.Hour || today.Sub(d) > 24*time.Hour {
+			refuse("day", "not today")
+			return
+		}
+		name := clip(strings.Join(strings.Fields(str(m, "name")), " "), 40)
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		v, rec := sp.purseOf(c.uid)
+		if last, _ := rec["d"].(string); last >= day {
+			refuse("once", "already given today")
+			return
+		}
+		rec["v"] = v + max(leiDaily, leiRefill-v)
+		rec["d"] = day
+		if name != "" {
+			rec["n"] = name
+		}
+		if err := sp.writePurse(c.uid, rec, c.uid); err != nil {
+			refuse("full", err.Error())
+		}
+	case "send":
+		to, _ := m["to"].(string)
+		n, ok := wholeLei(m["n"], 1, leiSendMax)
+		switch {
+		case !ok:
+			refuse("bad", "a whole number of Lei, 1 to 100000")
+			return
+		case to == c.uid || !safeID.MatchString(to) || (b.member != nil && !b.member(sp.name, to)):
+			refuse("member", "not someone on this server")
+			return
+		case !leiSendLimiter.okN(c.uid, leiSendRate):
+			refuse("rate", "slow down")
+			return
+		}
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if have, _ := sp.purseOf(c.uid); have < float64(n) {
+			refuse("funds", "not that many Lei")
+			return
+		}
+		if _, recipient := sp.purseOf(to); recipient["v"] == nil && len(sp.state["lei"]) >= busKinds["lei"] {
+			refuse("full", errLeiFull.Error())
+			return
+		}
+		if _, err := sp.movePurse(c.uid, -float64(n), c.uid); err != nil {
+			refuse("full", err.Error())
+			return
+		}
+		if _, err := sp.movePurse(to, float64(n), c.uid); err != nil {
+			_, _ = sp.movePurse(c.uid, float64(n), c.uid) // not given: back
+			refuse("full", err.Error())
+			return
+		}
+		got := map[string]any{"t": "lei-got", "from": c.uid, "n": n}
+		if ref, ok := m["ref"].(string); ok && len(ref) <= 64 {
+			got["ref"] = ref
+		}
+		for o := range sp.clients {
+			if o.uid == to {
+				o.send(got)
+			}
+		}
+		log.Printf("lei: %s sent %d Lei to %s", c.uid, n, to)
+	default:
+		refuse("bad", "unknown op")
 	}
-	sp.set("lei", uid, raw)
-	sp.dirty = true
-	sp.broadcast(map[string]any{"t": "put", "kind": "lei", "id": uid, "v": json.RawMessage(raw), "from": by}, nil)
-	return v, nil
+}
+
+// oldApp: c's app added to a purse itself (an app from before the pots): told once a run to update.
+func (b *bus) oldApp(uid string) {
+	if b.notify == nil {
+		return
+	}
+	b.mu.Lock()
+	if b.notified == nil {
+		b.notified = map[string]bool{}
+	}
+	told := b.notified[uid]
+	b.notified[uid] = true
+	b.mu.Unlock()
+	if !told {
+		b.notify(uid, leiOldNotice)
+	}
 }
 
 func (s *server) leiOp(ss *session, t string, m map[string]any) bool {

@@ -9,11 +9,26 @@ package main
 // environment, with a password of its own): plain HTTP as a forwarding proxy, HTTPS through CONNECT. The proxy
 // connects only where the rule allows, which covers an HLS playlist's segments on other hosts and redirects too.
 // Nothing about the requests is logged (the addresses hold the subscription's credentials).
+//
+// Certificates are checked (by Go here; ffmpeg 8 and later check their own by default). A provider with a
+// self-signed or expired certificate is let through only when the owner allows it for the playlist ("allow
+// untrusted certificate", tvSource.Insecure; tvManager.untrustedHost says which hosts: the playlist's own and its
+// channels'). ffmpeg can't be told so for the segments an HLS playlist names (the hls demuxer doesn't pass
+// -tls_verify/-ca_file on to them), so such a host's https addresses are given to ffmpeg as plain http to a marked
+// name (tvMarkURL: "h.svtls.invalid:443", only ever between ffmpeg and the proxy on 127.0.0.1); the proxy sees the
+// mark and fetches https://h itself, with the same SSRF rule, the certificate check skipped for that host only, and
+// marks every https address in the HLS playlists (tvMarkPlaylist) and redirects it passes on from there (Go then
+// checks those hosts' certificates, unless they are allowed too). With the setting off nothing is marked: ffmpeg
+// does TLS itself through CONNECT, and a failure is told as errTVUntrusted (its message, or tvProbeTLS).
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -22,6 +37,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +47,24 @@ import (
 )
 
 var errTVBlocked = errors.New("that address is inside the server's own network (the operator can allow LAN sources with SV_TV_LAN=true)")
+
+// errTVUntrusted: a provider's certificate didn't check out (self-signed, expired, made for another name).
+var errTVUntrusted = errors.New("certificate not trusted: enable 'allow untrusted certificate' for this provider")
+
+// tvIsCertErr: err is a certificate that didn't check out (not a network failure).
+func tvIsCertErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errTVUntrusted) {
+		return true
+	}
+	var cv *tls.CertificateVerificationError
+	var ua x509.UnknownAuthorityError
+	var ci x509.CertificateInvalidError
+	var he x509.HostnameError
+	return errors.As(err, &cv) || errors.As(err, &ua) || errors.As(err, &ci) || errors.As(err, &he)
+}
 
 // tvLoopbackOK: tests' sources are on 127.0.0.1; never on in production (the server's own ports are there).
 var tvLoopbackOK = false
@@ -100,12 +135,52 @@ func tvDialer(lan bool) *net.Dialer {
 	}
 }
 
+// tvDialTLS: TLS over d, the certificate checked unless [untrusted] (nil: none) allows the host; a check that
+// fails is errTVUntrusted.
+func tvDialTLS(d *net.Dialer, untrusted func(host string) bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := d.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		cfg := &tls.Config{ServerName: host, InsecureSkipVerify: untrusted != nil && untrusted(strings.ToLower(host))}
+		tc := tls.Client(conn, cfg)
+		hctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := tc.HandshakeContext(hctx); err != nil {
+			_ = conn.Close()
+			if tvIsCertErr(err) {
+				return nil, errTVUntrusted
+			}
+			return nil, err
+		}
+		return tc, nil
+	}
+}
+
+// tvProbeTLS: whether addr's (host:port) certificate checks out: nil, errTVUntrusted, or another error when it
+// couldn't be told.
+func tvProbeTLS(ctx context.Context, addr string, lan bool) error {
+	c, err := tvDialTLS(tvDialer(lan), nil)(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	return c.Close()
+}
+
 // tvClient: an HTTP client for the playlist and the logos (no proxy from the environment, at most 5 redirects,
-// each to http(s) and checked like the first address).
-func tvClient(lan bool, timeout time.Duration) *http.Client {
+// each to http(s) and checked like the first address; certificates checked, except for the hosts [untrusted]
+// allows).
+func tvClient(lan bool, timeout time.Duration, untrusted func(host string) bool) *http.Client {
+	d := tvDialer(lan)
 	tr := &http.Transport{
 		Proxy:                 nil,
-		DialContext:           tvDialer(lan).DialContext,
+		DialContext:           d.DialContext,
+		DialTLSContext:        tvDialTLS(d, untrusted),
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: timeout,
 		MaxIdleConns:          8,
@@ -152,6 +227,9 @@ func cleanErr(err error) error {
 	if errors.Is(err, errTVBlocked) {
 		return errTVBlocked
 	}
+	if tvIsCertErr(err) {
+		return errTVUntrusted
+	}
 	return err
 }
 
@@ -166,13 +244,20 @@ type tvProxy struct {
 	dial  *net.Dialer
 	tr    *http.Transport
 	slots chan struct{}
+	// untrusted: the hosts whose certificate isn't checked, on the marked way (nil: none)
+	untrusted func(host string) bool
 	// blocked: the last time an address was refused (unix ns), so the TV can say why a channel didn't open
 	blocked atomic.Int64
+	// untrustedAt: the last time a certificate didn't check out on the marked way (unix ns)
+	untrustedAt atomic.Int64
 }
 
 const tvProxyConns = 48
 
-func startTVProxy(lan bool) (*tvProxy, error) {
+func startTVProxy(lan bool) (*tvProxy, error) { return startTVProxyTrusting(lan, nil) }
+
+// startTVProxyTrusting: the proxy, the certificates of the hosts [untrusted] allows not checked on the marked way.
+func startTVProxyTrusting(lan bool, untrusted func(host string) bool) (*tvProxy, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -180,10 +265,10 @@ func startTVProxy(lan bool) (*tvProxy, error) {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	pass := hex.EncodeToString(b)
-	p := &tvProxy{ln: ln, lan: lan, dial: tvDialer(lan), slots: make(chan struct{}, tvProxyConns)}
+	p := &tvProxy{ln: ln, lan: lan, dial: tvDialer(lan), slots: make(chan struct{}, tvProxyConns), untrusted: untrusted}
 	p.auth = "Basic " + base64.StdEncoding.EncodeToString([]byte("sv:"+pass))
 	p.env = "http://sv:" + pass + "@" + ln.Addr().String()
-	p.tr = &http.Transport{Proxy: nil, DialContext: p.dial.DialContext, ResponseHeaderTimeout: 20 * time.Second, MaxIdleConns: 16, IdleConnTimeout: 30 * time.Second}
+	p.tr = &http.Transport{Proxy: nil, DialContext: p.dial.DialContext, DialTLSContext: tvDialTLS(p.dial, untrusted), ResponseHeaderTimeout: 20 * time.Second, MaxIdleConns: 16, IdleConnTimeout: 30 * time.Second}
 	p.srv = &http.Server{Handler: p, ReadHeaderTimeout: 10 * time.Second, ErrorLog: log.New(io.Discard, "", 0)}
 	go func() { _ = p.srv.Serve(ln) }()
 	return p, nil
@@ -222,12 +307,30 @@ func (p *tvProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, h := range hopHeaders {
 		out.Header.Del(h)
 	}
+	// The marked way: https to the host before the mark, fetched here
+	host, marked := strings.CutSuffix(strings.ToLower(r.URL.Hostname()), tvTLSMark)
+	if marked {
+		if host == "" || strings.Contains(host, ":") {
+			http.Error(w, "no host", http.StatusBadRequest)
+			return
+		}
+		port := r.URL.Port()
+		if port == "" {
+			port = "443"
+		}
+		out.URL.Scheme, out.URL.Host, out.Host = "https", net.JoinHostPort(host, port), ""
+		out.Header.Del("Accept-Encoding") // Go asks for gzip and unpacks it itself: a playlist can be read to mark it
+	}
 	res, err := p.tr.RoundTrip(out)
 	if err != nil {
-		if errors.Is(cleanErr(err), errTVBlocked) {
+		switch err = cleanErr(err); {
+		case errors.Is(err, errTVBlocked):
 			p.blocked.Store(time.Now().UnixNano())
 			http.Error(w, "blocked", http.StatusForbidden)
-		} else {
+		case errors.Is(err, errTVUntrusted):
+			p.untrustedAt.Store(time.Now().UnixNano())
+			http.Error(w, "certificate not trusted", http.StatusBadGateway)
+		default:
 			http.Error(w, "unreachable", http.StatusBadGateway)
 		}
 		return
@@ -235,6 +338,27 @@ func (p *tvProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer res.Body.Close()
 	for _, h := range hopHeaders {
 		res.Header.Del(h)
+	}
+	var body io.Reader = res.Body
+	if marked {
+		// Redirects and HLS playlists name addresses: their https ones go the marked way too (Go checks the certificate,
+		// unless the host is one the owner allowed), so ffmpeg never does TLS on its own for this provider
+		if loc := res.Header.Get("Location"); loc != "" {
+			res.Header.Set("Location", p.markURL(loc))
+		}
+		br := bufio.NewReaderSize(res.Body, 32<<10)
+		body = br
+		head, _ := br.Peek(10)
+		if bytes.HasPrefix(bytes.TrimPrefix(head, []byte("ï»¿")), []byte("#EXTM3U")) || strings.Contains(strings.ToLower(res.Header.Get("Content-Type")), "mpegurl") {
+			data, err := io.ReadAll(io.LimitReader(br, tvMarkMax+1))
+			if err != nil || len(data) > tvMarkMax {
+				http.Error(w, "unreachable", http.StatusBadGateway)
+				return
+			}
+			data = tvMarkPlaylist(data, p.markURL)
+			res.Header.Set("Content-Length", strconv.Itoa(len(data)))
+			body = bytes.NewReader(data)
+		}
 	}
 	for k, vs := range res.Header {
 		for _, v := range vs {
@@ -245,7 +369,7 @@ func (p *tvProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	buf := make([]byte, 32<<10)
 	fl, _ := w.(http.Flusher)
 	for {
-		n, err := res.Body.Read(buf)
+		n, err := body.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return
@@ -298,4 +422,64 @@ func (p *tvProxy) connect(w http.ResponseWriter, r *http.Request) {
 	}()
 	_, _ = io.Copy(down, up)
 	done()
+}
+
+// ====== The marked way (an untrusted certificate the owner allowed) ======
+
+// tvTLSMark: the end of a host name that means "https to the host before it, through the proxy". .invalid is never
+// a real name (RFC 2606), and ffmpeg never resolves it (it asks the proxy).
+const tvTLSMark = ".svtls.invalid"
+
+// tvMarkMax: an HLS playlist bigger than this isn't passed on the marked way.
+const tvMarkMax = 8 << 20
+
+// tvMarkURL: raw, if it's https to a host [want] says, as plain http to the marked name (the port said);
+// anything else as it was.
+func tvMarkURL(raw string, want func(host string) bool) string {
+	if want == nil || len(raw) < 8 || !strings.EqualFold(raw[:8], "https://") {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" || strings.Contains(host, ":") || !want(host) { // an IPv6 address can't take the mark
+		return raw
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	u.Scheme, u.Host = "http", host+tvTLSMark+":"+port
+	return u.String()
+}
+
+// markURL: any https address the marked way, from an answer that came the marked way.
+func (p *tvProxy) markURL(raw string) string {
+	return tvMarkURL(raw, func(string) bool { return true })
+}
+
+var hlsURIAttr = regexp.MustCompile(`URI="([^"]*)"`)
+
+// tvMarkPlaylist: an HLS playlist with its absolute addresses (segments, variants, the URI="…" of keys, maps and
+// renditions) passed through mark. Relative ones need nothing: they resolve against the marked address.
+func tvMarkPlaylist(data []byte, mark func(string) string) []byte {
+	var b strings.Builder
+	b.Grow(len(data) + 256)
+	for line := range strings.Lines(string(data)) {
+		text := strings.TrimRight(line, "\r\n")
+		end := line[len(text):]
+		switch t := strings.TrimSpace(text); {
+		case strings.HasPrefix(t, "#"):
+			text = hlsURIAttr.ReplaceAllStringFunc(text, func(m string) string {
+				return `URI="` + mark(m[len(`URI="`):len(m)-1]) + `"`
+			})
+		case t != "":
+			text = mark(t)
+		}
+		b.WriteString(text)
+		b.WriteString(end)
+	}
+	return []byte(b.String())
 }

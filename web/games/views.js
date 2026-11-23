@@ -131,6 +131,13 @@ function chess(v) {
 // ====== Barbut ======
 
 const DIE = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+// The round's line is written in Romanian by the rules (casino.js, the apps' Barbut): shown in the reader's language
+function bbRound(x) {
+  let m = /^Egalitate: (.*) dau din nou$/.exec(x);
+  if (m) return t('bbTie', { names: m[1] });
+  m = /^Runda (\d+): (.*) \((\d+)-(\d+)\)$/.exec(x);
+  return m ? t('bbRound', { n: m[1], name: m[2], a: m[3], b: m[4] }) : x;
+}
 function barbut(v) {
   let s;
   try { s = Barbut.decode(v.st); } catch { return banner(t('gBadState'), 'warn'); }
@@ -146,7 +153,7 @@ function barbut(v) {
       pay ? el('span', { class: 'gm-pay ' + (pay > 0 ? 'good' : 'bad'), text: (pay > 0 ? '+' : '') + fmtLei(pay) }) : null));
   });
   const kids = [el('div', { class: 'gm-sub', text: t('gStake', { amount: fmtLei(s.stake) }) + ' · ' + t('gRound', { n: s.round }) }), rows];
-  if (s.lastRound) kids.push(el('div', { class: 'gm-note', text: s.lastRound }));
+  if (s.lastRound) kids.push(el('div', { class: 'gm-note', text: bbRound(s.lastRound) }));
   if (s.winner >= 0) kids.push(banner(t('gWins', { name: name(v, s.winner) }), s.winner === v.seat || v.seat < 0 ? 'good' : 'bad'));
   else {
     kids.push(banner(myTurn ? t('gYourTurn') : t('gTurnOf', { name: name(v, thrower) })));

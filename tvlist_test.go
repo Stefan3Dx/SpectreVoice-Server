@@ -2,13 +2,16 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -152,5 +155,117 @@ func TestTVProxy(t *testing.T) {
 	sc.Transport.(*http.Transport).TLSClientConfig = tlsTarget.Client().Transport.(*http.Transport).TLSClientConfig
 	if code, body := get(sc, tlsTarget.URL); code != 200 || body != "secure" {
 		t.Fatalf("https via CONNECT: %d %q", code, body)
+	}
+}
+
+// A provider with a self-signed certificate: its playlist is refused by default, with words saying what to do,
+// and read when the owner allows an untrusted certificate for it (only its own host's certificate unchecked).
+func TestFetchM3UUntrustedCertificate(t *testing.T) {
+	tvLoopbackOK = true
+	defer func() { tvLoopbackOK = false }()
+	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "#EXTM3U\n#EXTINF:-1,Unu\nhttps://"+r.Host+"/live/u/p/1.m3u8\n")
+	}))
+	defer provider.Close()
+	_, _, err := fetchM3U(provider.URL+"/get.php?username=u&password=p", false, false)
+	if !errors.Is(err, errTVUntrusted) || !strings.Contains(err.Error(), "allow untrusted certificate") || strings.Contains(err.Error(), "password=p") {
+		t.Fatalf("self-signed, not allowed: %v", err)
+	}
+	chs, _, err := fetchM3U(provider.URL+"/get.php?username=u&password=p", false, true)
+	if err != nil || len(chs) != 1 || chs[0].Name != "Unu" {
+		t.Fatalf("self-signed, allowed: %v %+v", err, chs)
+	}
+	// Allowed, the SSRF rule still holds
+	tvLoopbackOK = false
+	if _, _, err := fetchM3U(provider.URL+"/x.m3u", false, true); !errors.Is(err, errTVBlocked) {
+		t.Fatalf("allowed but on loopback: %v", err)
+	}
+}
+
+func TestTVMarkPlaylist(t *testing.T) {
+	ok := func(h string) bool { return h == "iptv.example" || h == "10.0.0.5" }
+	for in, want := range map[string]string{
+		"https://iptv.example/live/u/p/1.m3u8":     "http://iptv.example" + tvTLSMark + ":443/live/u/p/1.m3u8",
+		"https://IPTV.example:8443/a.ts?t=1&x=%2F": "http://iptv.example" + tvTLSMark + ":8443/a.ts?t=1&x=%2F",
+		"https://u:p@iptv.example/x":               "http://u:p@iptv.example" + tvTLSMark + ":443/x",
+		"https://10.0.0.5/x":                       "http://10.0.0.5" + tvTLSMark + ":443/x",
+		"https://other.example/x":                  "https://other.example/x",
+		"http://iptv.example/x":                    "http://iptv.example/x",
+		"https://[2001:db8::1]/x":                  "https://[2001:db8::1]/x",
+		"/relative/seg.ts":                         "/relative/seg.ts",
+	} {
+		if got := tvMarkURL(in, ok); got != want {
+			t.Errorf("%s: %s, want %s", in, got, want)
+		}
+	}
+	if got := tvMarkURL("https://iptv.example/x", nil); got != "https://iptv.example/x" {
+		t.Errorf("nothing allowed: %s", got)
+	}
+	all := func(string) bool { return true }
+	list := "#EXTM3U\r\n#EXT-X-KEY:METHOD=AES-128,URI=\"https://keys.example/k\"\r\n#EXTINF:2,\r\nhttps://cdn.example/s1.ts\r\nseg2.ts\r\n#EXT-X-MAP:URI=\"init.mp4\"\r\n"
+	got := string(tvMarkPlaylist([]byte(list), func(u string) string { return tvMarkURL(u, all) }))
+	want := "#EXTM3U\r\n#EXT-X-KEY:METHOD=AES-128,URI=\"http://keys.example" + tvTLSMark + ":443/k\"\r\n#EXTINF:2,\r\nhttp://cdn.example" + tvTLSMark + ":443/s1.ts\r\nseg2.ts\r\n#EXT-X-MAP:URI=\"init.mp4\"\r\n"
+	if got != want {
+		t.Fatalf("playlist:\n%q\nwant\n%q", got, want)
+	}
+}
+
+// The proxy's marked way: plain http from ffmpeg, https upstream, the certificate unchecked only for a host the
+// owner allowed; the HLS playlists it passes on have their https addresses marked; the SSRF rule as everywhere.
+func TestTVProxyMarked(t *testing.T) {
+	tvLoopbackOK = true
+	defer func() { tvLoopbackOK = false }()
+	var target *httptest.Server
+	target = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/index.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = io.WriteString(w, "#EXTM3U\n#EXTINF:2,\n"+target.URL+"/seg.ts\nseg2.ts\n")
+		case "/moved":
+			http.Redirect(w, r, target.URL+"/seg.ts", http.StatusFound)
+		default:
+			_, _ = io.WriteString(w, "segment")
+		}
+	}))
+	defer target.Close()
+	var allow atomic.Bool
+	p, err := startTVProxyTrusting(false, func(h string) bool { return allow.Load() && h == "127.0.0.1" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.close()
+	pu, _ := url.Parse(p.env)
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}, Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	marked := tvMarkURL(target.URL, func(string) bool { return true })
+	get := func(path string) (int, string, http.Header) {
+		res, err := c.Get(marked + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b), res.Header
+	}
+	// Not allowed: the certificate is checked, and doesn't pass
+	if code, _, _ := get("/seg.ts"); code != http.StatusBadGateway || p.untrustedAt.Load() == 0 {
+		t.Fatalf("not allowed: %d %d", code, p.untrustedAt.Load())
+	}
+	allow.Store(true)
+	if code, body, _ := get("/seg.ts"); code != 200 || body != "segment" {
+		t.Fatalf("allowed: %d %q", code, body)
+	}
+	code, body, h := get("/index.m3u8")
+	if code != 200 || body != "#EXTM3U\n#EXTINF:2,\n"+marked+"/seg.ts\nseg2.ts\n" || h.Get("Content-Length") != strconv.Itoa(len(body)) {
+		t.Fatalf("playlist: %d %q %v", code, body, h)
+	}
+	if code, _, h := get("/moved"); code != http.StatusFound || h.Get("Location") != marked+"/seg.ts" {
+		t.Fatalf("redirect: %d %v", code, h.Get("Location"))
+	}
+	// Allowed, but loopback isn't (as in production): refused before any TLS
+	tvLoopbackOK = false
+	p.tr.CloseIdleConnections() // (a kept connection was made while loopback was allowed)
+	if code, _, _ := get("/seg.ts"); code != http.StatusForbidden {
+		t.Fatalf("loopback on the marked way: %d", code)
 	}
 }

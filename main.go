@@ -106,6 +106,7 @@ type config struct {
 	backupKeep  int           // daily backups kept
 	backupHour  int           // the hour (server's local time) of the daily backup; -1: none
 	leiMax      int           // the most Lei one grant may add or take (lei.go)
+	leiLegacy   bool          // SV_LEI_LEGACY (default on): old apps may still add to purses themselves (bus.go)
 	callsRoute  string        // SV_CALLS_ROUTE: auto, p2p, sfu, off (calls.go)
 	callRing    time.Duration // how long a call rings (SV_CALL_RING seconds)
 	pushRelay   bool          // without SV_PUSH_CREDENTIALS, pushes go through the donation service (pushrelay.go)
@@ -230,6 +231,7 @@ func main() {
 	flag.IntVar(&cfg.backupKeep, "backup-keep", envInt("SV_BACKUP_KEEP", 14), "daily backups kept [SV_BACKUP_KEEP]")
 	flag.IntVar(&cfg.backupHour, "backup-hour", envInt("SV_BACKUP_HOUR", 3), "hour of the day (0-23, server time) of the automatic backup; -1: none [SV_BACKUP_HOUR]")
 	flag.IntVar(&cfg.leiMax, "lei-max", envInt("SV_LEI_MAX", 100000), "the most Lei one grant by the owner may add or take [SV_LEI_MAX]")
+	flag.BoolVar(&cfg.leiLegacy, "lei-legacy", envBool("SV_LEI_LEGACY", true), "let apps from before the server-held Lei (before 0.10.1) still add to purses themselves, bounded; set 0 once every member runs 0.10.1+ so only the server changes Lei [SV_LEI_LEGACY]")
 	tvLoop := flag.Bool("tv-test-loopback", false, "tests only: the TV may open 127.0.0.1 (never on a real server: the server's own ports are there)")
 	flag.StringVar(&cfg.inviteBase, "invite-base", env("SV_INVITE_BASE", ""), "invite links' start, e.g. https://sfu.example.com/i/ (default: this server's address) [SV_INVITE_BASE]")
 	proxies := flag.String("trusted-proxies", env("SV_TRUSTED_PROXIES", ""), "reverse proxies besides this machine's own whose X-Forwarded-For counts (a proxy elsewhere on the LAN), addresses or CIDRs, comma separated [SV_TRUSTED_PROXIES]")
@@ -454,6 +456,23 @@ func newServer(cfg config) (*server, error) {
 	s.bus.store = s.store
 	s.bus.chfiles = s.chfiles
 	s.bus.sb = s.sb
+	s.bus.leiLegacy = cfg.leiLegacy
+	s.bus.notify = func(uid, text string) {
+		if s.hub == nil {
+			return
+		}
+		for _, o := range s.hub.sessionsOf(uid) {
+			if !o.bot {
+				o.send(map[string]any{"t": "announce", "text": text, "by": cfg.name})
+			}
+		}
+	}
+	s.bus.member = func(space, uid string) bool {
+		if c := commOfSpace(space); c != 0 {
+			return s.store.isMember(c, uid) && (s.mods == nil || !s.mods.banned(uid, c))
+		}
+		return s.testSpaces != nil && s.testSpaces(space)
+	}
 	if cfg.playCreds != "" {
 		pv, err := newPlayVerifier(cfg.playCreds, cfg.playPkg, s.bus.dir, cfg.playRate, cfg.playTest)
 		if err != nil {

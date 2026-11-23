@@ -25,6 +25,8 @@ export const PARTY = new Set(['PHONE', 'SKETCH', 'BATTLE', 'SPY', 'QUIP', 'LIKEL
 export const isParty = (k) => PARTY.has(k);
 export const isChance = (k) => ['BARBUT', 'BLACKJACK', 'POKER', 'ROULETTE', 'SLOTS'].includes(k);
 export const isDuel = (k) => ['CHESS', 'BACKGAMMON', 'TICTACTOE', 'CONNECT4'].includes(k);
+// The games the server deals itself when it can (Rules.house): its reels, wheel and shoe, its payouts (house.go)
+export const isHouse = (k) => ['BLACKJACK', 'ROULETTE', 'SLOTS', 'FRUITS'].includes(k);
 // What this web client can play (and keep)
 export const PLAYABLE = ['TICTACTOE', 'CONNECT4', 'CHESS', 'BACKGAMMON', 'BARBUT', 'ROULETTE', 'SLOTS', 'BLACKJACK', 'POKER', 'TRIVIA', 'HANGMAN'];
 export const playable = (k) => PLAYABLE.includes(k);

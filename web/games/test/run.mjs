@@ -816,6 +816,205 @@ test('Lei and dates as the apps write them', () => {
   assert.equal(isoWeek(new Date(2024, 11, 30)), '2025-W01');
 });
 
+// ====== The keeper on a server that holds the Lei (pots.go, house.go): a fake of it, as the Go tests check the real ======
+
+function potNet() {
+  const kept = { lei: {}, scores: {}, pots: {} };
+  let clock = 1_700_000_000_000;
+  const peers = [];
+  const log = [];
+  const engines = {}; // pot id → {kind, seats, st, sec}: the games the "server" deals (the web rules stand in)
+  const purse = (u) => (typeof kept.lei[u]?.v === 'number' ? kept.lei[u].v : 1000);
+  const setPurse = (u, v) => { kept.lei = { ...kept.lei, [u]: { ...(kept.lei[u] || {}), v: Math.max(0, v) } }; };
+  const peer = (u) => peers.find((p) => p.uid === u);
+  const tell = (u, m) => peer(u)?.hub.server(clone(m));
+  const refuse = (u, m, why, extra = {}) => tell(u, { t: 'error', op: m.t, why, id: m.id, ref: m.ref, ...extra });
+  const free = (p, u) => (u === p.k ? purse(u) : Math.min(purse(u), p.al[u] || 0));
+  function take(p, u, n) {
+    const amt = Math.max(0, Math.min(n, free(p, u)));
+    setPurse(u, purse(u) - amt);
+    p.v += amt; p.in[u] = (p.in[u] || 0) + amt;
+    if (u !== p.k) p.al[u] = (p.al[u] || 0) - amt;
+    return amt;
+  }
+  function pay(p, u, n) {
+    const amt = Math.max(0, Math.min(n, p.v));
+    setPurse(u, purse(u) + amt);
+    p.v -= amt; p.in[u] = (p.in[u] || 0) - amt;
+    return amt;
+  }
+  function refund(p) {
+    const who = Object.keys(p.in).filter((u) => p.in[u] > 0);
+    const total = who.reduce((a, u) => a + p.in[u], 0);
+    let left = p.v;
+    who.forEach((u, i) => { const s = i === who.length - 1 ? left : Math.floor(p.v * p.in[u] / total); left -= s; setPurse(u, purse(u) + s); });
+    p.v = 0; p.in = {};
+  }
+  const putPot = (id, p) => { kept.pots = { ...kept.pots, [id]: clone(p) }; };
+  function server(from, m) {
+    log.push({ from, m: clone(m) });
+    if (m.t === 'add' && m.kind === 'lei') { refuse(from, m, 'old'); return; }
+    if (m.t === 'lei' && m.op === 'daily') {
+      if (kept.lei[from]?.d === m.day) { refuse(from, m, 'once'); return; }
+      setPurse(from, purse(from) + 100);
+      kept.lei[from].d = m.day;
+      return;
+    }
+    if (m.t === 'pot') {
+      const p = kept.pots[m.id] ? clone(kept.pots[m.id]) : null;
+      if (m.op !== 'open' && !p) { refuse(from, m, 'gone'); return; }
+      if (p && m.op !== 'allow' && p.k !== from) { refuse(from, m, 'owner'); return; }
+      switch (m.op) {
+        case 'open': {
+          const q = p || { k: from, kind: m.kind, v: 0, in: {}, al: {}, pl: [from] };
+          refund(q);
+          q.kind = m.kind;
+          putPot(m.id, q);
+          delete engines[m.id];
+          if (m.players) {
+            const players = m.players.map((u) => ({ uid: u, name: u }));
+            const o = R.start(m.kind, { players, host: true, purse: () => 0 }, null, seeded(9));
+            engines[m.id] = { kind: m.kind, seats: m.players, st: o.state, sec: o.secret };
+            tell(from, { t: 'housed', id: m.id, ref: m.ref, state: o.state, pay: {}, profit: {}, over: null, played: [] });
+          }
+          return;
+        }
+        case 'allow':
+          if (m.keeper !== p.k) { refuse(from, m, 'owner'); return; }
+          if (!p.pl.includes(from)) p.pl.push(from);
+          p.al[from] = m.add ? (p.al[from] || 0) + m.n : m.n;
+          putPot(m.id, p);
+          return;
+        case 'move': {
+          if (engines[m.id]) { refuse(from, m, 'house'); return; }
+          const short = {};
+          for (const [u, n] of Object.entries(m.d)) if (n < 0) { const got = take(p, u, -n); if (got < -n) short[u] = -n - got; }
+          for (const [u, n] of Object.entries(m.d)) if (n > 0) { const got = p.pl.includes(u) ? pay(p, u, n) : 0; if (got < n) short[u] = n - got; }
+          putPot(m.id, p);
+          if (Object.keys(short).length) refuse(from, m, 'short', { short });
+          return;
+        }
+        case 'close': refund(p); delete engines[m.id]; kept.pots = Object.fromEntries(Object.entries(kept.pots).filter(([k]) => k !== m.id)); return;
+      }
+      return;
+    }
+    if (m.t === 'house') {
+      const p = kept.pots[m.id] ? clone(kept.pots[m.id]) : null;
+      const e = engines[m.id];
+      if (!p || !e) { refuse(from, m, 'gone'); return; }
+      const players = e.seats.map((u) => ({ uid: u, name: u }));
+      const tryWith = (purses) => { try { return R.move(e.kind, e.st, e.sec, m.seat, m.m.op === 'auto' ? R.autoMoves(e.kind)[0] : m.m, { players, host: m.host, purse: purses }, seeded(3)); } catch { return null; } };
+      const o = tryWith((i) => free(p, e.seats[i]));
+      if (!o) { refuse(from, m, tryWith((i) => purse(e.seats[i])) ? 'allow' : 'move'); return; }
+      // Stakes into the pot, wins straight to the purse (enough for these tests)
+      for (const [i, d] of Object.entries(o.pay)) { const u = e.seats[+i]; if (d < 0) take(p, u, -d); else { const back = Math.min(d, Math.max(0, p.in[u] || 0)); pay(p, u, back); setPurse(u, purse(u) + d - back); } }
+      if (o.over) { p.v = 0; p.in = {}; }
+      putPot(m.id, p);
+      e.st = o.state; if (o.secret) e.sec = o.secret;
+      tell(from, { t: 'housed', id: m.id, ref: m.ref, state: o.state, pay: o.pay, profit: o.profit ?? o.pay, over: o.over, played: o.played });
+      return;
+    }
+    if (m.t === 'incr' || m.t === 'put') return;
+    for (const q of peers) if (q.uid !== from) q.hub.handle({ ...clone(m), from, relay: true });
+  }
+  function person(uid, name) {
+    const q = { uid };
+    q.hub = createHub({
+      send: (m) => { server(uid, m); return true; }, kept: () => kept, caps: () => new Set(['add', 'incr', 'buy', 'pot', 'house', 'lei']), online: () => true,
+      me: () => ({ uid, name }), present: () => new Set(peers.map((x) => x.uid)), now: () => clock, text: (k, v) => k + (v ? JSON.stringify(v) : ''), rnd: seeded(uid.length * 7 + 1),
+    });
+    peers.push(q);
+    return q.hub;
+  }
+  const total = (...uids) => uids.reduce((a, u) => a + purse(u), 0) + Object.values(kept.pots).reduce((a, p) => a + p.v, 0);
+  return { kept, log, person, purse, total, engines, tick: (ms) => { clock += ms; return clock; } };
+}
+
+test('hub (Lei on the server): barbut rounds are paid through the table\'s pot, never by an add', () => {
+  const w = potNet();
+  const ana = w.person('ana', 'Ana'), bo = w.person('bo', 'Bo');
+  const id = ana.create('BARBUT');
+  assert.ok(w.kept.pots[id], 'the pot opens with the table');
+  bo.join(id);
+  assert.equal(w.kept.pots[id].al.bo, 1000, 'Bo allowed his purse');
+  ana.startGame(id);
+  for (let k = 0; k < 200 && !ana.tables.get(id).state.final; k++) {
+    const st = ana.tables.get(id).state;
+    const who = ana.tables.get(id).players[st.throwers[st.turn]].uid;
+    (who === 'ana' ? ana : bo).play(id, { op: 'roll' });
+  }
+  assert.ok(ana.tables.get(id).state.final, 'played out');
+  assert.ok(w.log.some((x) => x.m.t === 'pot' && x.m.op === 'move'), 'moved through the pot');
+  assert.ok(!w.log.some((x) => x.m.t === 'add'), 'no add');
+  assert.equal(w.total('ana', 'bo'), 2000, 'no Lei made or lost');
+  assert.notEqual(w.purse('ana'), 1000, 'someone won');
+});
+
+test('hub (Lei on the server): roulette is dealt by the server; the chips come back when the keeper leaves', () => {
+  const w = potNet();
+  const ana = w.person('ana', 'Ana'), bo = w.person('bo', 'Bo');
+  const id = ana.create('ROULETTE');
+  bo.join(id);
+  ana.startGame(id);
+  assert.deepEqual(w.engines[id].seats, ana.tables.get(id).players.map((p) => p.uid), 'the server deals it, seat by seat');
+  bo.play(id, { op: 'bet', type: 'red', value: 0, v: 40 });
+  assert.equal(w.purse('bo'), 960);
+  assert.equal(w.kept.pots[id].v, 40);
+  assert.equal(ana.tables.get(id).state.bets[ana.tables.get(id).players.findIndex((p) => p.uid === 'bo')].length, 1, 'the state is the server\'s');
+  // Past the purse: the keeper passes it on, the server refuses it
+  bo.play(id, { op: 'bet', type: 'n', value: 3, v: 5000 });
+  assert.equal(w.purse('bo'), 960);
+  assert.ok(!w.log.some((x) => x.m.t === 'add'), 'no add');
+  ana.leave(id);
+  assert.equal(w.purse('bo'), 1000);
+  assert.ok(!w.kept.pots[id]);
+  assert.ok(!bo.tables.has(id));
+});
+
+test('hub (Lei on the server): a spin answered by the server is the table\'s state and its scores', () => {
+  const w = potNet();
+  const ana = w.person('ana', 'Ana');
+  const id = ana.create('SLOTS');
+  assert.ok(w.engines[id], 'a game for one starts at once, on the server');
+  ana.play(id, { op: 'spin', v: 25 });
+  const st = ana.tables.get(id).state;
+  assert.equal(st.spins, 1);
+  assert.equal(w.purse('ana'), 1000 + st.last);
+  assert.ok(w.log.some((x) => x.m.t === 'incr' && x.m.id === 'ana' && 'g.SLOTS' in x.m.inc), 'scored');
+  // The server lost the game (a restart): the table starts again there
+  delete w.engines[id];
+  ana.play(id, { op: 'spin', v: 25 });
+  assert.ok(w.engines[id], 'opened again');
+  assert.equal(ana.tables.get(id).state.spins, 0);
+});
+
+test('hub (Lei on the server): onlookers\' bets go into the pot, the winners are paid from it', () => {
+  const w = potNet();
+  const ana = w.person('ana', 'Ana'), bo = w.person('bo', 'Bo'), cy = w.person('cy', 'Cy');
+  const id = ana.create('TICTACTOE');
+  bo.join(id);
+  ana.startGame(id);
+  cy.bet(id, 0, 100);
+  assert.equal(w.purse('cy'), 900);
+  assert.equal(w.kept.pots[id].v, 100);
+  const first = ana.tables.get(id).players[0].uid === 'ana' ? ana : bo;
+  const second = first === ana ? bo : ana;
+  for (const [k, cell] of [0, 3, 1, 4, 2].entries()) (k % 2 ? second : first).play(id, { cell });
+  assert.equal(ana.tables.get(id).state.winner, 0);
+  assert.equal(w.purse('cy'), 1000, 'the only bet, on the winner: all of the pool back');
+  assert.equal(w.total('ana', 'bo', 'cy'), 3000);
+});
+
+test('hub (Lei on the server): the day\'s bonus is asked of the server, once', () => {
+  const w = potNet();
+  const ana = w.person('ana', 'Ana');
+  ana.slowTick();
+  ana.slowTick();
+  const asks = w.log.filter((x) => x.m.t === 'lei' && x.m.op === 'daily');
+  assert.equal(asks.length, 1);
+  assert.equal(w.purse('ana'), 1100);
+});
+
 if (failures.length) {
   for (const f of failures) console.error('FAIL ' + f);
   process.exit(1);

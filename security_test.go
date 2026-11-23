@@ -406,7 +406,10 @@ func TestBusBuy(t *testing.T) {
 	if m := a.expect("error"); m["why"] != "lei" {
 		t.Fatalf("too dear: %v", m)
 	}
-	a.write(map[string]any{"t": "add", "kind": "lei", "id": "A", "d": 5000.0, "start": 1000.0, "min": 100.0})
+	// (an app can't add to its purse: the owner gives)
+	if _, err := bt.s.bus.grantLei("shop", "A", 5000, "owner"); err != nil {
+		t.Fatal(err)
+	}
 	if v := a.expect("put")["v"].(map[string]any); v["v"] != 6000.0 {
 		t.Fatalf("purse: %v", v)
 	}
@@ -443,18 +446,18 @@ func TestBusBuy(t *testing.T) {
 		t.Fatalf("title again: %v", m)
 	}
 	a.expect("put")
-	// Nobody writes or clears a purse outright (the shop trusts it), not even their own; a delta can't make a fortune
+	// Nobody writes, clears or adds to a purse (the shop trusts it), not even their own
 	a.write(map[string]any{"t": "put", "kind": "lei", "id": "A", "v": map[string]any{"v": 1e9}})
-	if m := a.expect("error"); m["why"] != "owner" {
+	if m := a.expect("error"); m["why"] != "old" {
 		t.Fatalf("purse written: %v", m)
 	}
 	a.write(map[string]any{"t": "del", "kind": "lei", "id": "B"})
-	if m := a.expect("error"); m["why"] != "owner" {
+	if m := a.expect("error"); m["why"] != "old" {
 		t.Fatalf("purse cleared: %v", m)
 	}
 	a.write(map[string]any{"t": "add", "kind": "lei", "id": "Z", "d": -1e12, "min": 1e12, "start": 1e12})
-	if m := a.expect("put"); m["v"].(map[string]any)["v"] != 0.0 {
-		t.Fatalf("add made a fortune: %v", m)
+	if m := a.expect("error"); m["why"] != "old" {
+		t.Fatalf("add taken: %v", m)
 	}
 	// An empty purse counts as 100
 	bt.s.bus.mu.Lock()
@@ -714,12 +717,42 @@ func TestAuthV2BoundToHost(t *testing.T) {
 	}
 }
 
-// Lei: a "strict" add is all or nothing, and what one app moves a minute is bounded (game payouts stay possible).
-func TestBusLeiLimits(t *testing.T) {
+// Lei: apps add, put and del on purses are refused, for an admin too (only the server changes a purse).
+func TestBusLeiRefused(t *testing.T) {
+	bt := newBusTest(t, func(c *config) { c.leiLegacy = false }, nil) // SV_LEI_LEGACY=0 (the default is on)
+	a := bt.dial("lei", "A")
+	adm := bt.dialAdmin("lei", "ADMIN")
+	for _, c := range []*busConn{a, adm} {
+		for _, m := range []map[string]any{
+			{"t": "add", "kind": "lei", "id": "A", "d": 300.0, "start": 1000.0, "ref": "r1"},
+			{"t": "add", "kind": "lei", "id": "B", "d": -300.0, "start": 1000.0, "ref": "r1"},
+			{"t": "put", "kind": "lei", "id": "A", "v": map[string]any{"v": 1e6}, "ref": "r1"},
+			{"t": "del", "kind": "lei", "id": "A", "ref": "r1"},
+			{"t": "incr", "kind": "lei", "id": "A", "inc": map[string]any{"x.v": 5}, "ref": "r1"},
+			// nor the pots, which are the server's
+			{"t": "put", "kind": "pots", "id": "p1", "v": map[string]any{"v": 1e6}, "ref": "r1"},
+		} {
+			c.write(m)
+			if e := c.expect("error"); (e["why"] != "old" && e["why"] != "server") || e["ref"] != "r1" {
+				t.Fatalf("%v: %v", m, e)
+			}
+		}
+	}
+	bt.s.bus.mu.Lock()
+	n := len(bt.s.bus.spaces["lei"].state["lei"])
+	bt.s.bus.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d purses written", n)
+	}
+}
+
+// SV_LEI_LEGACY: a "strict" add is all or nothing, and what one app moves a minute is bounded (game payouts stay
+// possible), as before the pots.
+func TestBusLeiLegacy(t *testing.T) {
 	old := busLeiPerMin
 	busLeiPerMin = 3000
 	defer func() { busLeiPerMin = old }()
-	bt := newBusTest(t, nil, nil)
+	bt := newBusTest(t, func(c *config) { c.leiLegacy = true }, nil)
 	a := bt.dial("lei", "A")
 	lei := func(id string, d float64, strict bool) map[string]any {
 		t.Helper()
@@ -751,6 +784,11 @@ func TestBusLeiLimits(t *testing.T) {
 	}
 	if m := lei("A", 1000, false); m["t"] != "error" || m["why"] != "rate" {
 		t.Fatalf("over the minute's budget: %v", m)
+	}
+	// Writing a purse outright stays refused
+	a.write(map[string]any{"t": "put", "kind": "lei", "id": "A", "v": map[string]any{"v": 1e9}})
+	if m := a.expect("error"); m["why"] != "old" {
+		t.Fatalf("purse written: %v", m)
 	}
 }
 

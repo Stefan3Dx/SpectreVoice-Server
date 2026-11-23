@@ -7,16 +7,20 @@ package main
 //	-> {"t":"state","state":{kind:{id:value}},"ops":[…],"admin":bool,"version":…}   on connect: what's kept
 //	<- {"t":"put","kind":"events","id":"x","v":{...}}    kept and sent to everyone (sender too), stamped "_by": U
 //	<- {"t":"del","kind":"events","id":"x"}              forgotten, and sent to everyone
-//	<- {"t":"add"|"incr",…}                              changes the server works out itself (see applyAdd/applyIncr);
-//	                                                     a Lei "add" with "strict":true is refused ("funds") rather
-//	                                                     than stopped at 0, and Lei moved is rate limited (leiBudget)
+//	<- {"t":"add"|"incr",…}                              changes the server works out itself (see applyAdd/applyIncr)
 //	<- {"t":"buy","item":…}                              a shop purchase (shop.go)
+//	<- {"t":"lei","op":"daily"|"send",…}                 the daily bonus, a gift (lei.go)
+//	<- {"t":"pot","op":…}                                a game table's Lei, held by the server (pots.go)
+//	<- {"t":"house",…}  -> {"t":"housed",…}              a move in a game the server deals (house.go)
 //	<- {"t":"anything else", ...}                       passed on to the others, with "from": U and "relay": true
 //	-> {"t":"error","op":…,"why":…,"message":…}          a change that was refused (and why), with its "ref" if it had one
 //
 //	PUT/GET /backup/<id>?token=T                          an app's encrypted settings backup (up to 1 MB)
 //
-// No client is trusted: the server decides who may change what.
+// No client is trusted: the server decides who may change what. Purses (kind "lei") and pots (kind "pots") only
+// the server writes: an app's put or del on a purse is refused, why "old". SV_LEI_LEGACY (on by default: old apps
+// can't all be updated at once) keeps the old apps' "add": a bounded delta, "strict" refused rather than stopped at 0,
+// rate limited by leiBudget; with SV_LEI_LEGACY=0 an "add" is refused too (why "old").
 
 import (
 	"crypto/sha256"
@@ -41,14 +45,14 @@ import (
 // busBotKindLimit: records in one bot's kind ("bot:<slug>", bots.go).
 const busBotKindLimit = 500
 
-var busKinds = map[string]int{"events": 200, "sounds": 300, "intros": 500, "lei": 2000, "scores": 2000, "profiles": 2000, "donors": 2000}
+var busKinds = map[string]int{"events": 200, "sounds": 300, "intros": 500, "lei": 2000, "scores": 2000, "profiles": 2000, "donors": 2000, "pots": 500}
 
 // Kinds only the server's owner and admins may change; everyone reads them.
 var busAdminKinds = map[string]bool{"donors": true}
 
 // Messages only the server sends: one from a client with these types is never passed on (a forged "state" or
 // "put" would make the others believe something the server never said).
-var busServerOnly = map[string]bool{"state": true, "put": true, "del": true, "error": true, "challenge": true, "authed": true, "add": true, "incr": true, "reported": true, "wiped": true}
+var busServerOnly = map[string]bool{"state": true, "put": true, "del": true, "error": true, "challenge": true, "authed": true, "add": true, "incr": true, "reported": true, "wiped": true, "housed": true, "lei-got": true}
 
 // Backups kept at most, by count and by bytes (vars so tests can make them small).
 var (
@@ -57,10 +61,10 @@ var (
 )
 
 // What the state message tells the apps this server can do.
-var busOps = []string{"add", "incr", "buy", "play", "report", "wipe-me"}
+var busOps = []string{"add", "incr", "buy", "play", "report", "wipe-me", "pot", "house", "lei"}
 
-// Kinds only the server itself writes (none yet).
-var busServerKinds = map[string]bool{}
+// Kinds only the server itself writes: the game tables' pots (pots.go).
+var busServerKinds = map[string]bool{"pots": true}
 
 // How fast one app may send (drawings, games and reactions stay well under it); much faster is a flood.
 // Vars so tests can change them.
@@ -189,6 +193,8 @@ type busSpace struct {
 	// leiLeft: Lei each uid may still move (leiBudget), and when it was last topped up
 	leiLeft map[string]float64
 	leiAt   map[string]time.Time
+	// house: the games the server deals, by pot id (house.go; memory only)
+	house map[string]*houseTable
 }
 
 // leiBudget takes cost from uid's Lei allowance in this space; false when it's spent. Purses change by what apps
@@ -267,6 +273,10 @@ type bus struct {
 	chfiles   *channelFiles  // and the files they put in channels
 	sb        *soundboard    // a wipe takes the person's name off their sounds
 	reports   *reports       // reports and deletion requests (moderation.go)
+	leiLegacy bool           // SV_LEI_LEGACY (on by default): apps may still "add" to purses (lei.go)
+	notify    func(uid, text string)
+	notified  map[string]bool              // told to update their app this run (lei.go oldApp)
+	member    func(space, uid string) bool // uid is on the server of this space (gifts go only to them)
 }
 
 func newBus(dir string) *bus {
@@ -337,6 +347,16 @@ func (b *bus) load(name string) (*busSpace, error) {
 			sp.size += len(raw)
 		}
 	}
+	// Nobody is connected yet: every keeper is away (back within the grace, its pots stay)
+	now := time.Now()
+	for id := range sp.state["pots"] {
+		if p := sp.potOf(id); p != nil {
+			p.Gone = now.UnixMilli()
+			raw, _ := json.Marshal(p)
+			sp.set("pots", id, raw)
+		}
+	}
+	sp.sweepPots(now)
 	b.spaces[name] = sp
 	return sp, nil
 }
@@ -348,6 +368,7 @@ func (b *bus) leave(sp *busSpace, c *busClient) {
 	defer b.fileMu.Unlock()
 	b.mu.Lock()
 	delete(sp.clients, c)
+	sp.keeperGone(c.uid)
 	// Without a folder the space only lives in memory: unloading it would forget everything
 	if len(sp.clients) > 0 || b.dir == "" || b.spaces[sp.name] != sp {
 		b.mu.Unlock()
@@ -401,7 +422,9 @@ func (b *bus) saveDirty() {
 	defer b.fileMu.Unlock()
 	b.mu.Lock()
 	snaps := map[*busSpace][]byte{}
+	now := time.Now()
 	for _, sp := range b.spaces {
+		sp.sweepPots(now)
 		if sp.dirty {
 			sp.dirty = false
 			snaps[sp], _ = json.Marshal(sp.state)
@@ -504,6 +527,10 @@ func (sp *busSpace) mayChange(c *busClient, op, kind, id string) string {
 	if busAdminKinds[kind] && !c.admin {
 		return "admin"
 	}
+	if kind == "lei" && op != "add" {
+		// Purses change only by what the server does (pots.go, lei.go, shop.go): nobody writes or deletes one
+		return "old"
+	}
 	if c.admin {
 		return ""
 	}
@@ -512,12 +539,6 @@ func (sp *busSpace) mayChange(c *busClient, op, kind, id string) string {
 	by, hasBy := rec["_by"].(string)
 	mine := hasBy && by == c.uid
 	switch {
-	case kind == "lei":
-		// Purses change only by a delta the server applies (the tables' keepers pay out and take in); nobody writes
-		// or deletes a purse outright, not even their own (the shop trusts it)
-		if op != "add" {
-			return "owner"
-		}
 	case kind == "profiles" || kind == "intros":
 		if id != c.uid {
 			return "owner"
@@ -616,6 +637,8 @@ func (s *server) handleBus(w http.ResponseWriter, r *http.Request) {
 	snapshot, _ := json.Marshal(sp.state)
 	// Queued under the lock: nothing changed after the snapshot can reach this client before it
 	c.send(map[string]any{"t": "state", "state": json.RawMessage(snapshot), "version": version, "ops": busOps, "admin": c.admin})
+	// Its pots aren't gone any more (after the state, so it gets that first)
+	sp.keeperSeen(uid)
 	b.mu.Unlock()
 	b.fileMu.Unlock()
 	go c.writer()
@@ -626,8 +649,12 @@ func (s *server) handleBus(w http.ResponseWriter, r *http.Request) {
 	_ = ws.SetReadDeadline(time.Now().Add(busReadTimeout))
 	ws.SetPongHandler(func(string) error { return ws.SetReadDeadline(time.Now().Add(busReadTimeout)) })
 	for {
+		_, raw, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
 		var m map[string]any
-		if err := ws.ReadJSON(&m); err != nil {
+		if err := json.Unmarshal(raw, &m); err != nil {
 			return
 		}
 		_ = ws.SetReadDeadline(time.Now().Add(busReadTimeout))
@@ -658,6 +685,12 @@ func (s *server) handleBus(w http.ResponseWriter, r *http.Request) {
 			b.buy(sp, c, item)
 		case "report", "reports", "report-done", "wipe", "wipe-me":
 			b.moderate(sp, c, t, m)
+		case "pot":
+			b.potOp(sp, c, m, raw)
+		case "house":
+			b.houseOp(sp, c, m)
+		case "lei":
+			b.busLei(sp, c, m)
 		case "play":
 			b.conns.Add(1)
 			go func() { defer b.conns.Done(); b.play(sp, c, m) }()
@@ -700,6 +733,12 @@ func (b *bus) change(sp *busSpace, c *busClient, op string, m map[string]any) {
 	}
 	if busServerKinds[kind] {
 		c.refuse(m, op, "server", "only the server writes this")
+		return
+	}
+	if kind == "lei" && !(b.leiLegacy && op == "add") {
+		// Purses are the server's: an app from before the pots still adds to them itself
+		c.refuse(m, op, "old", "update the app: Lei move through the server now")
+		b.oldApp(c.uid)
 		return
 	}
 	sanitize(kind, m)

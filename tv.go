@@ -7,7 +7,10 @@ package main
 // stops when nobody has watched for SV_TV_IDLE seconds (the channel chosen stays).
 //
 //	<- {"t":"tv","op":"state"}                    -> {"t":"tv","tv":STATE}
-//	<- {"t":"tv","op":"playlist","url":U}         (tv) download and keep the playlist at U
+//	<- {"t":"tv","op":"playlist","url":U,"insecure"?:bool}  (tv) download and keep the playlist at U ("insecure":
+//	                                              the provider's certificate isn't checked; absent: as it was)
+//	<- {"t":"tv","op":"insecure","v":bool}        (tv) allow an untrusted certificate (self-signed, expired) for the
+//	                                              playlist's provider (its host and its channels' hosts; tvnet.go)
 //	<- {"t":"tv","op":"refresh"}                  (tv) read it again
 //	<- {"t":"tv","op":"clear"}                    (tv) forget it (the TV goes off)
 //	<- {"t":"tv","op":"open","v":bool}            (tv) may everyone change the channel
@@ -16,10 +19,13 @@ package main
 //	<- {"t":"tv","op":"stop"}                     (the same) the TV off for everyone
 //	-> {"t":"tv","tv":STATE}                      to everyone, whenever it changes (and in the welcome as "tv")
 //	-> {"t":"done","op":"tv","what":OP,"n":N}     a playlist read (N channels)
-//	-> {"t":"error","op":"tv","why":"role"|"off"|"ffmpeg"|"none"|"fetch"|"bad"|"busy"|"rate","message":…}
+//	-> {"t":"error","op":"tv","why":"role"|"off"|"ffmpeg"|"none"|"fetch"|"cert"|"bad"|"busy"|"rate","message":…}
+//	                                              ("cert": the provider's certificate isn't trusted)
 //
 //	STATE = {"on","why"?:"off"|"ffmpeg","set","n","rev","open","now"?:{"i","n","g","l","by","byName","at","room",
-//	         "playing","live","err"},"kind"?,"host"?}   (kind and host, where the playlist is from, only to "tv")
+//	         "playing","live","err","cert"?},"kind"?,"host"?,"insecure"?}   (kind, host and insecure, where the
+//	         playlist is from and whether its certificate is checked, only to "tv"; now.cert: the channel failed on
+//	         an untrusted certificate)
 //
 //	GET  /tv/channels?token=T        -> {"rev":R,"items":[{"i","n","g","l":bool}]}  names, groups, whether a logo
 //	GET  /tv/logo?i=N&token=T        -> the channel's logo, fetched by the server (no app asks another host)
@@ -62,6 +68,8 @@ type tvSource struct {
 	N    int    `json:"n"`
 	At   int64  `json:"at"` // when it was read (ms): the list's revision for the apps
 	By   string `json:"by,omitempty"`
+	// Insecure: the owner allows an untrusted certificate for this provider (its hosts' certificates not checked)
+	Insecure bool `json:"insecure,omitempty"`
 }
 
 // tvChoice: the channel chosen, kept ("tv_now") while the TV is on, even with nobody watching.
@@ -89,7 +97,8 @@ type tvManager struct {
 	lastPlay time.Time
 	ffErr    string
 	startMu  sync.Mutex // one player at a time
-	fetch    func(u string) ([]tvChannel, bool, error)
+	fetch    func(u string, insecure bool) ([]tvChannel, bool, error)
+	trust    map[string]bool // with src.Insecure: the hosts whose certificate isn't checked (tvHosts)
 	idle     time.Duration
 	idleTick time.Duration
 	kick     chan struct{}
@@ -102,8 +111,8 @@ type tvManager struct {
 
 func newTV(s *server) *tvManager {
 	tm := &tvManager{s: s, idle: time.Duration(max(s.cfg.tvIdle, 10)) * time.Second, idleTick: 5 * time.Second, kick: make(chan struct{}, 1), party: newTVParty()}
-	tm.fetch = func(u string) ([]tvChannel, bool, error) { return fetchM3U(u, s.cfg.tvLAN) }
-	tm.logos = newTVLogos(s.cfg.tvLAN)
+	tm.fetch = func(u string, insecure bool) ([]tvChannel, bool, error) { return fetchM3U(u, s.cfg.tvLAN, insecure) }
+	tm.logos = newTVLogos(s.cfg.tvLAN, tm.untrustedHost)
 	st := s.store
 	// Roles from before the TV permission: those that could manage the server get it
 	if _, ok := st.setting("perm_tv"); !ok {
@@ -197,7 +206,7 @@ func (tm *tvManager) state(manage bool) map[string]any {
 	if tm.src != nil {
 		st["n"], st["rev"] = tm.src.N, tm.src.At
 		if manage {
-			st["kind"] = tm.src.Kind
+			st["kind"], st["insecure"] = tm.src.Kind, tm.src.Insecure
 			if tm.src.Kind == "url" {
 				if u, err := url.Parse(tm.src.URL); err == nil {
 					st["host"] = u.Hostname()
@@ -215,6 +224,9 @@ func (tm *tvManager) state(manage bool) map[string]any {
 			n["playing"] = true
 			n["live"] = live && idx == c.I
 			n["err"] = why
+			if why != "" && strings.Contains(why, errTVUntrusted.Error()) {
+				n["cert"] = true
+			}
 		}
 		st["now"] = n
 	}
@@ -252,6 +264,7 @@ func (tm *tvManager) channels() ([]tvChannel, error) {
 			tm.loading = nil
 			if tm.src != nil && tm.src.At == src.At {
 				tm.list, tm.listErr, tm.listAt = chs, err, time.Now()
+				tm.trust = tvHosts(tm.src, chs)
 			}
 			tm.mu.Unlock()
 			close(ch)
@@ -282,7 +295,7 @@ func (tm *tvManager) channels() ([]tvChannel, error) {
 
 func (tm *tvManager) read(src tvSource) ([]tvChannel, bool, error) {
 	if src.Kind == "url" {
-		return tm.fetch(src.URL)
+		return tm.fetch(src.URL, src.Insecure)
 	}
 	f, err := os.Open(tm.playlistFile())
 	if err != nil {
@@ -309,8 +322,8 @@ func (tm *tvManager) end() {
 	tm.mu.Unlock()
 }
 
-// setURL downloads the playlist at u and keeps it (and u).
-func (tm *tvManager) setURL(u, by string) (int, bool, error) {
+// setURL downloads the playlist at u and keeps it (and u); [insecure]: its provider's certificate isn't checked.
+func (tm *tvManager) setURL(u, by string, insecure bool) (int, bool, error) {
 	if _, err := tvCheckURL(u, tm.s.cfg.tvLAN); err != nil {
 		return 0, false, err
 	}
@@ -318,11 +331,14 @@ func (tm *tvManager) setURL(u, by string) (int, bool, error) {
 		return 0, false, errTVBusy
 	}
 	defer tm.end()
-	chs, cut, err := tm.fetch(strings.TrimSpace(u))
+	chs, cut, err := tm.fetch(strings.TrimSpace(u), insecure)
 	if err != nil {
+		if errors.Is(err, errTVUntrusted) {
+			log.Printf("tv: the playlist's server has an untrusted certificate (allow it for this provider in the TV's settings if it's the right one)")
+		}
 		return 0, false, err
 	}
-	src := &tvSource{Kind: "url", URL: strings.TrimSpace(u), N: len(chs), At: time.Now().UnixMilli(), By: by}
+	src := &tvSource{Kind: "url", URL: strings.TrimSpace(u), N: len(chs), At: time.Now().UnixMilli(), By: by, Insecure: insecure}
 	if err := tm.install(src, chs); err != nil {
 		return 0, false, err
 	}
@@ -330,7 +346,7 @@ func (tm *tvManager) setURL(u, by string) (int, bool, error) {
 	return len(chs), cut, nil
 }
 
-// setFile keeps an uploaded playlist.
+// setFile keeps an uploaded playlist (whether an untrusted certificate is allowed stays as it was).
 func (tm *tvManager) setFile(data []byte, by string) (int, bool, error) {
 	if int64(len(data)) > tvListMax {
 		return 0, false, fmt.Errorf("the playlist is bigger than %d MB", tvListMax>>20)
@@ -351,7 +367,10 @@ func (tm *tvManager) setFile(data []byte, by string) (int, bool, error) {
 	if err := writeFileAtomic(tm.playlistFile(), data, 0o600); err != nil {
 		return 0, false, errors.New("the playlist couldn't be kept on the server")
 	}
-	src := &tvSource{Kind: "file", N: len(chs), At: time.Now().UnixMilli(), By: by}
+	tm.mu.Lock()
+	insecure := tm.src != nil && tm.src.Insecure
+	tm.mu.Unlock()
+	src := &tvSource{Kind: "file", N: len(chs), At: time.Now().UnixMilli(), By: by, Insecure: insecure}
 	if err := tm.install(src, chs); err != nil {
 		return 0, false, err
 	}
@@ -368,7 +387,7 @@ func (tm *tvManager) refresh(by string) (int, bool, error) {
 		return 0, false, errNoPlaylist
 	}
 	if src.Kind == "url" {
-		return tm.setURL(src.URL, by)
+		return tm.setURL(src.URL, by, src.Insecure)
 	}
 	if !tm.begin() {
 		return 0, false, errTVBusy
@@ -397,6 +416,7 @@ func (tm *tvManager) install(src *tvSource, chs []tvChannel) error {
 	}
 	tm.mu.Lock()
 	tm.src, tm.list, tm.listErr, tm.listAt = src, chs, nil, time.Now()
+	tm.trust = tvHosts(src, chs)
 	var off, restart *tvPlayer
 	var ch tvChannel
 	idx := -1
@@ -446,7 +466,7 @@ func (tm *tvManager) clear(by string) {
 	_ = os.Remove(tm.playlistFile())
 	tm.mu.Lock()
 	p := tm.player
-	tm.src, tm.list, tm.listErr, tm.now, tm.player = nil, nil, nil, nil, nil
+	tm.src, tm.list, tm.listErr, tm.now, tm.player, tm.trust = nil, nil, nil, nil, nil, nil
 	tm.mu.Unlock()
 	if p != nil {
 		p.close()
@@ -463,6 +483,73 @@ func (tm *tvManager) setOpen(v bool, by string) {
 	tm.mu.Unlock()
 	log.Printf("tv: anyone may change the channel: %v (by %s)", v, by)
 	tm.changed()
+}
+
+// setInsecure: whether the playlist's provider may have an untrusted certificate (self-signed, expired). The
+// channel on now starts again (its addresses go another way); a list that failed is read again at once.
+func (tm *tvManager) setInsecure(v bool, by string) error {
+	tm.mu.Lock()
+	if tm.src == nil {
+		tm.mu.Unlock()
+		return errNoPlaylist
+	}
+	next := *tm.src
+	next.Insecure = v
+	raw, _ := json.Marshal(&next)
+	if err := tm.s.store.setSetting("tv_source", string(raw)); err != nil {
+		tm.mu.Unlock()
+		return errors.New("the setting couldn't be kept on the server")
+	}
+	tm.src = &next
+	tm.trust = tvHosts(tm.src, tm.list)
+	if tm.list == nil {
+		tm.listErr = nil // read again (it may have failed on the certificate)
+	}
+	var restart *tvPlayer
+	var ch tvChannel
+	idx := -1
+	if c := tm.now; c != nil && tm.player != nil && c.I >= 0 && c.I < len(tm.list) {
+		restart, ch, idx = tm.player, tm.list[c.I], c.I
+	}
+	tm.mu.Unlock()
+	if restart != nil {
+		restart.play(ch, idx)
+	}
+	tm.logos.reset()
+	log.Printf("tv: untrusted certificate allowed for the playlist's provider: %v (by %s)", v, by)
+	tm.changed()
+	return nil
+}
+
+// untrustedHost: whether host's certificate isn't checked (the owner allowed it for the playlist's provider).
+func (tm *tvManager) untrustedHost(host string) bool {
+	if tm == nil || host == "" {
+		return false
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.src != nil && tm.src.Insecure && tm.trust[strings.ToLower(host)]
+}
+
+// tvHosts: the provider's hosts, for an untrusted certificate the owner allowed: the playlist's own and its
+// channels' (nil when it isn't allowed).
+func tvHosts(src *tvSource, chs []tvChannel) map[string]bool {
+	if src == nil || !src.Insecure {
+		return nil
+	}
+	out := map[string]bool{}
+	add := func(raw string) {
+		if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+			out[strings.ToLower(u.Hostname())] = true
+		}
+	}
+	if src.Kind == "url" {
+		add(src.URL)
+	}
+	for _, c := range chs {
+		add(c.URL)
+	}
+	return out
 }
 
 // saveNow keeps the channel chosen; tm.mu held.
@@ -633,13 +720,23 @@ func (tm *tvManager) proxyURL() (string, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	if tm.proxy == nil {
-		p, err := startTVProxy(tm.s.cfg.tvLAN)
+		p, err := startTVProxyTrusting(tm.s.cfg.tvLAN, tm.untrustedHost)
 		if err != nil {
 			return "", err
 		}
 		tm.proxy = p
 	}
 	return tm.proxy.env, nil
+}
+
+// proxyUntrusted: when a certificate last didn't check out on the proxy's marked way (unix ns; 0: never).
+func (tm *tvManager) proxyUntrusted() int64 {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.proxy == nil {
+		return 0
+	}
+	return tm.proxy.untrustedAt.Load()
 }
 
 // proxyBlocked: when the proxy last refused an address (unix ns; 0: never).
@@ -686,7 +783,7 @@ func (h *hub) tvOp(ss *session, m map[string]any) {
 	open := tm.open
 	tm.mu.Unlock()
 	switch op {
-	case "playlist", "refresh", "clear", "open":
+	case "playlist", "refresh", "clear", "open", "insecure":
 		if !manage {
 			refuse("role", "")
 			return
@@ -708,6 +805,8 @@ func (h *hub) tvOp(ss *session, m map[string]any) {
 				why = "none"
 			case errors.Is(err, errTVBusy):
 				why = "busy"
+			case errors.Is(err, errTVUntrusted):
+				why = "cert"
 			}
 			refuse(why, err.Error())
 			return
@@ -721,7 +820,13 @@ func (h *hub) tvOp(ss *session, m map[string]any) {
 			refuse("bad", "no playlist address")
 			return
 		}
-		go func() { n, cut, err := tm.setURL(u, ss.uid); done(n, cut, err) }()
+		insecure, given := boolOf(m, "insecure")
+		if !given {
+			tm.mu.Lock()
+			insecure = tm.src != nil && tm.src.Insecure
+			tm.mu.Unlock()
+		}
+		go func() { n, cut, err := tm.setURL(u, ss.uid, insecure); done(n, cut, err) }()
 	case "refresh":
 		go func() { n, cut, err := tm.refresh(ss.uid); done(n, cut, err) }()
 	case "clear":
@@ -730,6 +835,11 @@ func (h *hub) tvOp(ss *session, m map[string]any) {
 	case "open":
 		v, _ := boolOf(m, "v")
 		tm.setOpen(v, ss.uid)
+	case "insecure":
+		v, _ := boolOf(m, "v")
+		if err := tm.setInsecure(v, ss.uid); err != nil {
+			done(0, false, err)
+		}
 	case "play":
 		i, ok := m["i"].(float64)
 		if !ok || i < 0 || i != float64(int(i)) {
@@ -783,8 +893,11 @@ func (s *server) handleTVChannels(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		code := http.StatusBadGateway
 		why := "fetch"
-		if errors.Is(err, errNoPlaylist) {
+		switch {
+		case errors.Is(err, errNoPlaylist):
 			code, why = http.StatusNotFound, "none"
+		case errors.Is(err, errTVUntrusted):
+			why = "cert"
 		}
 		tvJSON(w, code, map[string]string{"error": err.Error(), "why": why})
 		return
@@ -895,8 +1008,9 @@ const (
 	tvLogoBytes   = 48 << 20
 )
 
-func newTVLogos(lan bool) *tvLogos {
-	return &tvLogos{m: map[string]*tvLogo{}, sem: make(chan struct{}, 4), client: tvClient(lan, 10*time.Second)}
+// newTVLogos: [untrusted] (nil: none) says which hosts' certificates aren't checked.
+func newTVLogos(lan bool, untrusted func(host string) bool) *tvLogos {
+	return &tvLogos{m: map[string]*tvLogo{}, sem: make(chan struct{}, 4), client: tvClient(lan, 10*time.Second, untrusted)}
 }
 
 func (l *tvLogos) reset() {

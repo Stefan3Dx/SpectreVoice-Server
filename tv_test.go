@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -84,7 +85,7 @@ func TestTVProtocol(t *testing.T) {
 	const secret = "http://user:hunter2@iptv.example/get.php?type=m3u"
 	adminKey := newKey(t)
 	s, hs := newTestServer(t, func(c *config) { c.tv = true; c.owners = uidOfKey(adminKey); c.ffmpeg = "ffmpeg-not-here" })
-	s.tv.fetch = func(u string) ([]tvChannel, bool, error) {
+	s.tv.fetch = func(u string, _ bool) ([]tvChannel, bool, error) {
 		if u != secret {
 			return nil, false, fmt.Errorf("unknown list")
 		}
@@ -236,7 +237,7 @@ func TestTVEndToEnd(t *testing.T) {
 	var hits atomic.Int32
 	// HTTPS, through the proxy's CONNECT; but ffmpeg 8 and later check certificates, and the hls demuxer doesn't
 	// pass a -ca_file on to the segments, so with such an ffmpeg the test's self-signed provider can't be trusted:
-	// then plain HTTP (the proxy's forwarding way)
+	// then plain HTTP (the proxy's forwarding way). A self-signed provider the owner allows: TestTVUntrustedCertificate
 	newProvider := httptest.NewTLSServer
 	if out, _ := exec.Command(ff, "-hide_banner", "-h", "protocol=tls").CombinedOutput(); tvFFmpegVerifiesTLS(string(out)) {
 		t.Log("this ffmpeg checks certificates: the test provider is plain HTTP")
@@ -527,4 +528,130 @@ func tvFFmpegVerifiesTLS(help string) bool {
 		}
 	}
 	return false
+}
+
+// A provider with a self-signed certificate (HTTPS, its playlist naming its variant by an absolute https address):
+// by default the playlist is refused and, with an ffmpeg that checks certificates (8 and later), the channel too,
+// both saying what to do; with "allow untrusted certificate" on for the playlist, the list is read and the channel
+// plays (ffmpeg reaching the provider through the proxy's marked way).
+func TestTVUntrustedCertificate(t *testing.T) {
+	ff, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("no ffmpeg")
+	}
+	tvLoopbackOK = true
+	defer func() { tvLoopbackOK = false }()
+	oldGap := tvPlayGap
+	tvPlayGap = 0
+	defer func() { tvPlayGap = oldGap }()
+	media := t.TempDir()
+	gen := exec.Command(ff, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+		"-t", "30", "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-c:a", "aac", "-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod", filepath.Join(media, "index.m3u8"))
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("making the test channel: %v %s", err, out)
+	}
+	var segments atomic.Int32
+	var provider *httptest.Server
+	provider = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/get.php":
+			fmt.Fprintf(w, "#EXTM3U\n#EXTINF:-1 group-title=\"Test\",Self-signed\n%s/s3cret/master.m3u8\n", provider.URL)
+		case r.URL.Path == "/s3cret/master.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			fmt.Fprintf(w, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\n%s/s3cret/index.m3u8\n", provider.URL)
+		case strings.HasPrefix(r.URL.Path, "/s3cret/"):
+			if strings.HasSuffix(r.URL.Path, ".ts") {
+				segments.Add(1)
+			}
+			http.StripPrefix("/s3cret", http.FileServer(http.Dir(media))).ServeHTTP(w, r)
+		default:
+			http.Error(w, "no", http.StatusForbidden)
+		}
+	}))
+	defer provider.Close()
+	provider.Config.ErrorLog = log.New(io.Discard, "", 0) // the refused handshakes
+
+	adminKey := newKey(t)
+	s, hs := newTestServer(t, func(c *config) {
+		c.tv = true
+		c.owners = uidOfKey(adminKey)
+		c.ffmpeg = ff
+		c.tvVideo = "x264"
+		c.tvKbps = 1500
+		c.tvHeight = 360
+	})
+	tm := s.tv
+	t.Cleanup(tm.stopAll)
+	admin, _ := dialV(t, hs, adminKey, "Boss", "")
+	user, _ := dialV(t, hs, newKey(t), "User", "")
+	list := provider.URL + "/get.php?username=u&password=s3cret"
+
+	// By default: refused, saying what to do
+	admin.send(map[string]any{"t": "tv", "op": "playlist", "url": list})
+	m := admin.wait(isTVErr)
+	if m["why"] != "cert" || !strings.Contains(fmt.Sprint(m["message"]), "allow untrusted certificate") || strings.Contains(fmt.Sprint(m["message"]), "s3cret") {
+		t.Fatalf("self-signed playlist by default: %v", m)
+	}
+	// Not without a playlist, and not the user's to allow
+	admin.send(map[string]any{"t": "tv", "op": "insecure", "v": true})
+	if m := admin.wait(isTVErr); m["why"] != "none" {
+		t.Fatalf("insecure without a playlist: %v", m)
+	}
+	user.send(map[string]any{"t": "tv", "op": "insecure", "v": true})
+	if m := user.wait(isTVErr); m["why"] != "role" {
+		t.Fatalf("user insecure: %v", m)
+	}
+	// Allowed for this provider: read
+	admin.send(map[string]any{"t": "tv", "op": "playlist", "url": list, "insecure": true})
+	if m := admin.wait(isT("done")); m["n"] != 1.0 {
+		t.Fatalf("allowed playlist: %v", m)
+	}
+	admin.wait(func(m map[string]any) bool { return isTV(m) && tvState(m)["insecure"] == true })
+	if v, _ := s.store.setting("tv_source"); !strings.Contains(v, `"insecure":true`) {
+		t.Fatalf("not kept: %s", v)
+	}
+	if st := tm.state(false); st["insecure"] != nil {
+		t.Fatalf("those without the permission are told: %v", st)
+	}
+	live := func(m map[string]any) bool {
+		if isTVErr(m) {
+			t.Fatalf("play: %v", m)
+		}
+		n, _ := tvState(m)["now"].(map[string]any)
+		return isTV(m) && n != nil && n["live"] == true
+	}
+	out, _ := exec.Command(ff, "-hide_banner", "-h", "protocol=tls").CombinedOutput()
+	if tvFFmpegVerifiesTLS(string(out)) {
+		// Turned off again: the list stays read, but ffmpeg (which checks certificates) can't play the channel,
+		// and the TV says why
+		admin.send(map[string]any{"t": "tv", "op": "insecure", "v": false})
+		admin.wait(func(m map[string]any) bool { return isTV(m) && tvState(m)["insecure"] == false })
+		admin.send(map[string]any{"t": "tv", "op": "play", "i": 0})
+		m := admin.wait(func(m map[string]any) bool {
+			n, _ := tvState(m)["now"].(map[string]any)
+			return isTV(m) && n != nil && n["cert"] == true
+		})
+		now := tvState(m)["now"].(map[string]any)
+		if !strings.Contains(fmt.Sprint(now["err"]), "allow untrusted certificate") {
+			t.Fatalf("the channel's error: %v", now)
+		}
+		t.Logf("not allowed: %v", now["err"])
+		// Allowed again: the channel starts over, through the proxy's marked way
+		admin.send(map[string]any{"t": "tv", "op": "insecure", "v": true})
+	} else {
+		t.Log("this ffmpeg doesn't check certificates: only the allowed way is tried")
+		admin.send(map[string]any{"t": "tv", "op": "play", "i": 0})
+	}
+	started := time.Now()
+	admin.wait(live)
+	t.Logf("live after %v", time.Since(started))
+	if segments.Load() == 0 {
+		t.Fatal("no segment came from the provider")
+	}
+	admin.send(map[string]any{"t": "tv", "op": "stop"})
+	admin.wait(func(m map[string]any) bool { return isTV(m) && tvState(m)["now"] == nil })
+	logs, _ := json.Marshal(s.logs.last())
+	if bytes.Contains(logs, []byte("s3cret")) {
+		t.Fatalf("the log holds the subscription's password: %s", logs)
+	}
 }

@@ -1,7 +1,8 @@
 package main
 
 // The Lei shop, done by the server: a purchase takes the price from the buyer's purse and gives the item in one
-// step, so an app can't hand itself items without paying (or pay with Lei it doesn't have).
+// step, so an app can't hand itself items without paying (or pay with Lei it doesn't have). Purses are the server's
+// own (lei.go): this is one of the few ways one changes.
 //
 //	<- {"t":"buy","item":"c_red"}
 //	-> two puts to everyone: lei/<uid> (the new balance) and profiles/<uid> (own.<item> = now ms, eq.<SLOT> = item)
@@ -84,11 +85,7 @@ func (b *bus) buy(sp *busSpace, c *busClient, itemID string) {
 		refuse("owned", "already owned")
 		return
 	}
-	purse := decodeRecord(purses[c.uid])
-	balance, has := purse["v"].(float64)
-	if !has {
-		balance = leiStart
-	}
+	balance, purse := sp.purseOf(c.uid)
 	if balance <= 0 {
 		balance = leiRefill
 	}

@@ -8,11 +8,14 @@
 //   on('bus:open')                  connected, what's kept is in
 //   on('bus:kept', {kind, id})      something kept changed (put/del; id '' after the whole state)
 //
-// Never trusted: what others send is data, checked by whoever uses it.
+// Never trusted: what others send is data, checked by whoever uses it. The server's own messages (the state, what's
+// kept, refusals, a game it deals: "housed", a gift: "lei-got") never come relayed from another page (the server
+// doesn't pass them on; one that claims to be relayed is dropped here too).
 
 import { S, on, emit, wsUrl } from './core.js';
 
 export const bus = { ws: null, online: false, kept: {}, ops: [], admin: false, space: 'main', retry: 0, timer: 0 };
+const SERVER_ONLY = new Set(['state', 'put', 'del', 'error', 'challenge', 'authed', 'add', 'incr', 'reported', 'wiped', 'housed', 'lei-got']);
 
 export function busSend(m) {
   if (bus.ws && bus.ws.readyState === 1 && bus.online) { bus.ws.send(JSON.stringify(m)); return true; }
@@ -31,6 +34,7 @@ function open() {
     let m;
     try { m = JSON.parse(ev.data); } catch { return; }
     if (!m || typeof m.t !== 'string') return;
+    if (m.relay === true && SERVER_ONLY.has(m.t)) return;
     switch (m.t) {
       case 'state':
         bus.kept = m.state && typeof m.state === 'object' ? m.state : {};

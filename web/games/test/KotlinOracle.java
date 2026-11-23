@@ -9,6 +9,11 @@ import java.util.*;
 //	CP=<apps>/desktop/build/classes/kotlin/main:<kotlin-stdlib.jar>
 //	javac -cp $CP -d /tmp/o KotlinOracle.java && java -Dstdout.encoding=UTF-8 -cp $CP:/tmp/o KotlinOracle > /tmp/k.json
 //	python3 pack.py /tmp/k.json kotlin-games.json && gzip -9 -n -f kotlin-games.json
+//
+// And the fruit slots, which only the server plays (house_test.go replays them through its Go port):
+//
+//	java -Dstdout.encoding=UTF-8 -cp $CP:/tmp/o KotlinOracle fruits > /tmp/f.json
+//	python3 pack.py /tmp/f.json kotlin-fruits.json && gzip -9 -n -f kotlin-fruits.json
 public class KotlinOracle {
     static Random rnd = new Random(42);
 
@@ -101,7 +106,25 @@ public class KotlinOracle {
     static final String[] PROMOS = {"q", "r", "b", "n", "x", "Q"};
     static final String[] RTYPES = {"n", "red", "black", "even", "odd", "low", "high", "dozen", "column", "nope"};
 
+    static final int[] LINE_BETS = {1, 2, 5, 10, 20, 50, 100};
+
+    // Fruits (which the web doesn't play; the server deals it, house.go): kept apart, in kotlin-fruits.json.gz
+    static Map<String, Object> fruits() {
+        List<Object> games = new ArrayList<>();
+        for (int g = 0; g < 5; g++) games.add(play(GameHub.Kind.FRUITS, 1, new int[]{g < 3 ? 5000 : 40}, 300, (k, st, sec, n) -> {
+            int r = rnd.nextInt(20);
+            if (r == 0) return mv("op", new String[]{"huh", "collect", "gamble", "spin"}[rnd.nextInt(4)]);
+            if (r == 1) return mv("op", "spin", "v", rnd.nextInt(130) - 5);
+            boolean open = st.get("g") instanceof Number && ((Number) st.get("g")).intValue() > 0;
+            if (open && r < 12) return r < 10 ? mv("op", "gamble", "red", rnd.nextBoolean()) : mv("op", "collect");
+            return mv("op", "spin", "v", LINE_BETS[rnd.nextInt(LINE_BETS.length)]);
+        }));
+        return mv("games", games, "forfeits", new ArrayList<>());
+    }
+
     public static void main(String[] a) {
+        // "fruits": only the fruit slots (made again the same way, packed into kotlin-fruits.json.gz)
+        if (a.length > 0 && a[0].equals("fruits")) { System.out.println(Json.INSTANCE.write(fruits())); return; }
         List<Object> games = new ArrayList<>();
         for (int g = 0; g < 4; g++) games.add(play(GameHub.Kind.TICTACTOE, 2, new int[]{1000, 1000}, 40, (k, st, sec, n) -> mv("cell", rnd.nextInt(11) - 1)));
         for (int g = 0; g < 4; g++) games.add(play(GameHub.Kind.CONNECT4, 2, new int[]{1000, 1000}, 120, (k, st, sec, n) -> mv("cell", rnd.nextInt(9) - 1)));

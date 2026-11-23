@@ -8,7 +8,7 @@ import { $, S, el, send, on, emit, toast, api, may, openDialog } from './core.js
 import { t } from './i18n.js';
 import { watchRoom, watching, renameWatch, rewatch, stopWatching, TV_ROOM } from './streams.js';
 
-const TV = { list: null, rev: -1, loading: false, err: '', q: '', group: '', shown: 150, dlg: null };
+const TV = { list: null, rev: -1, loading: false, err: '', q: '', group: '', shown: 150, dlg: null, insecure: false };
 
 const canChange = () => !!S.tv && (may('tv') || S.tv.open);
 const logo = (i) => api('/tv/logo', { i, r: TV.rev });
@@ -23,7 +23,7 @@ async function loadList(force) {
     const r = await fetch(api('/tv/channels'));
     const j = await r.json().catch(() => ({}));
     if (r.ok) { TV.list = j.items || []; TV.rev = j.rev ?? st.rev; TV.err = ''; }
-    else { TV.list = []; TV.err = j.why === 'none' ? t('tvNoList') : (j.error || ('HTTP ' + r.status)); }
+    else { TV.list = []; TV.err = j.why === 'none' ? t('tvNoList') : j.why === 'cert' ? certText() : (j.error || ('HTTP ' + r.status)); }
   } catch (e) {
     TV.err = String(e?.message || e);
   }
@@ -90,6 +90,8 @@ function renderDialog() {
       now ? el('div', { class: 'muted small', text: t('tvBy', { name: now.byName || '?', time: new Date(now.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }) + (now.g ? ' · ' + now.g : '') }) : null),
     now ? el('button', { type: 'button', class: 'primary small', text: watching(TV_ROOM) ? t('stopWatching') : t('watch'), onclick: () => { if (watching(TV_ROOM)) stopWatching(TV_ROOM); else { watchTv(); $('dlg').close(); emit('app:showPane', 'stage'); } } }) : null,
     now && canChange() ? el('button', { type: 'button', class: 'small', text: t('tvOff'), onclick: () => send({ t: 'tv', op: 'stop' }) }) : null));
+  // The channel failed on the provider's certificate: said plainly, with what to do for those who can
+  if (now?.cert && !now.live) body.append(el('p', { class: 'error small', id: 'tvCertErr', text: certText() }));
   if (!st.on) { body.append(el('p', { class: 'muted', text: t('tvDisabled') })); return; }
   if (!canChange() && st.set) body.append(el('p', { class: 'muted small', text: t('tvOnlySome') }));
 
@@ -125,18 +127,29 @@ function renderDialog() {
     file.onchange = () => { if (file.files[0]) uploadPlaylist(file.files[0]); file.value = ''; };
     const open = el('input', { type: 'checkbox', id: 'tvOpenAll', checked: !!st.open });
     open.onchange = () => send({ t: 'tv', op: 'open', v: open.checked });
+    // A provider with a self-signed or expired certificate: allowed by the owner, for this playlist only. Before a
+    // playlist is set, the box goes with the address sent
+    const insecure = el('input', { type: 'checkbox', id: 'tvInsecure', checked: st.set ? !!st.insecure : TV.insecure });
+    insecure.onchange = () => { TV.insecure = insecure.checked; if (st.set) send({ t: 'tv', op: 'insecure', v: insecure.checked }); };
     body.append(el('details', { class: 'tvadmin', open: !st.set },
       el('summary', { text: t('tvPlaylist') }),
       el('p', { class: 'muted small', text: st.set ? t('tvListFrom', { n: st.n || 0, from: st.kind === 'file' ? t('tvFromFile') : (st.host || '?') }) : t('tvNoList') }),
-      el('form', { class: 'row', onsubmit: (ev) => { ev.preventDefault(); const u = urlIn.value.trim(); if (u) { send({ t: 'tv', op: 'playlist', url: u }); toast(t('tvReading')); urlIn.value = ''; } } },
+      el('form', { class: 'row', onsubmit: (ev) => { ev.preventDefault(); const u = urlIn.value.trim(); if (u) { send({ t: 'tv', op: 'playlist', url: u, insecure: insecure.checked }); toast(t('tvReading')); urlIn.value = ''; } } },
         urlIn, el('button', { type: 'submit', class: 'primary small', text: t('tvSet') })),
       el('div', { class: 'row wrap' },
         st.set && st.kind === 'url' ? el('button', { type: 'button', class: 'small', id: 'tvRefresh', text: t('tvRefresh'), onclick: () => { send({ t: 'tv', op: 'refresh' }); toast(t('tvReading')); } }) : null,
         el('button', { type: 'button', class: 'small', text: t('tvUpload'), onclick: () => file.click() }), file,
         st.set ? el('button', { type: 'button', class: 'small danger', text: t('tvClear'), onclick: () => send({ t: 'tv', op: 'clear' }) }) : null),
-      el('label', { class: 'chk' }, open, el('span', { text: t('tvOpenAll') }))));
+      el('label', { class: 'chk' }, open, el('span', { text: t('tvOpenAll') })),
+      el('label', { class: 'chk' }, insecure, el('span', { text: t('tvInsecure') })),
+      el('p', { class: 'muted small', text: t('tvInsecureHint') })));
   }
   if (keepFocus) { const s = $('tvSearch'); if (s) { s.focus(); s.setSelectionRange(caret, caret); } }
+}
+
+// certText: the provider's certificate isn't trusted, and (for those who set the playlist) what to do about it.
+function certText() {
+  return t('tvCert') + (may('tv') ? ' ' + t('tvCertFix') : '');
 }
 
 async function uploadPlaylist(f) {
@@ -175,6 +188,7 @@ on('done', (m) => {
 on('error', (m) => {
   if (m.op !== 'tv') return;
   m.handled = true;
+  if (m.why === 'cert') { toast(certText(), true); return; }
   const k = { role: 'tvNotAllowed', off: 'tvDisabled', ffmpeg: 'tvNoFfmpeg', none: 'tvNoList', busy: 'tvBusy', rate: 'errRate' }[m.why];
   toast(k ? t(k) : t('tvError', { why: m.message || m.why }), true);
 });

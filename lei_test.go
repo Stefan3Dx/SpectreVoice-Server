@@ -4,13 +4,14 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 func TestOwnerGivesLei(t *testing.T) {
 	ownerKey, own := ownerKeyCfg(t)
-	s, hs := newTestServer(t, func(c *config) { own(c); c.leiMax = 5000 })
+	s, hs := newTestServer(t, func(c *config) { own(c); c.leiMax = 5000; c.leiLegacy = false }) // the old apps' add refused (SV_LEI_LEGACY=0)
 	ana, _ := dialV(t, hs, ownerKey, "Ana", "")
 	bob, _ := dialV(t, hs, newKey(t), "Bob", "")
 	cara, _ := dialV(t, hs, newKey(t), "Cara", "")
@@ -71,16 +72,27 @@ func TestOwnerGivesLei(t *testing.T) {
 	if d := ana.wait(isDone("lei-give")); d["balance"].(float64) != 0 {
 		t.Fatal(d)
 	}
-	// Games still move purses through the bus, by their own bounded add
-	_ = bus.WriteJSON(map[string]any{"t": "add", "kind": "lei", "id": bob.uid, "d": 300.0, "start": 1000.0})
-	for {
-		var m map[string]any
-		if err := bus.ReadJSON(&m); err != nil {
-			t.Fatal(err)
+	// An app's own add (an app from before the pots) is refused, and Bob is told once to update
+	for k := 0; k < 2; k++ {
+		_ = bus.WriteJSON(map[string]any{"t": "add", "kind": "lei", "id": bob.uid, "d": 300.0, "start": 1000.0, "ref": "x"})
+		for {
+			var m map[string]any
+			if err := bus.ReadJSON(&m); err != nil {
+				t.Fatal(err)
+			}
+			if m["t"] == "put" && m["kind"] == "lei" && m["from"] == bob.uid {
+				t.Fatal("an app added to a purse", m)
+			}
+			if m["t"] == "error" && m["ref"] == "x" {
+				if m["why"] != "old" {
+					t.Fatal(m)
+				}
+				break
+			}
 		}
-		if m["t"] == "put" && m["kind"] == "lei" && m["v"].(map[string]any)["v"].(float64) == 300 {
-			break
-		}
+	}
+	if a := bob.wait(isT("announce")); a["text"] != leiOldNotice {
+		t.Fatal(a)
 	}
 
 	// The log, for admins
@@ -142,5 +154,87 @@ func TestOwnerGivesLei(t *testing.T) {
 	cara.send(map[string]any{"t": "role-del", "id": bid})
 	if e := cara.wait(isErrOp("role-del")); e["why"] != "role" {
 		t.Fatal(e)
+	}
+}
+
+// The day's bonus is the server's: once a day, a day within the server's.
+func TestLeiDaily(t *testing.T) {
+	bt := newBusTest(t, nil, nil)
+	a := bt.dial("daily", "A")
+	now := time.Now().UTC()
+	day := func(d int) string { return now.AddDate(0, 0, d).Format("2006-01-02") }
+	daily := func(d string) []map[string]any {
+		return a.do(map[string]any{"t": "lei", "op": "daily", "day": d, "name": "  Ana  B ", "ref": "d1"})
+	}
+	mustTake(t, daily(day(0)))
+	bt.s.bus.mu.Lock()
+	v, rec := bt.s.bus.spaces["daily"].purseOf("A")
+	bt.s.bus.mu.Unlock()
+	if v != 1100 || rec["d"] != day(0) || rec["n"] != "Ana B" {
+		t.Fatal(v, rec)
+	}
+	if e := mustRefuse(t, daily(day(0)), "lei", "once"); e["ref"] != "d1" {
+		t.Fatal(e)
+	}
+	mustRefuse(t, daily(day(-1)), "lei", "once")
+	mustRefuse(t, daily(day(2)), "lei", "day")
+	mustRefuse(t, daily(day(-3)), "lei", "day")
+	mustRefuse(t, daily("tomorrow"), "lei", "day")
+	// The apps' own day may be a day ahead (their midnight came first)
+	mustTake(t, daily(day(1)))
+	if bt.purse("daily", "A") != 1200 {
+		t.Fatal(bt.purse("daily", "A"))
+	}
+	mustRefuse(t, daily(day(1)), "lei", "once")
+}
+
+// A gift: one's own Lei, all or nothing, to someone else on the server; the recipient is told.
+func TestLeiSend(t *testing.T) {
+	old := leiSendRate
+	leiSendRate = 4
+	defer func() { leiSendRate = old }()
+	bt := newBusTest(t, nil, nil)
+	ua, ub := newUID(t), newUID(t)
+	a := bt.dial(mainSpace, ua)
+	b := bt.dial(mainSpace, ub)
+	send := func(to string, n any) []map[string]any {
+		return a.do(map[string]any{"t": "lei", "op": "send", "to": to, "n": n, "ref": "g1"})
+	}
+	mustTake(t, send(ub, 300.0))
+	if bt.purse(mainSpace, ua) != 700 || bt.purse(mainSpace, ub) != 1300 {
+		t.Fatal(bt.purse(mainSpace, ua), bt.purse(mainSpace, ub))
+	}
+	got := false
+	for _, m := range b.sync() {
+		if m["t"] == "lei-got" {
+			if m["from"] != ua || m["n"] != 300.0 {
+				t.Fatal(m)
+			}
+			got = true
+		}
+	}
+	if !got {
+		t.Fatal("not told")
+	}
+	for _, n := range []any{0.0, 1.5, 100001.0, "5", -10.0} {
+		mustRefuse(t, send(ub, n), "lei", "bad")
+	}
+	mustRefuse(t, send(ua, 10.0), "lei", "member")
+	mustRefuse(t, send(newUID(t), 10.0), "lei", "member") // not on this server
+	if e := mustRefuse(t, send(ub, 701.0), "lei", "funds"); e["ref"] != "g1" {
+		t.Fatal(e)
+	}
+	mustTake(t, send(ub, 700.0))
+	if bt.purse(mainSpace, ua) != 0 || bt.purse(mainSpace, ub) != 2000 {
+		t.Fatal(bt.purse(mainSpace, ua), bt.purse(mainSpace, ub))
+	}
+	// Ten a minute (four here)
+	mustRefuse(t, send(ub, 1.0), "lei", "funds")
+	mustRefuse(t, send(ub, 1.0), "lei", "rate")
+	// A gift isn't relayed as a message to the others either
+	for _, m := range b.sync() {
+		if m["t"] == "lei" {
+			t.Fatal("relayed", m)
+		}
 	}
 }

@@ -184,10 +184,16 @@ The server's owner, and whoever the owner gives *Give Lei* (an administrator doe
 takes Lei on anyone's purse from the app, with a reason, at most `SV_LEI_MAX` (100000) at a time. The person is told;
 every grant is kept (who, to whom, how much, why) and shown in the admin panel.
 
-The games' Lei move through the bus (`add` on kind `lei`): a delta of at most 1,000,000, never below 0; with
-`"strict": true` an `add` that would take a purse below 0 is refused (`why: "funds"`) instead of stopped at 0, so a
-transfer is all or nothing. What one person's apps give (to any purse) or take from others' purses is at most
-1,000,000 Lei a minute (`why: "rate"` past it); the server's admins and managers aren't limited.
+Only the server changes a purse. The games' Lei are held by the server in a pot per table or tournament
+(`pots.go`): a player's own app allows the table's keeper to take up to so much of their Lei into the pot, and the
+keeper pays out only what the pot holds, to those at the table; what's left goes back when the table closes, or two
+minutes after its keeper went off the server. Slots, Fruits, Roulette and Blackjack are dealt by the server itself
+(`house.go`). The daily bonus and gifts between people are the server's too (`lei.go`: 1 to 100,000 Lei, ten a
+minute). Apps from before this (before 0.10.1) still add to purses themselves: `SV_LEI_LEGACY` (`-lei-legacy`) is
+on by default so they keep working while they're updated, bounded (a delta of at most 1,000,000, never below 0, at
+most 1,000,000 Lei a minute per person); new apps use the pots, the house and the server's Lei operations whatever
+it is. Once every member runs 0.10.1 or newer, set `SV_LEI_LEGACY=0`: then the server is the only authority over
+Lei, and an old app's add is refused (its person is told once to update).
 
 ## Free, with donations
 

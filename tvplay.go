@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -250,8 +251,9 @@ func (p *tvPlayer) ffmpeg(parent context.Context, ch tvChannel, noAudio, noVideo
 	}
 	mode, vaProf := p.tm.resolveMode()
 	cfg := p.tm.s.cfg
+	// A provider whose untrusted certificate the owner allowed: its https goes the proxy's marked way (tvnet.go)
 	o := tvOpts{
-		mode: mode, url: ch.URL, agent: ch.Agent, ref: ch.Ref,
+		mode: mode, url: tvMarkURL(ch.URL, p.tm.untrustedHost), agent: ch.Agent, ref: ch.Ref,
 		vport: p.vconn.LocalAddr().(*net.UDPAddr).Port, aport: p.aconn.LocalAddr().(*net.UDPAddr).Port,
 		noAudio: noAudio, noVideo: noVideo, vaDev: p.tm.vaDev, vaProf: vaProf, kbps: cfg.tvKbps, height: cfg.tvHeight,
 	}
@@ -297,6 +299,7 @@ func (p *tvPlayer) ffmpeg(parent context.Context, ch tvChannel, noAudio, noVideo
 		}
 	}()
 	var last string
+	cert := false // ffmpeg said a certificate didn't check out
 	lim := &logLimit{every: 30 * time.Second, n: 12}
 	sc := bufio.NewScanner(stderr)
 	sc.Buffer(make([]byte, 16<<10), 64<<10)
@@ -316,6 +319,9 @@ func (p *tvPlayer) ffmpeg(parent context.Context, ch tvChannel, noAudio, noVideo
 		if looksLikeError(line) {
 			last = line
 		}
+		if looksLikeCertError(line) {
+			cert = true
+		}
 		if lim.ok() {
 			log.Printf("tv: [%s] %s", p.rm.name, line)
 		}
@@ -324,6 +330,13 @@ func (p *tvPlayer) ffmpeg(parent context.Context, ch tvChannel, noAudio, noVideo
 	if parent.Err() == nil && p.tm.proxyBlocked() >= started.UnixNano() {
 		return errTVBlocked.Error(), missing
 	}
+	if parent.Err() == nil && p.tm.proxyUntrusted() >= started.UnixNano() {
+		return p.tm.untrustedWhy(), missing
+	}
+	// Nothing came: a certificate ffmpeg didn't trust (ffmpeg 8 and later check them) is said as such
+	if parent.Err() == nil && p.lastPkt.Load() < started.UnixNano() && (cert || p.certFails(parent, ch.URL)) {
+		return p.tm.untrustedWhy(), missing
+	}
 	if s, ok := stalled.Load().(string); ok && parent.Err() == nil {
 		return s, missing
 	}
@@ -331,6 +344,35 @@ func (p *tvPlayer) ffmpeg(parent context.Context, ch tvChannel, noAudio, noVideo
 		last = "ffmpeg: " + err.Error()
 	}
 	return trimWhy(last), missing
+}
+
+// certFails: whether the channel's own https host has a certificate that doesn't check out (asked when ffmpeg got
+// nothing: its own message for it is often a bare I/O error). Not asked of a host whose certificate the owner
+// allowed (that goes the proxy's marked way, which says so itself).
+func (p *tvPlayer) certFails(ctx context.Context, raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" || p.tm.untrustedHost(u.Hostname()) {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return errors.Is(tvProbeTLS(ctx, net.JoinHostPort(u.Hostname(), port), p.tm.s.cfg.tvLAN), errTVUntrusted)
+}
+
+// untrustedWhy: a certificate didn't check out: what to do about it (allowing it, or, already allowed, that it was
+// another host's: a CDN the playlist doesn't name, which can't be allowed).
+func (tm *tvManager) untrustedWhy() string {
+	tm.mu.Lock()
+	allowed := tm.src != nil && tm.src.Insecure
+	tm.mu.Unlock()
+	if allowed {
+		return "certificate not trusted on a host the playlist doesn't name (its CDN's); only the playlist's own hosts can be allowed"
+	}
+	return errTVUntrusted.Error()
 }
 
 // read takes ffmpeg's RTP packets from one port into a track.
@@ -532,6 +574,19 @@ func redactURLs(s string) string {
 func looksLikeError(line string) bool {
 	l := strings.ToLower(line)
 	for _, w := range []string{"error", "failed", "invalid", "forbidden", "not found", "refused", "timed out", "unauthorized", "no such", "could not", "unable", "403", "404", "401"} {
+		if strings.Contains(l, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeCertError: an ffmpeg line about a certificate that didn't check out (OpenSSL, GnuTLS, Schannel,
+// mbedTLS put it in their own words).
+func looksLikeCertError(line string) bool {
+	l := strings.ToLower(line)
+	for _, w := range []string{"certificate verify failed", "certificate is not trusted", "certificate has expired", "self-signed certificate",
+		"self signed certificate", "unknown ca", "not trusted", "x509", "certificate chain", "issuer is not known"} {
 		if strings.Contains(l, w) {
 			return true
 		}
