@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -45,13 +46,14 @@ func candidatesOf(t *testing.T, s *server) string {
 // Behind a router with one forwarded UDP port: the public address must be offered on that very port
 // (a mapped srflx candidate used to land on a random port no router forwards: the outside never connected).
 func TestPublicIPOnSingleUDPPort(t *testing.T) {
-	s, _ := newTestServer(t, func(c *config) { c.udpPort = 41755; c.publicIP = "203.0.113.7" })
+	port := freeUDPPort(t)
+	s, _ := newTestServer(t, func(c *config) { c.udpPort = port; c.publicIP = "203.0.113.7" })
 	sdp := candidatesOf(t, s)
-	if !strings.Contains(sdp, "203.0.113.7 41755 typ host") {
+	if !strings.Contains(sdp, fmt.Sprintf("203.0.113.7 %d typ host", port)) {
 		t.Fatalf("public address not offered on the voice port:\n%s", sdp)
 	}
 	for _, l := range strings.Split(sdp, "\n") {
-		if strings.Contains(l, "a=candidate") && strings.Contains(l, "udp") && !strings.Contains(l, " 41755 ") {
+		if strings.Contains(l, "a=candidate") && strings.Contains(l, "udp") && !strings.Contains(l, fmt.Sprintf(" %d ", port)) {
 			t.Fatalf("UDP candidate off the voice port: %s", l)
 		}
 	}
@@ -76,8 +78,9 @@ func TestPublicIPFollowsDDNS(t *testing.T) {
 		return []net.IP{net.ParseIP(addr)}, nil
 	}
 	defer func() { lookupIP = net.LookupIP }()
-	s, _ := newTestServer(t, func(c *config) { c.udpPort = 41756; c.publicIP = "home.example.net" })
-	if sdp := candidatesOf(t, s); !strings.Contains(sdp, "203.0.113.7 41756 typ host") {
+	port := freeUDPPort(t)
+	s, _ := newTestServer(t, func(c *config) { c.udpPort = port; c.publicIP = "home.example.net" })
+	if sdp := candidatesOf(t, s); !strings.Contains(sdp, fmt.Sprintf("203.0.113.7 %d typ host", port)) {
 		t.Fatalf("first address not offered:\n%s", sdp)
 	}
 	if s.refreshPublicIP() {
@@ -90,7 +93,7 @@ func TestPublicIPFollowsDDNS(t *testing.T) {
 		t.Fatal("the move wasn't seen")
 	}
 	sdp := candidatesOf(t, s)
-	if !strings.Contains(sdp, "198.51.100.9 41756 typ host") || strings.Contains(sdp, "203.0.113.7") {
+	if !strings.Contains(sdp, fmt.Sprintf("198.51.100.9 %d typ host", port)) || strings.Contains(sdp, "203.0.113.7") {
 		t.Fatalf("after the move:\n%s", sdp)
 	}
 	// A failed lookup keeps the address

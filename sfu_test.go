@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -84,7 +85,7 @@ func TestPublishAndWatch(t *testing.T) { publishAndWatch(t, nil) }
 
 // A hosting panel's one port: all the media through a single UDP port
 func TestPublishAndWatchOnePort(t *testing.T) {
-	publishAndWatch(t, func(c *config) { c.udpPort = 41733 })
+	publishAndWatch(t, func(c *config) { c.udpPort = freeUDPPort(t) })
 }
 
 func publishAndWatch(t *testing.T, mod func(*config)) {
@@ -510,4 +511,15 @@ func TestBusAdminKinds(t *testing.T) {
 	if m := a.expect("put"); m["id"] != "U" {
 		t.Fatalf("admin put on another's profile: %v", m)
 	}
+}
+
+// freeUDPPort: a UDP port nobody holds right now (a fixed number clashes with another test run or program).
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	c, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	return c.LocalAddr().(*net.UDPAddr).Port
 }

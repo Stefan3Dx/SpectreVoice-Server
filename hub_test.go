@@ -30,7 +30,13 @@ func newTestServer(t *testing.T, mod func(*config)) (*server, *httptest.Server) 
 		t.Fatal(err)
 	}
 	hs := httptest.NewServer(s.handler())
-	t.Cleanup(func() { hs.Close(); s.store.close() })
+	t.Cleanup(func() {
+		hs.Close()
+		s.store.close()
+		if s.udpMux != nil {
+			_ = s.udpMux.Close() // the one UDP port goes back (a second -count run binds it again)
+		}
+	})
 	return s, hs
 }
 

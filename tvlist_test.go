@@ -145,4 +145,12 @@ func TestTVProxy(t *testing.T) {
 	if code, body := get(via(true), target.URL); code != 200 || body != "hello" {
 		t.Fatalf("allowed: %d %q", code, body)
 	}
+	// HTTPS through CONNECT, the way ffmpeg reaches https sources (the end-to-end test may only get plain HTTP)
+	tlsTarget := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "secure") }))
+	defer tlsTarget.Close()
+	sc := via(true)
+	sc.Transport.(*http.Transport).TLSClientConfig = tlsTarget.Client().Transport.(*http.Transport).TLSClientConfig
+	if code, body := get(sc, tlsTarget.URL); code != 200 || body != "secure" {
+		t.Fatalf("https via CONNECT: %d %q", code, body)
+	}
 }
