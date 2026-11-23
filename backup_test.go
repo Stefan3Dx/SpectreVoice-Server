@@ -9,10 +9,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// unixModes: whether files carry Unix permission bits (on Windows Go reports 0666/0444, whatever was asked).
+var unixModes = runtime.GOOS != "windows"
 
 // dumpDB: every table's rows, in order, as text (two databases with the same dump hold the same data).
 func dumpDB(t *testing.T, path string) string {
@@ -107,12 +111,14 @@ func TestBackupRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Only the server's user reads it: the folder 0700, the file 0600
-	if fi, _ := os.Stat(f); fi.Mode().Perm() != 0o600 {
-		t.Fatalf("backup mode %v", fi.Mode())
-	}
-	if fi, _ := os.Stat(s.cfg.backupDir); fi.Mode().Perm() != 0o700 {
-		t.Fatalf("folder mode %v", fi.Mode())
+	// Only the server's user reads it: the folder 0700, the file 0600 (Unix modes; Windows has none to check)
+	if unixModes {
+		if fi, _ := os.Stat(f); fi.Mode().Perm() != 0o600 {
+			t.Fatalf("backup mode %v", fi.Mode())
+		}
+		if fi, _ := os.Stat(s.cfg.backupDir); fi.Mode().Perm() != 0o700 {
+			t.Fatalf("folder mode %v", fi.Mode())
+		}
 	}
 	if st := s.backupStatus(); st.Count != 1 || st.Last == 0 || st.Error != "" {
 		t.Fatal(st)

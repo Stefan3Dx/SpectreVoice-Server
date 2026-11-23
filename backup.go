@@ -456,9 +456,18 @@ func restoreBackup(data, backupDir, file string) (string, error) {
 		return "", err
 	}
 	// What's there now goes aside (not deleted), then the backup takes its place
-	aside := filepath.Join(data, "before-restore-"+time.Now().Format("20060102-150405"))
-	if err := os.Mkdir(aside, 0o700); err != nil {
-		return "", err
+	// (a second restore within the same second gets its own folder, not an error)
+	stamp := filepath.Join(data, "before-restore-"+time.Now().Format("20060102-150405"))
+	aside := stamp
+	for i := 2; ; i++ {
+		err := os.Mkdir(aside, 0o700)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) || i > 100 {
+			return "", err
+		}
+		aside = fmt.Sprintf("%s-%d", stamp, i)
 	}
 	entries, err := os.ReadDir(data)
 	if err != nil {

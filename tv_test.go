@@ -180,7 +180,7 @@ func TestTVProtocol(t *testing.T) {
 	if st := tvState(admin.wait(func(m map[string]any) bool { return isTV(m) && tvState(m)["kind"] == "file" })); st["n"] != 2.0 || st["host"] != nil {
 		t.Fatalf("after upload: %v", st)
 	}
-	if fi, err := os.Stat(s.tv.playlistFile()); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(s.tv.playlistFile()); err != nil || (unixModes && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("playlist file: %v %v", fi, err)
 	}
 	// The server's TV room is the server's: nobody publishes in its place
@@ -234,7 +234,15 @@ func TestTVEndToEnd(t *testing.T) {
 		t.Fatalf("making the test channel: %v %s", err, out)
 	}
 	var hits atomic.Int32
-	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// HTTPS, through the proxy's CONNECT; but ffmpeg 8 and later check certificates, and the hls demuxer doesn't
+	// pass a -ca_file on to the segments, so with such an ffmpeg the test's self-signed provider can't be trusted:
+	// then plain HTTP (the proxy's forwarding way)
+	newProvider := httptest.NewTLSServer
+	if out, _ := exec.Command(ff, "-hide_banner", "-h", "protocol=tls").CombinedOutput(); tvFFmpegVerifiesTLS(string(out)) {
+		t.Log("this ffmpeg checks certificates: the test provider is plain HTTP")
+		newProvider = httptest.NewServer
+	}
+	provider := newProvider(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		// The subscription's password in the path, as IPTV providers do (/live/user/pass/…)
 		if !strings.HasPrefix(r.URL.Path, "/s3cret/") {
@@ -509,4 +517,14 @@ func TestTVPlayFailedStartKeepsNothing(t *testing.T) {
 	if v, _ := s.store.setting("tv_now"); now != prev || v != string(want) {
 		t.Fatalf("the choice before: %+v, saved %s", now, v)
 	}
+}
+
+// tvFFmpegVerifiesTLS: from "ffmpeg -h protocol=tls", whether it checks the peer's certificate by default.
+func tvFFmpegVerifiesTLS(help string) bool {
+	for line := range strings.Lines(help) {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == "-tls_verify" {
+			return strings.Contains(line, "(default true)")
+		}
+	}
+	return false
 }
