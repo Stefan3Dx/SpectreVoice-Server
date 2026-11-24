@@ -1,0 +1,50 @@
+name: Release
+# Forgejo copy of .github/workflows/release.yml. A tag "v1.2.3" builds the server for Linux (amd64, arm64) and
+# releases it here (.forgejo/release.sh) and, with the secret RELEASES_TOKEN (a GitHub token with contents:write on
+# Stefan3Dx/SpectreVoice-Server), also on GitHub, where install.sh downloads it: the tag is pushed there first.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. 1.0.0)"
+        required: true
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        shell: bash
+        run: |
+          V="${{ github.event.inputs.version }}"
+          [[ "$GITHUB_REF" == refs/tags/v* ]] && V="${GITHUB_REF#refs/tags/v}"
+          echo "V=$V" >> "$GITHUB_ENV"
+          mkdir -p dist
+          for a in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath -ldflags "-s -w -X main.version=$V" -o spectrevoice-server .
+            tar -czf "dist/spectrevoice-server-linux-$a.tar.gz" spectrevoice-server LICENSE.md NOTICE
+          done
+          cp install.sh dist/
+          (cd dist && sha256sum *.tar.gz install.sh > SHA256SUMS)
+      - name: Publish (Forgejo)
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
+        run: |
+          command -v jq > /dev/null || (sudo apt-get update -q && sudo apt-get install -y -q jq > /dev/null)
+          bash .forgejo/release.sh "v$V" "Spectre Voice Server $V" "Spectre Voice Server $V" -- dist/*
+      - name: Publish (GitHub)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_HOST: github.com
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::warning::RELEASES_TOKEN not set: not published on GitHub"; exit 0; }
+          git push "https://x-access-token:${GH_TOKEN}@github.com/Stefan3Dx/SpectreVoice-Server.git" "$GITHUB_SHA:refs/tags/v$V" || true
+          gh release create "v$V" dist/* -R Stefan3Dx/SpectreVoice-Server --verify-tag --title "Spectre Voice Server $V" --generate-notes || \
+            gh release upload "v$V" dist/* -R Stefan3Dx/SpectreVoice-Server --clobber
